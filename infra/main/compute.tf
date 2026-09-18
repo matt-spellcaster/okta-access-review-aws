@@ -82,7 +82,8 @@ resource "aws_lambda_function" "fn" {
   timeout       = each.value.timeout
   memory_size   = each.value.memory
 
-  reserved_concurrent_executions = each.value.concurrency
+  # -1 = no reservation. New accounts can't reserve any (see var.reserve_concurrency).
+  reserved_concurrent_executions = var.reserve_concurrency ? each.value.concurrency : -1
 
   image_config {
     command = ["access_review.aws.handlers.${each.value.handler}"]

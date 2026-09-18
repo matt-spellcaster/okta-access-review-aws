@@ -1,7 +1,8 @@
 # Slack's interactivity endpoint. There is no AWS auth on it: Slack can't sign
 # AWS requests. The Slack signing secret is the authentication, checked on
 # every request before anything else (slack_interact.verify_signature), and
-# reserved concurrency on the function caps what a flood of junk could cost.
+# the account's Lambda concurrency limit (or reserved concurrency, with
+# var.reserve_concurrency) caps what a flood of junk could cost.
 
 resource "aws_lambda_function_url" "interact" {
   function_name      = aws_lambda_function.fn["interact"].function_name

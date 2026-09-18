@@ -219,6 +219,10 @@ data and prints every Slack message and JSM ticket it would send.
   `aws lambda invoke --function-name uar-remediate --payload '{"run":"<run>"}' out.json`.
 - **Changing a decision:** click again before the CISO approves. The newest click counts, and every
   click stays on record.
+- **Lambda concurrency:** new AWS accounts may only run 10 Lambdas at once, and none can be
+  reserved, so `reserve_concurrency` is off by default and that limit caps everything (including a
+  flood of junk requests to the Slack endpoint). The review needs far less. If you ask AWS for more
+  (Service Quotas → AWS Lambda → Concurrent executions), you can set `reserve_concurrency = true`.
 - **Logs:** 30 days in CloudWatch. They never hold evidence, secrets or item details.
 
 ## Cost

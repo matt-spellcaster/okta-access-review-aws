@@ -97,6 +97,17 @@ variable "revoke_ticket_days" {
   default = 7
 }
 
+variable "reserve_concurrency" {
+  description = <<-EOT
+    Reserve Lambda concurrency per function (1 for most, 5 for the Slack endpoint and worker).
+    New AWS accounts have a Lambda concurrency limit of 10 and must keep 10 unreserved, so any
+    reservation fails there; the account limit itself then caps concurrency. Turn this on after
+    Service Quotas raises "Concurrent executions" (e.g. to 1000).
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "signoff_timeout_days" {
   description = "How long the review execution waits for the CISO's sign-off before it stops."
   type        = number
