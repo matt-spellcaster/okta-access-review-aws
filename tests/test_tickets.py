@@ -104,7 +104,6 @@ def test_errors_never_carry_the_token_or_issue_content():
 def signed_review(tmp_path):
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
-    config.admin_login = "priya.shah@acme.example"
     roster_path = FIXTURES / "demo_roster.csv"
     run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config,
                      date(2026, 9, 15), tmp_path / "out", require_items=True)
@@ -119,9 +118,9 @@ def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     rem, session, run, s3 = signed_review
     manifest = json.loads((run.run_dir / "manifest.json").read_text())
     deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
-                         reviewers=Reviewers("U0ADMIN0001", "U0CISO00001"), channel="C0X00000001")
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     findings = workflow.urgent_findings(deps, run.run_dir.name)
-    counts = {"total": 16, "keep": 6, "revoke": 7, "decide": 3, "for_ciso": 4}
+    counts = {"total": 16, "keep": 6, "revoke": 7, "decide": 3}
 
     parent = rem.open_parent(run.run_dir.name, manifest, run.manifest_sha256, counts, NOW)
     assert rem.open_urgent(run.run_dir.name, parent, findings) == 3  # 6 findings about 3 people

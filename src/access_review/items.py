@@ -3,8 +3,8 @@ proposed decision.
 
 One item per app a person can reach (and by which route), per admin role they
 hold, and per admin group they are in. Each carries a proposal, but proposals
-are only proposals: the admin confirms or overrides them in Slack, and the
-CISO signs off on the result.
+are only proposals: the CISO, the single reviewer, confirms or overrides them
+in Slack and then signs off on the result.
 
 Proposals follow one rule for judgment calls -- revoke direct app access that
 has not been used in `app_unused_days` -- and never propose revoking anything
@@ -24,6 +24,8 @@ from .models import App, User
 
 KEEP, REVOKE, DECIDE = "keep", "revoke", "decide"
 PROPOSALS = (KEEP, REVOKE, DECIDE)
+# Reviewer roles. Every new item goes to the CISO; "admin" only appears in item
+# files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
 ITEMS_FILE = "review_items.json"
 FORMAT = 1
@@ -44,7 +46,7 @@ class ReviewItem:
     via: str  # "direct", "group:<name>" or "role"
     proposed: str  # keep, revoke or decide
     reason: str
-    reviewer: str  # admin or ciso
+    reviewer: str  # always ciso for new reviews
 
     @classmethod
     def from_dict(cls, d: dict) -> ReviewItem:
@@ -93,15 +95,10 @@ def _app_proposal(ctx: ReviewContext, user: User, app: App, via: str) -> tuple[s
 
 
 def build_items(ctx: ReviewContext) -> list[ReviewItem]:
-    admin_login = ctx.config.admin_login.strip().lower()
-    if not admin_login:
-        raise ItemsError("config admin_login must name the reviewing admin, so their own access goes to the CISO")
-
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str) -> ReviewItem:
-        reviewer = CISO if user.login.lower() == admin_login else ADMIN
         return ReviewItem(
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
-            target_id, target, via, proposed, reason, reviewer,
+            target_id, target, via, proposed, reason, CISO,
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
@@ -149,5 +146,4 @@ def summary(items: list[ReviewItem]) -> dict[str, int]:
     for i in items:
         counts[i.proposed] += 1
     counts["total"] = len(items)
-    counts["for_ciso"] = sum(1 for i in items if i.reviewer == CISO)
     return counts

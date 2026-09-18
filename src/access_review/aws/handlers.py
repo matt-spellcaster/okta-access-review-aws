@@ -5,7 +5,7 @@
     interact   Function URL: Slack's interactivity endpoint (front end only)
     worker     async, invoked by interact: record decisions, sign off
     remediate  Step Functions, after sign-off: open revoke tickets
-    failed     Step Functions catch: say in the channel that the run stopped
+    failed     Step Functions catch: close the review if it opened, say so in the channel
     watch      hourly schedule: reminders, escalations, overdue tickets
     verify     daily schedule: check resolved tickets against Okta
 
@@ -31,7 +31,7 @@ from ..checks import Config, ReviewContext, run_checks
 from ..cli import DEFAULT_SCOPES
 from ..collect import collect as collect_okta
 from ..items import summary
-from ..jira import JiraClient
+from ..jira import JiraClient, browse_url
 from ..okta import OktaClient
 from ..report import run_dir_name
 from ..review import run_review
@@ -71,10 +71,12 @@ def _deps(tickets: bool = False, sfn: bool = False) -> workflow.Deps:
         j = JiraSettings.from_env()
         remediation = Remediation(_jira(), _client("s3"), s.evidence_bucket, j.parent_type, j.child_type,
                                   s.leaver_ticket_hours, s.revoke_ticket_days)
+    base = _env("JIRA_BASE_URL", required=False)
     return workflow.Deps(
         s3=_client("s3"), evidence_bucket=s.evidence_bucket, work_bucket=s.work_bucket,
         bot=BotClient(_secret("SLACK_BOT_TOKEN_PARAM")), reviewers=s.reviewers, channel=s.slack_channel,
         tickets=remediation, sfn=_client("stepfunctions") if sfn else None, review_days=s.review_days,
+        ticket_url=(lambda key: browse_url(base, key)) if base else (lambda key: None),
     )
 
 
@@ -93,8 +95,6 @@ def _inputs(tmp: Path) -> tuple[Config, Path, dict]:
     config_path.write_bytes(store.get_bytes(s3, bucket, f"{INPUTS}config.json"))
     roster_path.write_bytes(store.get_bytes(s3, bucket, f"{INPUTS}roster.csv"))
     config = Config.load(config_path)
-    if not config.admin_login:
-        raise SettingsError("inputs/config.json must set admin_login")
     return config, roster_path, load_roster(roster_path, config.timezone())
 
 
@@ -132,12 +132,18 @@ def remediate(event, context):
 
 def failed(event, context):
     """The execution stopped before finishing (an error, or no sign-off within
-    the wait limit). Counts only: the cause stays in the execution history."""
-    run = str((event or {}).get("run") or "unknown")
+    the wait limit). Closes the review if it had opened, so the watcher stops
+    chasing it, and says so in the channel. Counts only: the cause stays in the
+    execution history."""
+    run = str((event or {}).get("run") or "")
+    closed = False
+    if store.RUN_NAME.match(run):
+        closed = workflow.close_review(_deps(), run, "the review execution stopped before it finished")
     s = _settings()
     BotClient(_secret("SLACK_BOT_TOKEN_PARAM")).post_message(s.slack_channel, msgs.channel_note(
-        f":x: Okta access review `{run}` stopped before it finished. Check the Step Functions execution."))
-    return {"run": run, "notified": True}
+        f":x: Okta access review `{run or 'unknown'}` stopped before it finished"
+        + (" and has been closed" if closed else "") + ". Check the Step Functions execution."))
+    return {"run": run or "unknown", "notified": True, "closed": closed}
 
 
 # --- Slack ------------------------------------------------------------------------

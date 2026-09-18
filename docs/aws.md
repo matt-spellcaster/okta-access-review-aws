@@ -2,7 +2,7 @@
 
 The quarterly review runs in a dedicated AWS account. It's approved in Slack, and fixes are tracked as
 Jira Service Management tickets. Okta is only ever read. Writes go to three places only: Slack (one
-channel, plus DMs to the admin and the CISO), one JSM project, and this deployment's S3 buckets.
+channel, plus DMs to the CISO), one JSM project, and this deployment's S3 buckets.
 
 ## How a review runs
 
@@ -15,7 +15,7 @@ EventBridge Scheduler
 uar-review
   1. collect     read Okta (GET only), write the review to s3://uar-evidence-…/runs/<run>/
   2. open        JSM parent + 24-hour leaver tickets, Slack DMs, then wait (up to 30 days)
-                 … the admin and the CISO decide in Slack; the CISO approves …
+                 … the CISO decides every item in Slack, then approves …
   3. remediate   one 7-day JSM ticket per Revoke decision
   failed         any error, or no sign-off within the wait limit: a note in the channel
 
@@ -25,9 +25,8 @@ Slack → function URL → uar-interact   checks the signature, then hands the c
 
 | Who | Sees | Does |
 |---|---|---|
-| Admin | A DM with every item except their own access, each with a proposed decision | Clicks **Confirm N proposed**, then Keep or Revoke on what's left. A reason is required to keep something proposed for revocation, or to override any proposal. |
-| CISO | A DM with the admin's own items. Once everything is decided: the manifest hash, the PDF and **Approve review** | Decides those items, then signs off. Gets the escalations. |
-| Review channel | Counts only: opened, overdue, signed off, tickets opened | Nothing |
+| CISO (the only reviewer) | A DM with every item and its proposed decision, linked to the tracking ticket and to any leaver's ticket. Once everything is decided: one message listing every decision, the manifest hash, the PDF and **Approve review** | Clicks **Confirm N proposed**, then Keep or Revoke on what's left. A reason is required to keep something proposed for revocation, or to override any proposal. Then checks the list and signs off. Gets the reminders. |
+| Review channel | Counts only, with ticket links: opened, overdue, and a finished summary (findings by check, decisions, who signed off) | Nothing |
 | JSM | A parent ticket per review. Leaver tickets due in 24 hours, revoke tickets due in 7 days | A person makes the change in Okta and resolves the ticket. The daily check comments to confirm it, and never moves the ticket. |
 
 **Proposals.**
@@ -107,8 +106,8 @@ read -rs "V?Signing secret: " && aws ssm put-parameter --name /uar/slack/signing
 
 (Those are zsh prompts. In bash, use `read -rsp "Bot token: " V`.)
 
-You'll need the channel ID (channel name → **About**), and the member IDs of the admin and the CISO
-(profile → ⋯ → **Copy member ID**). The admin and the CISO must be different people.
+You'll need the channel ID (channel name → **About**), and the CISO's **member ID**: their profile →
+⋯ → **Copy member ID**. It starts with `U`. A DM's ID (`D…`) looks similar but won't work.
 
 ### 4. Jira Service Management
 
@@ -154,7 +153,7 @@ Repository **secrets** (Settings → Secrets and variables → Actions → Secre
 | `AWS_PLAN_ROLE_ARN` | The `plan_role_arn` output |
 | `TEARDOWN_ROLE_ARN` | The `apply_role_arn` output |
 | `OKTA_ORG_URL`, `OKTA_CLIENT_ID`, `OKTA_KEY_ID` | The Okta app |
-| `SLACK_CHANNEL_ID`, `SLACK_ADMIN_USER`, `SLACK_CISO_USER` | Slack IDs |
+| `SLACK_CHANNEL_ID`, `SLACK_CISO_USER` | Slack IDs |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_PROJECT` | Jira |
 | `BUDGET_EMAIL` | Where cost alerts go |
 
@@ -189,7 +188,7 @@ to `master` deploys, each only after your approval. Then:
 - in the Slack app, open **Interactivity & Shortcuts**, turn it **on**, and paste in the
   `slack_request_url` output (`terraform -chdir=infra/main output -raw slack_request_url`) as the
   **Request URL**. Slack checks the URL when you save.
-- upload the inputs (the config must name the reviewing admin in `admin_login`):
+- upload the inputs:
 
 ```bash
 aws s3 cp roster.csv  s3://uar-work-<account>/inputs/roster.csv
@@ -208,6 +207,8 @@ To see the whole flow with no AWS at all, run `uv run python scripts/e2e_local.p
 data and prints every Slack message and JSM ticket it would send.
 
 ## Operating it
+
+Running a review, step by step, is in [runbook.md](runbook.md).
 
 - **Roster changes:** upload a new `inputs/roster.csv`. Each run copies the roster it used into its
   evidence.
@@ -251,9 +252,13 @@ alert fires at 80% of `budget_limit_usd` (default $5).
     in S3 would not go unnoticed.
 - **Slack requests are authenticated by signature.** The function URL has no AWS auth (Slack can't
   sign AWS requests). Every request is checked against Slack's signing secret within a 5-minute
-  window before anything else. Only the configured admin and CISO can act, and the worker re-checks
+  window before anything else. Only the configured CISO can act, and the worker re-checks
   every permission itself.
 - **No personal data in Step Functions, channel posts or logs.** Personal data is only in S3, the
-  two reviewers' DMs, and JSM.
+  CISO's DM, and JSM.
+- **One reviewer.** The CISO decides every item, including their own access. That keeps a small
+  review simple, but an auditor will usually want someone else to approve the reviewer's own access;
+  if you need that, have a second person confirm those items outside the tool and note it on the
+  tracking ticket.
 - **Accepted scanner findings.** The checkov findings accepted on purpose, mostly for cost, are
   listed with reasons in [`infra/.checkov.yaml`](../infra/.checkov.yaml).

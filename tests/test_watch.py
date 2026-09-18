@@ -9,7 +9,7 @@ from fakes import FakeBot, FakeS3, FakeSfn
 from access_review import store, watch, workflow
 from access_review.checks import Config
 from access_review.decisions import Reviewers
-from access_review.items import ADMIN, CISO, DECIDE, KEEP
+from access_review.items import DECIDE, KEEP
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
@@ -17,7 +17,7 @@ from access_review.state import CLOSED, load_state
 from access_review.tickets import Remediation
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
-R = Reviewers(admin="U0ADMIN0001", ciso="U0CISO00001")
+R = Reviewers(ciso="U0CISO00001")
 OPENED = datetime(2026, 9, 16, 9, tzinfo=timezone.utc)
 
 
@@ -73,7 +73,6 @@ class Clock:
 def world(tmp_path):
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
-    config.admin_login = "priya.shah@acme.example"
     roster_path = FIXTURES / "demo_roster.csv"
     run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config,
                      date(2026, 9, 15), tmp_path / "out", require_items=True)
@@ -95,14 +94,14 @@ def dms_to(deps, user):
 
 def test_reminders_go_out_once_each(world):
     deps, run, _, clock, jira, _ = world
-    before = len(dms_to(deps, R.admin))
+    before = len(dms_to(deps, R.ciso))
     clock.now = OPENED + timedelta(days=1)
     assert watch.hourly(deps, jira)["reminders"] == 0
     clock.now = OPENED + timedelta(days=3, hours=1)
-    assert watch.hourly(deps, jira)["reminders"] == 2  # admin and CISO both have items
+    assert watch.hourly(deps, jira)["reminders"] == 1
     assert watch.hourly(deps, jira)["reminders"] == 0  # the next hour: nothing new
-    assert "still need your decision" in dms_to(deps, R.admin)[-1]
-    assert len(dms_to(deps, R.admin)) == before + 1
+    assert "still need your decision" in dms_to(deps, R.ciso)[-1]
+    assert len(dms_to(deps, R.ciso)) == before + 1
 
 
 def test_an_overdue_review_escalates_to_the_ciso_once_then_reminds_daily(world):
@@ -112,11 +111,11 @@ def test_an_overdue_review_escalates_to_the_ciso_once_then_reminds_daily(world):
     assert sent["escalations"] == 1
     assert "is overdue" in dms_to(deps, R.ciso)[-1]
     channel = [json.dumps(p) for c, p, _ in deps.bot.posts if c == deps.channel]
-    assert "Escalated to the CISO" in channel[-1] and "@acme" not in channel[-1]
+    assert "past its deadline" in channel[-1] and "@acme" not in channel[-1]
     assert any("Review overdue" in body for _, body in jira.comments)
     assert watch.hourly(deps, jira)["escalations"] == 0
     clock.now += timedelta(days=1)
-    assert watch.hourly(deps, jira)["reminders"] == 2
+    assert watch.hourly(deps, jira)["reminders"] == 1
 
 
 def test_overdue_tickets_are_sent_to_the_ciso_once_a_day(world):
@@ -130,11 +129,10 @@ def test_overdue_tickets_are_sent_to_the_ciso_once_a_day(world):
 
 def finish_review(deps, run, items):
     src = {"channel": "D", "message_ts": "1"}
-    for role, user in ((ADMIN, R.admin), (CISO, R.ciso)):
-        workflow.confirm(deps, run, role, user, src)
-        for key, item in items.items():
-            if item.reviewer == role and item.proposed == DECIDE:
-                workflow.record(deps, run, [(key, KEEP, "")], user, src)
+    workflow.confirm(deps, run, R.ciso, src)
+    for key, item in items.items():
+        if item.proposed == DECIDE:
+            workflow.record(deps, run, [(key, KEEP, "")], R.ciso, src)
     workflow.approve(deps, run, R.ciso, src)
     return workflow.remediate(deps, run)
 

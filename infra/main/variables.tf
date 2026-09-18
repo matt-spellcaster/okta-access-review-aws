@@ -44,13 +44,8 @@ variable "slack_channel_id" {
   type        = string
 }
 
-variable "slack_admin_user" {
-  description = "Slack user ID of the admin who reviews everything."
-  type        = string
-}
-
 variable "slack_ciso_user" {
-  description = "Slack user ID of the CISO: reviews the admin's own access, signs off, receives escalations."
+  description = "Slack member ID (U…) of the CISO, the single reviewer: decides every item, signs off, gets reminders."
   type        = string
 }
 

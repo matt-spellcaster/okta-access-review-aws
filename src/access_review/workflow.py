@@ -1,12 +1,16 @@
 """The review workflow between collection and remediation.
 
-    open_review     post the review to the admin and CISO, open the JSM parent
-                    and the urgent leaver tickets, remember the task token
-    record          one reviewer's decisions (a click, a reason, or
-                    "confirm proposed"), then refresh their messages and, once
-                    nothing is left, ask the CISO to sign off
+    open_review     open the JSM parent and the urgent leaver tickets, DM the
+                    review to the CISO (the single reviewer), remember the
+                    task token
+    record          the CISO's decisions (a click, a reason, or "confirm
+                    proposed"), then refresh their messages and, once nothing
+                    is left, post every decision with the Approve button
     approve         the CISO's sign-off: write it as evidence and resume the
                     Step Functions execution
+    remediate       one ticket per revoke, then the finished summary in the
+                    review channel
+    close_review    mark a review that stopped early as closed
 
 Everything that touches personal data stays in S3, the reviewers' DMs and JSM.
 What this module returns (and so what reaches Step Functions) is IDs, hashes
@@ -37,8 +41,8 @@ from .decisions import (
     outstanding,
     progress,
 )
-from .items import ADMIN, CISO, ITEMS_FILE, ReviewItem, load_items, summary
-from .state import OPEN, SIGNED_OFF, create_state, load_state, update_state
+from .items import CISO, ITEMS_FILE, REVOKE, ReviewItem, load_items, summary
+from .state import CLOSED, OPEN, SIGNED_OFF, create_state, load_state, update_state
 
 # Findings that mean someone who has left can still get in: a ticket is opened
 # for these as soon as the review opens, without waiting for sign-off.
@@ -61,6 +65,8 @@ class Deps:
     sfn: object | None = None  # boto3 Step Functions client
     review_days: int = 7
     now: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
+    # A Jira ticket's page, or None when there is none to link to (see JiraClient.browse_url).
+    ticket_url: Callable[[str], str | None] = field(default=lambda key: None)
 
 
 @dataclass
@@ -108,14 +114,27 @@ def _iso(when: datetime) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _post_role(deps: Deps, data: RunData, role: str, final: dict, due: str) -> dict:
-    user = deps.reviewers.slack_id(role)
-    channel = deps.bot.open_dm(user)
-    summary_ts = deps.bot.post_message(
-        channel, msgs.summary_message(data.run, role, data.item_list, final, due, data.manifest_sha256))
-    parts = msgs.chunks(data.item_list, role)
+def _ticket(deps: Deps, key: str | None) -> msgs.Ticket | None:
+    return (key, deps.ticket_url(key)) if key else None
+
+
+def leaver_tickets(deps: Deps, run: str) -> dict[str, msgs.Ticket]:
+    """Each leaver's ticket in this review, by lowercased login, for linking from their items."""
+    return {
+        rec["subject"].lower(): (rec["issue"], deps.ticket_url(rec["issue"]))
+        for _, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
+        if rec.get("kind") == "leaver" and rec.get("subject") and rec.get("issue")
+    }
+
+
+def _post_dm(deps: Deps, data: RunData, final: dict, due: str, parent: str | None) -> dict:
+    channel = deps.bot.open_dm(deps.reviewers.ciso)
+    summary_ts = deps.bot.post_message(channel, msgs.summary_message(
+        data.run, data.item_list, final, due, data.manifest_sha256, _ticket(deps, parent)))
+    tickets = leaver_tickets(deps, data.run)
+    parts = msgs.chunks(data.item_list)
     chunk_ts = [
-        deps.bot.post_message(channel, msgs.chunk_message(data.run, role, n, len(parts), part, final))
+        deps.bot.post_message(channel, msgs.chunk_message(data.run, n, len(parts), part, final, tickets))
         for n, part in enumerate(parts)
     ]
     return {"channel": channel, "summary_ts": summary_ts, "chunks": chunk_ts}
@@ -149,26 +168,27 @@ def open_review(deps: Deps, run: str, task_token: str) -> dict:
         urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run))
         update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(parent_issue=parent))
 
-    dms = {role: _post_role(deps, data, role, {}, due)
-           for role in (ADMIN, CISO) if any(i.reviewer == role for i in data.item_list)}
+    dms = {CISO: _post_dm(deps, data, {}, due, parent)} if data.item_list else {}
     update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(dms=dms))
-    deps.bot.post_message(deps.channel, msgs.channel_opened(run, summary(data.item_list), due, parent or "-", urgent))
+    deps.bot.post_message(deps.channel, msgs.channel_opened(
+        run, summary(data.item_list), due, _ticket(deps, parent), urgent))
     maybe_ready(deps, data, {})  # a review with nothing to decide goes straight to sign-off
     return {"run": run, "items": len(data.item_list), "urgent_tickets": urgent}
 
 
-def refresh(deps: Deps, data: RunData, state: dict, final: dict, roles: tuple[str, ...]) -> None:
+def refresh(deps: Deps, data: RunData, state: dict, final: dict) -> None:
+    """Bring the reviewer's DM up to date with the latest decisions."""
     due = state["due_at"][:10]
-    for role in roles:
-        dm = state["dms"].get(role)
-        if not dm:
-            continue
-        is_open = state["status"] == OPEN
+    parent = _ticket(deps, state.get("parent_issue"))
+    tickets = leaver_tickets(deps, data.run)
+    is_open = state["status"] == OPEN
+    parts = msgs.chunks(data.item_list)
+    for dm in state["dms"].values():
         deps.bot.update_message(dm["channel"], dm["summary_ts"], msgs.summary_message(
-            data.run, role, data.item_list, final, due, data.manifest_sha256, open_=is_open))
-        parts = msgs.chunks(data.item_list, role)
+            data.run, data.item_list, final, due, data.manifest_sha256, parent, open_=is_open))
         for n, (part, ts) in enumerate(zip(parts, dm["chunks"])):
-            deps.bot.update_message(dm["channel"], ts, msgs.chunk_message(data.run, role, n, len(parts), part, final))
+            deps.bot.update_message(dm["channel"], ts,
+                                    msgs.chunk_message(data.run, n, len(parts), part, final, tickets))
 
 
 def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
@@ -186,9 +206,11 @@ def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
     update_state(deps.s3, deps.work_bucket, data.run, claim)
     if not posted[-1]:
         return False
+    state, _ = load_state(deps.s3, deps.work_bucket, data.run)
     channel = deps.bot.open_dm(deps.reviewers.ciso)
-    ts = deps.bot.post_message(channel, msgs.approve_message(data.run, progress(data.items, final),
-                                                             data.manifest_sha256))
+    ts = deps.bot.post_message(channel, msgs.approve_message(
+        data.run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
+        _ticket(deps, state.get("parent_issue"))))
     with tempfile.TemporaryDirectory() as tmp:
         pdf = Path(tmp) / "report.pdf"
         pdf.write_bytes(store.get_bytes(deps.s3, deps.evidence_bucket, _key(data.run, "report.pdf")))
@@ -209,17 +231,16 @@ def record(deps: Deps, run: str, choices: list[tuple[str, str, str]], user: str,
                                      source, deps.now())
     store.put_record(deps.s3, deps.evidence_bucket, run, "decisions", name, rec)
     final = current_decisions(deps, data)
-    roles = tuple(sorted({data.items[k].reviewer for k, _, _ in choices}))
-    refresh(deps, data, state, final, roles)
+    refresh(deps, data, state, final)
     maybe_ready(deps, data, final)
     return progress(data.items, final)
 
 
-def confirm(deps: Deps, run: str, role: str, user: str, source: dict) -> dict:
+def confirm(deps: Deps, run: str, user: str, source: dict) -> dict:
     data = load_run(deps, run)
-    if user != deps.reviewers.slack_id(role):
-        raise DecisionError("you can only confirm proposals in your own review")
-    choices = confirm_proposed(data.items, current_decisions(deps, data), role)
+    if not deps.reviewers.may_decide(user):
+        raise DecisionError("only the CISO can confirm proposals in this review")
+    choices = confirm_proposed(data.items, current_decisions(deps, data))
     if not choices:
         raise DecisionError("there are no undecided proposals to confirm")
     return record(deps, run, choices, user, source)
@@ -254,11 +275,9 @@ def approve(deps: Deps, run: str, user: str, source: dict) -> dict:
     send_callback(deps, state, output)
     if (state.get("approve") or {}).get("ts"):
         deps.bot.update_message(state["approve"]["channel"], state["approve"]["ts"], msgs.approve_message(
-            run, progress(data.items, final), data.manifest_sha256, signed=attestation))
-    refresh(deps, data, state, final, (ADMIN, CISO))
-    deps.bot.post_message(deps.channel, msgs.channel_note(
-        f":lock: Okta access review `{run}` was signed off by <@{user}>. "
-        f"{output['revoke']} remediation ticket(s) will be opened."))
+            run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
+            _ticket(deps, state.get("parent_issue")), signed=attestation))
+    refresh(deps, data, state, final)
     return output
 
 
@@ -292,13 +311,40 @@ def remediate(deps: Deps, run: str) -> dict:
     state, _ = load_state(deps.s3, deps.work_bucket, run)
     parent = state.get("parent_issue")
     opened = deps.tickets.open_revokes(run, parent, data.items, final)
-    revokes = sum(1 for d in final.values() if d["decision"] == "revoke")
+    revokes = sum(1 for d in final.values() if d["decision"] == REVOKE)
     deps.tickets.jira.add_comment(parent, _adf_signoff(att, opened, revokes))
     update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(remediated=True))
-    deps.bot.post_message(deps.channel, msgs.channel_note(
-        f":ticket: Access review `{run}`: {revokes} remediation ticket(s) under {parent}, due in "
-        f"{deps.tickets.revoke_days} days."))
+    deps.bot.post_message(deps.channel, msgs.channel_finished(
+        run, data.manifest, check_counts(deps, run), att, len(final) - revokes, revokes,
+        _ticket(deps, parent), deps.tickets.revoke_days))
     return {"run": run, "revoke_tickets": revokes, "opened_now": opened}
+
+
+def check_counts(deps: Deps, run: str) -> list[tuple[str, str, str, int]]:
+    """(check_id, title, severity, count) from findings.csv: counts only, for the channel."""
+    text = store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode()
+    counts: dict[tuple[str, str, str], int] = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        k = (row["check_id"], row["title"], row["severity"])
+        counts[k] = counts.get(k, 0) + 1
+    return [(c, t, sev, n) for (c, t, sev), n in sorted(counts.items())]
+
+
+def close_review(deps: Deps, run: str, reason: str) -> bool:
+    """Mark a review that stopped before sign-off as closed, so the watcher
+    stops chasing it. Returns False if there's nothing open to close."""
+    closed: list[bool] = []
+
+    def change(s: dict) -> None:
+        closed.append(s["status"] == OPEN)
+        if closed[-1]:
+            s.update(status=CLOSED, closed_reason=reason)
+
+    try:
+        update_state(deps.s3, deps.work_bucket, run, change)
+    except FileNotFoundError:
+        return False
+    return bool(closed and closed[-1])
 
 
 def _adf_signoff(att: dict, opened: int, revokes: int) -> dict:

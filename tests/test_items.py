@@ -21,14 +21,12 @@ from access_review.roster import load_roster
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 AS_OF = date(2026, 9, 15)
-ADMIN = "priya.shah@acme.example"
 
 
 @pytest.fixture
 def demo():
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
-    config.admin_login = ADMIN
     roster = load_roster(FIXTURES / "demo_roster.csv", config.timezone())
     return ReviewContext(snapshot, roster, config, AS_OF)
 
@@ -53,16 +51,10 @@ def test_demo_proposals(demo):
     assert got[("priya.shah", "Okta Administrators")] == DECIDE
 
 
-def test_the_admins_own_access_goes_to_the_ciso(demo):
+def test_every_item_goes_to_the_ciso(demo):
     items = build_items(demo)
-    assert {i.user for i in items if i.reviewer == CISO} == {ADMIN}
-    assert summary(items)["for_ciso"] == 4
-
-
-def test_a_review_without_a_named_admin_is_refused(demo):
-    demo.config.admin_login = ""
-    with pytest.raises(ItemsError, match="admin_login"):
-        build_items(demo)
+    assert {i.reviewer for i in items} == {CISO}
+    assert summary(items) == {"keep": 6, "revoke": 7, "decide": 3, "total": 16}
 
 
 def test_nothing_is_proposed_for_revocation_on_incomplete_usage(demo):

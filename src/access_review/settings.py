@@ -79,7 +79,7 @@ class Settings:
         if not CHANNEL_ID.match(channel):
             raise SettingsError("SLACK_CHANNEL_ID must be a channel ID like C0123ABCDEF")
         try:
-            reviewers = Reviewers(admin=_env("SLACK_ADMIN_USER"), ciso=_env("SLACK_CISO_USER"))
+            reviewers = Reviewers(ciso=_env("SLACK_CISO_USER"))
         except ValueError as e:
             raise SettingsError(str(e)) from None
         return cls(evidence, work, channel, reviewers, _int("REVIEW_DAYS", 7),

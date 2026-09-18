@@ -19,14 +19,15 @@ from access_review.decisions import (
     outstanding,
     progress,
 )
-from access_review.items import ADMIN, CISO, DECIDE, KEEP, REVOKE, ITEMS_FILE
+from access_review.items import DECIDE, ITEMS_FILE, KEEP, REVOKE
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 AS_OF = date(2026, 9, 15)
-R = Reviewers(admin="U0ADMIN0001", ciso="U0CISO00001")
+R = Reviewers(ciso="U0CISO00001")
+STRANGER = "U0STRANGER1"
 T0 = datetime(2026, 9, 16, 9, tzinfo=timezone.utc)
 SOURCE = {"team": "T0TEAM0001", "channel": "D0DM0001", "message_ts": "1758000000.000100"}
 BUCKET = "evidence"
@@ -36,7 +37,6 @@ BUCKET = "evidence"
 def review(tmp_path):
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
-    config.admin_login = "priya.shah@acme.example"
     roster_path = FIXTURES / "demo_roster.csv"
     run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config, AS_OF,
                      tmp_path / "out", require_items=True)
@@ -48,63 +48,56 @@ def record(run, items, choices, user, now):
 
 
 def decide_everything(run, items):
-    """The admin confirms proposals and decides the rest; the CISO does the same for theirs."""
-    records = []
-    for i, (role, user) in enumerate(((ADMIN, R.admin), (CISO, R.ciso))):
-        choices = confirm_proposed(items, {}, role)
-        choices += [(k, KEEP, "") for k, it in items.items() if it.reviewer == role and it.proposed == DECIDE]
-        records.append(record(run, items, choices, user, T0 + timedelta(minutes=i)))
-    return records
+    """The CISO confirms the proposals, then keeps everything that needed a call."""
+    choices = confirm_proposed(items, {})
+    first = record(run, items, choices, R.ciso, T0)
+    rest = [(k, KEEP, "") for k, it in items.items() if it.proposed == DECIDE]
+    return [first, record(run, items, rest, R.ciso, T0 + timedelta(minutes=1))]
 
 
-def test_reviewers_must_be_two_different_slack_users():
+def test_the_reviewer_must_be_a_slack_member_id():
+    with pytest.raises(ValueError, match="member ID"):
+        Reviewers(ciso="D0DMCHANNEL1")
     with pytest.raises(ValueError):
-        Reviewers(admin="U0SAME00001", ciso="U0SAME00001")
-    with pytest.raises(ValueError):
-        Reviewers(admin="alice", ciso="U0CISO00001")
+        Reviewers(ciso="alice")
 
 
-def test_the_admin_cannot_decide_their_own_access(review):
+def test_only_the_ciso_can_decide(review):
     run, items = review
-    own = next(k for k, i in items.items() if i.reviewer == CISO)
+    key = next(iter(items))
     with pytest.raises(DecisionError, match="only the CISO"):
-        record(run, items, [(own, KEEP, "")], R.admin, T0)
-    # And the CISO doesn't decide the admin's items for them.
-    other = next(k for k, i in items.items() if i.reviewer == ADMIN)
-    with pytest.raises(DecisionError, match="reviewing admin"):
-        record(run, items, [(other, KEEP, "")], R.ciso, T0)
-    with pytest.raises(DecisionError):
-        record(run, items, [(other, KEEP, "")], "U0STRANGER1", T0)
+        record(run, items, [(key, KEEP, "")], STRANGER, T0)
+    assert record(run, items, [(key, KEEP, "because")], R.ciso, T0)[1]["slack_user"] == R.ciso
 
 
 def test_keeping_a_proposed_revoke_needs_a_reason(review):
     run, items = review
-    key = next(k for k, i in items.items() if i.proposed == REVOKE and i.reviewer == ADMIN)
+    key = next(k for k, i in items.items() if i.proposed == REVOKE)
     with pytest.raises(DecisionError, match="reason is needed"):
-        record(run, items, [(key, KEEP, "  ")], R.admin, T0)
-    _, rec = record(run, items, [(key, KEEP, "Quarter-end reporting needs it")], R.admin, T0)
+        record(run, items, [(key, KEEP, "  ")], R.ciso, T0)
+    _, rec = record(run, items, [(key, KEEP, "Quarter-end reporting needs it")], R.ciso, T0)
     assert rec["decisions"][0]["reason"] == "Quarter-end reporting needs it"
     with pytest.raises(DecisionError, match="one line"):
-        record(run, items, [(key, KEEP, "line\nbreak")], R.admin, T0)
+        record(run, items, [(key, KEEP, "line\nbreak")], R.ciso, T0)
 
 
 def test_confirm_proposed_leaves_decide_items_alone(review):
     run, items = review
-    choices = confirm_proposed(items, {}, ADMIN)
-    assert choices and all(items[k].proposed in (KEEP, REVOKE) and items[k].reviewer == ADMIN for k, _, _ in choices)
-    final = consolidate(items, [record(run, items, choices, R.admin, T0)], run.manifest_sha256, R)
-    left = outstanding(items, final, ADMIN)
+    choices = confirm_proposed(items, {})
+    assert choices and all(items[k].proposed in (KEEP, REVOKE) for k, _, _ in choices)
+    final = consolidate(items, [record(run, items, choices, R.ciso, T0)], run.manifest_sha256, R)
+    left = outstanding(items, final)
     assert left and all(i.proposed == DECIDE for i in left)
-    assert confirm_proposed(items, final, ADMIN) == []
+    assert confirm_proposed(items, final) == []
 
 
 def test_latest_decision_wins_and_invalid_records_never_count(review):
     run, items = review
-    key = next(k for k, i in items.items() if i.proposed == DECIDE and i.reviewer == ADMIN)
-    first = record(run, items, [(key, KEEP, "")], R.admin, T0)
-    second = record(run, items, [(key, REVOKE, "no longer on the team")], R.admin, T0 + timedelta(hours=1))
+    key = next(k for k, i in items.items() if i.proposed == DECIDE)
+    first = record(run, items, [(key, KEEP, "")], R.ciso, T0)
+    second = record(run, items, [(key, REVOKE, "no longer on the team")], R.ciso, T0 + timedelta(hours=1))
     stale = ("x.json", {**second[1], "manifest_sha256": "0" * 64, "recorded_at": "2027-01-01T00:00:00.000000Z"})
-    forged = ("y.json", {**second[1], "slack_user": R.ciso, "decisions": [{"item_key": key, "decision": KEEP}],
+    forged = ("y.json", {**second[1], "slack_user": STRANGER, "decisions": [{"item_key": key, "decision": KEEP}],
                          "recorded_at": "2027-01-01T00:00:00.000000Z"})
 
     final = consolidate(items, [second, stale, first, forged], run.manifest_sha256, R)
@@ -116,15 +109,16 @@ def test_signoff_needs_every_item_and_the_ciso(review):
     run, items = review
     manifest = json.loads((run.run_dir / "manifest.json").read_text())
     items_sha = hashlib.sha256((run.run_dir / ITEMS_FILE).read_bytes()).hexdigest()
-    partial = consolidate(items, [record(run, items, confirm_proposed(items, {}, ADMIN), R.admin, T0)],
+    partial = consolidate(items, [record(run, items, confirm_proposed(items, {}), R.ciso, T0)],
                           run.manifest_sha256, R)
     with pytest.raises(DecisionError, match="still need a decision"):
         build_signoff(run.run_dir.name, manifest, run.manifest_sha256, items_sha, items, partial, R.ciso, R, SOURCE)
 
     final = consolidate(items, decide_everything(run, items), run.manifest_sha256, R)
-    assert progress(items, final)["decided"] == len(items)
+    p = progress(items, final)
+    assert p["decided"] == p["total"] == len(items) and p["open"] == 0
     with pytest.raises(DecisionError, match="only the CISO"):
-        build_signoff(run.run_dir.name, manifest, run.manifest_sha256, items_sha, items, final, R.admin, R, SOURCE)
+        build_signoff(run.run_dir.name, manifest, run.manifest_sha256, items_sha, items, final, STRANGER, R, SOURCE)
     with pytest.raises(DecisionError, match="don't match the manifest"):
         build_signoff(run.run_dir.name, manifest, run.manifest_sha256, "0" * 64, items, final, R.ciso, R, SOURCE)
 
