@@ -431,11 +431,20 @@ jobs:
       - name: Build and push the Lambda image
         run: |
           repo=$(terraform -chdir=infra/main output -raw ecr_repository_url)
-          aws ecr get-login-password | docker login --username AWS --password-stdin "${repo%%/*}"
-          scripts/build_image.sh "${repo}:${GITHUB_SHA}"
-          docker push "${repo}:${GITHUB_SHA}"
-          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${repo}:${GITHUB_SHA}")
-          echo "TF_VAR_image_digest=${digest##*@}" >> "$GITHUB_ENV"
+          # Tags are immutable, so an image already pushed for this commit is exactly this
+          # commit's image. Reuse it: that's what makes re-running a failed deploy work.
+          digest=$(aws ecr describe-images --repository-name "${repo#*/}" \
+            --image-ids imageTag="${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [[ "$digest" == sha256:* ]]; then
+            echo "The image for this commit is already in ECR; reusing it."
+          else
+            aws ecr get-login-password | docker login --username AWS --password-stdin "${repo%%/*}"
+            scripts/build_image.sh "${repo}:${GITHUB_SHA}"
+            docker push "${repo}:${GITHUB_SHA}"
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${repo}:${GITHUB_SHA}")
+            digest="${digest##*@}"
+          fi
+          echo "TF_VAR_image_digest=${digest}" >> "$GITHUB_ENV"
       - name: Apply
         working-directory: infra/main
         run: |
