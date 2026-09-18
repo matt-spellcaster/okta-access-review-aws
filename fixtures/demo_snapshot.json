@@ -1,0 +1,517 @@
+{
+  "org_url": "https://acme-demo.okta.com",
+  "collected_at": "2026-09-15T14:00:00Z",
+  "users": [
+    {
+      "id": "u01",
+      "login": "priya.shah@acme.example",
+      "status": "ACTIVE",
+      "created": "2024-02-01T09:00:00Z",
+      "lastLogin": "2026-09-14T16:20:00Z",
+      "profile": {
+        "firstName": "Priya",
+        "lastName": "Shah",
+        "email": "priya.shah@acme.example",
+        "login": "priya.shah@acme.example",
+        "userType": "Employee",
+        "department": "Engineering",
+        "manager": "CTO"
+      },
+      "factors": [
+        "push",
+        "webauthn"
+      ],
+      "adminRoles": [
+        "Super Administrator"
+      ]
+    },
+    {
+      "id": "u02",
+      "login": "marcus.lee@acme.example",
+      "status": "ACTIVE",
+      "created": "2023-05-10T09:00:00Z",
+      "lastLogin": "2026-08-28T17:45:00Z",
+      "profile": {
+        "firstName": "Marcus",
+        "lastName": "Lee",
+        "email": "marcus.lee@acme.example",
+        "login": "marcus.lee@acme.example",
+        "userType": "Employee",
+        "department": "Engineering",
+        "manager": "Priya Shah"
+      },
+      "factors": [
+        "push"
+      ],
+      "adminRoles": []
+    },
+    {
+      "id": "u03",
+      "login": "sofia.ramos@acme.example",
+      "status": "ACTIVE",
+      "created": "2026-01-05T09:00:00Z",
+      "lastLogin": "2026-09-10T11:00:00Z",
+      "profile": {
+        "firstName": "Sofia",
+        "lastName": "Ramos",
+        "email": "sofia.ramos@acme.example",
+        "login": "sofia.ramos@acme.example",
+        "userType": "Contractor",
+        "department": "Engineering",
+        "manager": "Priya Shah"
+      },
+      "factors": [
+        "sms"
+      ],
+      "adminRoles": []
+    },
+    {
+      "id": "u04",
+      "login": "jordan.kim@acme.example",
+      "status": "ACTIVE",
+      "created": "2025-11-12T09:00:00Z",
+      "lastLogin": "2026-09-12T08:30:00Z",
+      "profile": {
+        "firstName": "Jordan",
+        "lastName": "Kim",
+        "email": "jordan.kim@acme.example",
+        "login": "jordan.kim@acme.example",
+        "userType": "Employee",
+        "department": "Sales",
+        "manager": "Grace Park"
+      },
+      "factors": [
+        "push"
+      ],
+      "adminRoles": [
+        "Help Desk Administrator"
+      ]
+    },
+    {
+      "id": "u05",
+      "login": "lee.chen@acme.example",
+      "status": "ACTIVE",
+      "created": "2025-03-03T09:00:00Z",
+      "lastLogin": "2026-09-11T10:15:00Z",
+      "profile": {
+        "firstName": "Lee",
+        "lastName": "Chen",
+        "email": "lee.chen@acme.example",
+        "login": "lee.chen@acme.example",
+        "userType": "Employee",
+        "department": "Engineering",
+        "manager": "Priya Shah"
+      },
+      "factors": [],
+      "adminRoles": []
+    },
+    {
+      "id": "u06",
+      "login": "hannah.ortiz@acme.example",
+      "status": "ACTIVE",
+      "created": "2022-08-15T09:00:00Z",
+      "lastLogin": "2026-04-02T13:00:00Z",
+      "profile": {
+        "firstName": "Hannah",
+        "lastName": "Ortiz",
+        "email": "hannah.ortiz@acme.example",
+        "login": "hannah.ortiz@acme.example",
+        "userType": "Employee",
+        "department": "Finance",
+        "manager": "CFO"
+      },
+      "factors": [
+        "push"
+      ],
+      "adminRoles": []
+    },
+    {
+      "id": "u07",
+      "login": "omar.haddad@acme.example",
+      "status": "PROVISIONED",
+      "created": "2026-07-01T09:00:00Z",
+      "lastLogin": null,
+      "profile": {
+        "firstName": "Omar",
+        "lastName": "Haddad",
+        "email": "omar.haddad@acme.example",
+        "login": "omar.haddad@acme.example",
+        "userType": "Employee",
+        "department": "Finance",
+        "manager": "Hannah Ortiz"
+      },
+      "factors": null,
+      "adminRoles": []
+    },
+    {
+      "id": "u08",
+      "login": "grace.park@acme.example",
+      "status": "ACTIVE",
+      "created": "2024-06-20T09:00:00Z",
+      "lastLogin": "2026-09-15T09:05:00Z",
+      "profile": {
+        "firstName": "Grace",
+        "lastName": "Park",
+        "email": "grace.park@acme.example",
+        "login": "grace.park@acme.example",
+        "userType": "Employee"
+      },
+      "factors": [
+        "push",
+        "webauthn"
+      ],
+      "adminRoles": []
+    },
+    {
+      "id": "u09",
+      "login": "victor.nguyen@acme.example",
+      "status": "DEPROVISIONED",
+      "created": "2021-09-01T09:00:00Z",
+      "lastLogin": "2026-07-14T18:00:00Z",
+      "profile": {
+        "firstName": "Victor",
+        "lastName": "Nguyen",
+        "email": "victor.nguyen@acme.example",
+        "login": "victor.nguyen@acme.example",
+        "userType": "Employee",
+        "department": "Finance",
+        "manager": "Hannah Ortiz"
+      },
+      "factors": null,
+      "adminRoles": []
+    },
+    {
+      "id": "u10",
+      "login": "svc-ci@acme.example",
+      "status": "ACTIVE",
+      "created": "2024-01-01T09:00:00Z",
+      "lastLogin": "2026-09-15T03:00:00Z",
+      "profile": {
+        "firstName": "CI",
+        "lastName": "Service",
+        "email": "svc-ci@acme.example",
+        "login": "svc-ci@acme.example",
+        "userType": "Service"
+      },
+      "factors": [
+        "token:software:totp"
+      ],
+      "adminRoles": []
+    },
+    {
+      "id": "u11",
+      "login": "nina.patel@acme.example",
+      "status": "SUSPENDED",
+      "created": "2023-02-14T09:00:00Z",
+      "lastLogin": "2026-05-30T12:00:00Z",
+      "profile": {
+        "firstName": "Nina",
+        "lastName": "Patel",
+        "email": "nina.patel@acme.example",
+        "login": "nina.patel@acme.example",
+        "userType": "Employee",
+        "department": "Sales",
+        "manager": "Grace Park"
+      },
+      "factors": null,
+      "adminRoles": []
+    }
+  ],
+  "groups": [
+    {
+      "id": "g00",
+      "name": "Everyone",
+      "type": "BUILT_IN",
+      "members": [
+        "u01",
+        "u02",
+        "u03",
+        "u04",
+        "u05",
+        "u06",
+        "u07",
+        "u08",
+        "u09",
+        "u10",
+        "u11"
+      ]
+    },
+    {
+      "id": "g01",
+      "name": "Okta Administrators",
+      "type": "BUILT_IN",
+      "members": [
+        "u01"
+      ]
+    },
+    {
+      "id": "g02",
+      "name": "Engineering",
+      "type": "OKTA_GROUP",
+      "members": [
+        "u01",
+        "u02",
+        "u03",
+        "u05"
+      ]
+    },
+    {
+      "id": "g03",
+      "name": "Finance",
+      "type": "OKTA_GROUP",
+      "members": [
+        "u06",
+        "u07",
+        "u09"
+      ]
+    },
+    {
+      "id": "g04",
+      "name": "Sales",
+      "type": "OKTA_GROUP",
+      "members": [
+        "u04",
+        "u08"
+      ]
+    }
+  ],
+  "apps": [
+    {
+      "id": "a01",
+      "label": "GitHub",
+      "status": "ACTIVE",
+      "signOnMode": "SAML_2_0",
+      "users": [],
+      "groups": [
+        "g02"
+      ],
+      "grantedScopes": []
+    },
+    {
+      "id": "a02",
+      "label": "Salesforce",
+      "status": "ACTIVE",
+      "signOnMode": "SAML_2_0",
+      "users": [
+        "u05",
+        "u09"
+      ],
+      "groups": [
+        "g04"
+      ],
+      "grantedScopes": [],
+      "assigned": {
+        "u05": "2025-06-02T09:00:00Z",
+        "u09": "2022-01-10T09:00:00Z"
+      }
+    },
+    {
+      "id": "a03",
+      "label": "AWS",
+      "status": "ACTIVE",
+      "signOnMode": "SAML_2_0",
+      "users": [
+        "u06"
+      ],
+      "groups": [
+        "g02"
+      ],
+      "grantedScopes": [],
+      "assigned": {
+        "u06": "2023-03-01T09:00:00Z"
+      }
+    },
+    {
+      "id": "a06",
+      "label": "Okta Dashboard",
+      "status": "ACTIVE",
+      "signOnMode": "OPENID_CONNECT",
+      "users": [],
+      "groups": [],
+      "grantedScopes": [
+        "okta.enduser.dashboard.manage"
+      ],
+      "adminRoles": [],
+      "serviceClient": false
+    },
+    {
+      "id": "a04",
+      "label": "Terraform Automation",
+      "status": "ACTIVE",
+      "signOnMode": "OPENID_CONNECT",
+      "users": [],
+      "groups": [],
+      "grantedScopes": [
+        "okta.groups.read",
+        "okta.users.manage"
+      ],
+      "adminRoles": [
+        "Super Administrator"
+      ],
+      "serviceClient": true,
+      "clientId": "0oaTERRAFORM"
+    },
+    {
+      "id": "a05",
+      "label": "Reporting Bot",
+      "status": "ACTIVE",
+      "signOnMode": "OPENID_CONNECT",
+      "users": [],
+      "groups": [],
+      "grantedScopes": [
+        "okta.users.read"
+      ],
+      "adminRoles": [
+        "Read-Only Administrator"
+      ],
+      "serviceClient": true,
+      "clientId": "0oaREPORTBOT"
+    }
+  ],
+  "api_tokens": [
+    {
+      "id": "00T1ci",
+      "name": "ci-deploy",
+      "userId": "u02",
+      "created": "2026-02-11T09:00:00Z",
+      "lastUpdated": "2026-09-12T06:03:00Z",
+      "expiresAt": null
+    }
+  ],
+  "events": [
+    {
+      "published": "2026-05-04T15:22:00Z",
+      "eventType": "app.oauth2.credentials.lifecycle.create",
+      "actorId": "u09",
+      "actorType": "User",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "0oaREPORTBOT",
+          "type": "OAuth2ClientSecretEntity",
+          "label": "Reporting Bot"
+        }
+      ]
+    },
+    {
+      "published": "2026-08-20T13:10:00Z",
+      "eventType": "user.authentication.sso",
+      "actorId": "u02",
+      "actorType": "User",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "a02",
+          "type": "AppInstance",
+          "label": "Salesforce"
+        }
+      ]
+    },
+    {
+      "published": "2026-09-02T08:41:00Z",
+      "eventType": "user.authentication.sso",
+      "actorId": "u02",
+      "actorType": "User",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "a02",
+          "type": "AppInstance",
+          "label": "Salesforce"
+        }
+      ]
+    },
+    {
+      "published": "2026-09-12T06:03:00Z",
+      "eventType": "user.authentication.sso",
+      "actorId": "u02",
+      "actorType": "User",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "a02",
+          "type": "AppInstance",
+          "label": "Salesforce"
+        }
+      ]
+    },
+    {
+      "published": "2026-08-20T02:00:00Z",
+      "eventType": "app.oauth2.token.grant.access_token",
+      "actorId": "0oaREPORTBOT",
+      "actorType": "PublicClientApp",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "AT.rb1",
+          "type": "access_token",
+          "label": "Reporting Bot"
+        }
+      ]
+    },
+    {
+      "published": "2026-09-14T02:00:00Z",
+      "eventType": "app.oauth2.token.grant.access_token",
+      "actorId": "0oaREPORTBOT",
+      "actorType": "PublicClientApp",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "AT.rb2",
+          "type": "access_token",
+          "label": "Reporting Bot"
+        }
+      ]
+    }
+  ],
+  "activity_since": "2026-06-17T00:00:00Z",
+  "app_usage": [
+    {
+      "userId": "u01",
+      "appId": "a01",
+      "lastSignIn": "2026-09-14T16:25:00Z"
+    },
+    {
+      "userId": "u01",
+      "appId": "a03",
+      "lastSignIn": "2026-09-12T10:02:00Z"
+    },
+    {
+      "userId": "u02",
+      "appId": "a01",
+      "lastSignIn": "2026-08-28T17:50:00Z"
+    },
+    {
+      "userId": "u02",
+      "appId": "a02",
+      "lastSignIn": "2026-09-12T06:03:00Z"
+    },
+    {
+      "userId": "u03",
+      "appId": "a01",
+      "lastSignIn": "2026-09-10T11:05:00Z"
+    },
+    {
+      "userId": "u04",
+      "appId": "a02",
+      "lastSignIn": "2026-09-12T08:35:00Z"
+    },
+    {
+      "userId": "u05",
+      "appId": "a01",
+      "lastSignIn": "2026-09-11T10:20:00Z"
+    },
+    {
+      "userId": "u05",
+      "appId": "a03",
+      "lastSignIn": "2026-09-03T15:40:00Z"
+    },
+    {
+      "userId": "u08",
+      "appId": "a02",
+      "lastSignIn": "2026-09-15T09:10:00Z"
+    }
+  ],
+  "app_usage_since": "2026-06-17T00:00:00Z",
+  "app_usage_complete": true
+}

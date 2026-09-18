@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars (git-ignored) for local plans; CI passes these as TF_VAR_* variables.
+region            = "us-east-1"
+teardown_role_arn = "arn:aws:iam::123456789012:role/uar-apply"
+image_digest      = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+okta_org_url   = "https://your-org.okta.com"
+okta_client_id = "0oa..."
+okta_key_id    = "..."
+
+slack_channel_id = "C0123456789"
+slack_admin_user = "U0123456789"
+slack_ciso_user  = "U0987654321"
+
+jira_base_url    = "https://your-site.atlassian.net"
+jira_email       = "svc-access-review@example.com"
+jira_project     = "UAR"
+jira_parent_type = "Task"
+jira_child_type  = "Subtask"
+
+budget_email = "you@example.com"

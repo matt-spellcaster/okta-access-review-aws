@@ -1,0 +1,3 @@
+# Copy to backend.hcl and fill in. It holds no secrets.
+bucket = "uar-tfstate-123456789012"
+region = "us-east-1"

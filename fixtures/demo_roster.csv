@@ -1,0 +1,10 @@
+email,name,employment_type,status,end_date,manager
+priya.shah@acme.example,Priya Shah,employee,active,,CTO
+marcus.lee@acme.example,Marcus Lee,employee,terminated,2026-08-29,Priya Shah
+sofia.ramos@acme.example,Sofia Ramos,contractor,active,2026-06-30,Priya Shah
+lee.chen@acme.example,Lee Chen,employee,active,,Priya Shah
+hannah.ortiz@acme.example,Hannah Ortiz,employee,active,,CFO
+omar.haddad@acme.example,Omar Haddad,employee,active,,Hannah Ortiz
+grace.park@acme.example,Grace Park,employee,active,,
+victor.nguyen@acme.example,Victor Nguyen,employee,terminated,2026-07-15T16:30:00,Hannah Ortiz
+nina.patel@acme.example,Nina Patel,employee,leave,,Grace Park

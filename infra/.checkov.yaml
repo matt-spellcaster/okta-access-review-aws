@@ -1,0 +1,38 @@
+# Checkov findings accepted on purpose, each with the reason. This is a small,
+# single-account deployment where cost matters; revisit if that changes.
+# Run: uvx checkov@<pinned> -d infra --framework terraform --config-file infra/.checkov.yaml
+compact: true
+quiet: true
+framework:
+  - terraform
+skip-check:
+  # Cost: customer-managed KMS keys (~$1/month each). SSE-S3 / AWS-managed keys are used instead.
+  - CKV_AWS_145 # S3 default encryption with KMS
+  - CKV_AWS_136 # ECR encrypted with KMS
+  - CKV_AWS_158 # CloudWatch log groups encrypted with KMS
+  - CKV_AWS_173 # Lambda env vars with a CMK (they hold no secrets: only SSM parameter names)
+  - CKV_AWS_297 # EventBridge Scheduler with a CMK (schedules carry no data)
+  # Cost/complexity: a VPC would need NAT (~$30/month) for Okta, Slack and Jira egress.
+  - CKV_AWS_117 # Lambda inside a VPC
+  # Cost: a second region and a log bucket per bucket. Evidence is Object Locked; hashes are
+  # also recorded in Slack and JSM, which is the independent copy that matters here.
+  - CKV_AWS_144 # S3 cross-region replication
+  - CKV_AWS_18 # S3 access logging
+  - CKV2_AWS_62 # S3 event notifications
+  # By design: Slack must reach the interactivity endpoint without AWS credentials. Every request
+  # is authenticated with Slack's signing secret first; reserved concurrency caps abuse.
+  - CKV_AWS_258 # Function URL auth type NONE
+  - CKV_AWS_301 # Lambda publicly invokable (the same function URL)
+  # By design: the apply role is admin, but only in this dedicated account and only for the
+  # protected GitHub deploy environment (infra/bootstrap).
+  - CKV_AWS_274 # AdministratorAccess
+  # Logs never hold evidence (that is in S3 for 3 years). 30 days keeps cost and personal data down,
+  # and Step Functions logs errors only, without state data, on purpose.
+  - CKV_AWS_338 # log retention >= 1 year
+  - CKV_AWS_285 # Step Functions execution logging at ALL
+  # Not worth it at this size: tracing, code signing (images are pinned by digest from our own ECR),
+  # and a DLQ (failed async work is visible in logs and in the review state the watcher checks).
+  - CKV_AWS_50 # Lambda X-Ray
+  - CKV_AWS_284 # Step Functions X-Ray
+  - CKV_AWS_272 # Lambda code signing
+  - CKV_AWS_116 # Lambda DLQ

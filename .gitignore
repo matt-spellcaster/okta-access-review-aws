@@ -1,0 +1,26 @@
+# Real settings and any key material never get committed
+env
+*.pem
+*.key
+.DS_Store
+
+# Review output and real HR data contain personal information
+reports/
+roster/*
+!roster/README.md
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+requirements.txt
+
+# Terraform: state and real variable values stay out of git
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+tfplan

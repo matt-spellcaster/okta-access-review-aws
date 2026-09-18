@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!requirements.txt
+!src/access_review/**
+**/__pycache__

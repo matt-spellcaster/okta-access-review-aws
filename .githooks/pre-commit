@@ -1,0 +1,14 @@
+#!/bin/sh
+# Block commits that include key material or the real settings file.
+# Enable with: git config core.hooksPath .githooks
+fail=0
+for f in $(git diff --cached --name-only --diff-filter=ACMR); do
+  case "$f" in
+    env|*.pem|*.key|*.p8|*.p12)
+      echo "pre-commit: refusing to commit $f" >&2; fail=1 ;;
+  esac
+done
+if git diff --cached -U0 | grep -qE '^\+.*-----BEGIN ([A-Z]+ )?PRIVATE KEY-----'; then
+  echo "pre-commit: staged changes contain a private key" >&2; fail=1
+fi
+exit $fail

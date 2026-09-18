@@ -1,0 +1,22 @@
+{
+  "inactive_days": 90,
+  "never_signed_in_grace_days": 14,
+  "employee_only_groups": [
+    "Engineering",
+    "Finance"
+  ],
+  "admin_groups": [
+    "Okta Administrators"
+  ],
+  "service_accounts": [
+    "svc-ci@acme.example"
+  ],
+  "branding": {
+    "name": "Acme",
+    "tagline": "Security & Compliance",
+    "primary": "#0B2545",
+    "accent": "#F2A541",
+    "footer": "Confidential",
+    "logo": "acme"
+  }
+}

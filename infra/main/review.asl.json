@@ -1,0 +1,90 @@
+{
+  "Comment": "Quarterly Okta access review. State carries IDs, hashes and counts only; personal data stays in S3, Slack DMs and JSM.",
+  "StartAt": "Collect",
+  "States": {
+    "Collect": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${collect_arn}",
+        "Payload": {}
+      },
+      "ResultSelector": {
+        "run.$": "$.Payload.run",
+        "manifest_sha256.$": "$.Payload.manifest_sha256",
+        "items.$": "$.Payload.items",
+        "complete.$": "$.Payload.complete"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "Failed" }],
+      "Next": "OpenAndWaitForSignOff"
+    },
+    "OpenAndWaitForSignOff": {
+      "Type": "Task",
+      "Comment": "Posts the review to Slack and opens the JSM parent and leaver tickets, then waits until the CISO's Approve sends the task token back.",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${open_arn}",
+        "Payload": {
+          "run.$": "$.run",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": ${signoff_timeout_seconds},
+      "ResultPath": "$.signoff",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "Failed" }],
+      "Next": "Remediate"
+    },
+    "Remediate": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${remediate_arn}",
+        "Payload": { "run.$": "$.run" }
+      },
+      "ResultSelector": {
+        "revoke_tickets.$": "$.Payload.revoke_tickets",
+        "opened_now.$": "$.Payload.opened_now"
+      },
+      "ResultPath": "$.remediation",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "Failed" }],
+      "Next": "Done"
+    },
+    "Done": { "Type": "Succeed" },
+    "Failed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${failed_arn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": null, "Next": "Stopped" }],
+      "Next": "Stopped"
+    },
+    "Stopped": { "Type": "Fail", "Error": "ReviewStopped", "Cause": "See the failed state's input in the execution history." }
+  }
+}
