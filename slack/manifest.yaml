@@ -1,6 +1,10 @@
 # Slack app for the access review. Create it at https://api.slack.com/apps
-# ("From an app manifest"), paste this in, then replace REQUEST_URL with the
-# Terraform output `slack_request_url`. See docs/aws.md for the rest of setup.
+# ("From a manifest") and paste this in as it is.
+#
+# Interactivity (the Keep / Revoke / Approve buttons) starts OFF: Slack only accepts
+# a real https:// Request URL, and that URL exists only after the first deploy.
+# Then turn it on under Interactivity & Shortcuts, with the Terraform output
+# `slack_request_url` as the Request URL (docs/aws.md, step 6).
 display_information:
   name: Access Review
   description: Quarterly Okta access review and sign-off
@@ -17,8 +21,7 @@ oauth_config:
       - files:write    # the report PDF, in the CISO's DM only
 settings:
   interactivity:
-    is_enabled: true
-    request_url: REQUEST_URL
+    is_enabled: false
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

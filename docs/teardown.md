@@ -1,7 +1,8 @@
 # Tearing it down
 
-Everything lives in one dedicated AWS account, so the last step is closing that account. Before
-that, keep a verified copy of the evidence and clean up the services outside AWS.
+Everything lives in one dedicated AWS account. Tearing down keeps a verified copy of the evidence,
+removes everything the project created, and then checks that the account is clean. You can keep the
+account afterwards, or close it.
 
 ## 1. Dry run
 
@@ -50,5 +51,25 @@ The tool never writes to Okta, so these steps are manual:
 - **Jira:** revoke the service account's API token, and deactivate the account if nothing else
   uses it.
 - **GitHub:** delete the `production` environment and the repository secrets and variables.
-- **AWS:** close the account (Organizations → Accounts → Close). This removes anything the steps
-  above missed.
+- **AWS:** nothing else is required.
+
+## 5. Check the account is clean
+
+Run the check with admin credentials for the account (for example your IAM Identity Center profile;
+the apply role is gone by now):
+
+```bash
+uv run python scripts/teardown.py --check
+```
+
+It deletes nothing. It lists anything still tagged `Project = okta-access-review` (every Terraform
+resource carries that tag), plus the things the tagging API doesn't cover: `uar-*` IAM roles, the
+GitHub OIDC provider, `uar-*` buckets and `/uar/` parameters. "Nothing from this project is left"
+means you're done. Deleted resources can take a few minutes to drop out of the tag listing, so
+re-run it before deleting anything by hand.
+
+What stays, by design: your IAM Identity Center setup, and anything AWS creates by itself, such as
+the `aws/ssm` key and service-linked roles. They're free.
+
+**Optional:** close the account instead (Organizations → Accounts → Close). That removes anything
+the steps above missed.

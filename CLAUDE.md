@@ -13,7 +13,8 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 - Whole AWS workflow in memory (no AWS/Slack/Jira): `uv run python scripts/e2e_local.py`
 - Terraform: `terraform -chdir=infra/main fmt -check && terraform -chdir=infra/main validate`;
   scan with `uvx checkov@<pinned> -d infra --config-file infra/.checkov.yaml`
-- Image: `scripts/build_image.sh <tag>`; teardown dry run: `uv run python scripts/teardown.py`
+- Image: `scripts/build_image.sh <tag>`; teardown dry run: `uv run python scripts/teardown.py`;
+  after teardown, confirm the account is clean: `uv run python scripts/teardown.py --check`
 - Setup and operations: `docs/aws.md`; teardown: `docs/teardown.md`
 
 ## Rules

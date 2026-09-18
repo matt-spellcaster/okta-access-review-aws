@@ -2,6 +2,7 @@
 
     python scripts/teardown.py                              # dry run: shows what would go
     python scripts/teardown.py --confirm-account 123456789012
+    python scripts/teardown.py --check                      # after destroy: anything left?
 
 Run it with the apply role's credentials (the only principal the evidence
 bucket lets bypass retention). In order:
@@ -15,7 +16,8 @@ bucket lets bypass retention). In order:
   5. print the terraform destroy commands and the steps outside AWS
 
 Nothing is deleted without --confirm-account matching the account the
-credentials belong to.
+credentials belong to. --check deletes nothing either: run it after both
+terraform destroys to confirm the account is clean, if you keep the account.
 """
 
 from __future__ import annotations
@@ -38,8 +40,62 @@ Outside AWS (the tool never writes to Okta, so these are yours):
   - Slack: delete the Access Review app (api.slack.com/apps).
   - Jira: revoke the service account's API token; deactivate the account if nothing else uses it.
   - GitHub: delete the production environment and the repository secrets and variables.
-  - AWS: close the account (Organizations > Accounts > Close), once terraform destroy has finished.
+  - AWS, if you keep the account: once both destroys finish, run
+      python scripts/teardown.py --check
+    to confirm nothing is left. Closing the account instead is optional.
 """
+PROJECT_TAG = "okta-access-review"  # every Terraform resource carries Project = this (default_tags)
+OIDC_HOST = "token.actions.githubusercontent.com"
+
+
+def leftovers(clients: dict, prefix: str) -> list[str]:
+    """Everything this project could have left in the account. The tagging API
+    covers most resources; IAM isn't in it, and buckets and parameters are
+    listed by name too, in case a tag was ever missed."""
+    found = []
+    tagging, token = clients["tagging"], None
+    while True:
+        kwargs = {"TagFilters": [{"Key": "Project", "Values": [PROJECT_TAG]}]}
+        if token:
+            kwargs["PaginationToken"] = token
+        page = tagging.get_resources(**kwargs)
+        found += [f"tagged: {r['ResourceARN']}" for r in page.get("ResourceTagMappingList", [])]
+        token = page.get("PaginationToken")
+        if not token:
+            break
+
+    iam, marker = clients["iam"], None
+    while True:
+        page = iam.list_roles(**({"Marker": marker} if marker else {}))
+        found += [f"IAM role: {r['RoleName']}" for r in page.get("Roles", [])
+                  if r["RoleName"].startswith(f"{prefix}-")]
+        if not page.get("IsTruncated"):
+            break
+        marker = page["Marker"]
+    found += [f"IAM OIDC provider: {p['Arn']}"
+              for p in iam.list_open_id_connect_providers().get("OpenIDConnectProviderList", [])
+              if p["Arn"].endswith(OIDC_HOST)]
+
+    found += [f"S3 bucket: {b['Name']}" for b in clients["s3"].list_buckets().get("Buckets", [])
+              if b["Name"].startswith(f"{prefix}-")]
+    params = clients["ssm"].describe_parameters(
+        ParameterFilters=[{"Key": "Name", "Option": "BeginsWith", "Values": ["/uar/"]}]).get("Parameters", [])
+    found += [f"SSM parameter: {p['Name']}" for p in params]
+    return sorted(set(found))
+
+
+def check(clients: dict, prefix: str) -> int:
+    """Report what's left; exit 0 only if nothing is."""
+    left = leftovers(clients, prefix)
+    if not left:
+        print("Nothing from this project is left in the account.")
+        return 0
+    print(f"{len(left)} thing(s) from this project are still in the account:")
+    for item in left:
+        print(f"  {item}")
+    print("Tagged resources can take a few minutes to drop out of the listing after they're deleted; "
+          "re-run before removing anything by hand.")
+    return 1
 
 
 def all_versions(s3, bucket: str) -> list[dict]:
@@ -90,12 +146,19 @@ def main(argv=None, clients=None) -> int:
     p.add_argument("--confirm-account", help="the AWS account ID; without it, nothing is deleted")
     p.add_argument("--prefix", default="uar")
     p.add_argument("--export-dir", type=Path)
+    p.add_argument("--check", action="store_true",
+                   help="delete nothing; list anything this project left in the account")
     args = p.parse_args(argv)
+    if args.check and args.confirm_account:
+        p.error("--check and --confirm-account don't go together")
 
     if clients is None:
         import boto3
 
-        clients = {name: boto3.client(name) for name in ("sts", "s3", "ssm")}
+        clients = {name: boto3.client(name) for name in ("sts", "s3", "ssm", "iam")}
+        clients["tagging"] = boto3.client("resourcegroupstaggingapi")
+    if args.check:
+        return check(clients, args.prefix)
     account = clients["sts"].get_caller_identity()["Account"]
     evidence = f"{args.prefix}-evidence-{account}"
     s3 = clients["s3"]
@@ -134,6 +197,7 @@ Now destroy the infrastructure (the work bucket and ECR images go with it):
   cd infra/main && terraform destroy
   cd ../bootstrap   # comment out the backend block in versions.tf, then:
   terraform init -migrate-state && terraform destroy
+  python scripts/teardown.py --check   # if you keep the account
 
 {MANUAL_STEPS}""")
     return 0
