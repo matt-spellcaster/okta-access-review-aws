@@ -64,7 +64,7 @@ The state bucket doesn't exist before the first apply, so that one apply uses lo
 
 ```bash
 cd infra/bootstrap
-cp terraform.tfvars.example terraform.tfvars   # set github_repo
+cp terraform.tfvars.example terraform.tfvars   # set github_repo, github_owner_id, github_repo_id
 # comment out the backend "s3" block in versions.tf for this first apply
 terraform init && terraform apply
 cp backend.hcl.example backend.hcl             # bucket = the state_bucket output (git-ignored)
@@ -73,6 +73,11 @@ terraform init -backend-config=backend.hcl -migrate-state
 ```
 
 Once the state is in S3, delete the local `terraform.tfstate*` files.
+
+The CI roles trust GitHub's immutable OIDC subject, `repo:<owner>@<owner id>/<name>@<repo id>:…`,
+which new repositories use by default. Because it includes the numeric IDs, a repository deleted
+and recreated under the same name can't assume the roles. Get the IDs with
+`gh api users/<owner> --jq .id` and `gh api repos/<owner>/<name> --jq .id`.
 
 ### 2. Okta
 

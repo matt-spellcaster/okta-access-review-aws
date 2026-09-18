@@ -13,6 +13,11 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   oidc_host  = "token.actions.githubusercontent.com"
   state_name = "${var.name_prefix}-tfstate-${local.account_id}"
+  # GitHub's immutable subject: owner and repository are named *and* numbered, so a
+  # deleted-and-recreated repository with the same name can't assume these roles.
+  owner          = split("/", var.github_repo)[0]
+  repo_name      = split("/", var.github_repo)[1]
+  subject_prefix = "repo:${local.owner}@${var.github_owner_id}/${local.repo_name}@${var.github_repo_id}"
 }
 
 # --- Terraform state --------------------------------------------------------------
@@ -112,7 +117,7 @@ data "aws_iam_policy_document" "plan_trust" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["repo:${var.github_repo}:pull_request"]
+      values   = ["${local.subject_prefix}:pull_request"]
     }
   }
 }
@@ -166,7 +171,7 @@ data "aws_iam_policy_document" "apply_trust" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["repo:${var.github_repo}:environment:${var.deploy_environment}"]
+      values   = ["${local.subject_prefix}:environment:${var.deploy_environment}"]
     }
   }
 }
