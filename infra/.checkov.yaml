@@ -20,7 +20,7 @@ skip-check:
   - CKV_AWS_18 # S3 access logging
   - CKV2_AWS_62 # S3 event notifications
   # By design: Slack must reach the interactivity endpoint without AWS credentials. Every request
-  # is authenticated with Slack's signing secret first; reserved concurrency caps abuse.
+  # is authenticated with Slack's signing secret first; the Lambda concurrency limit caps abuse.
   - CKV_AWS_258 # Function URL auth type NONE
   - CKV_AWS_301 # Lambda publicly invokable (the same function URL)
   # By design: the apply role is admin, but only in this dedicated account and only for the
