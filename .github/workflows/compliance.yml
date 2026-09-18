@@ -263,33 +263,35 @@ jobs:
 
   terraform-plan:
     name: Terraform plan
-    # Only for branches in this repository (forks get no AWS access), and only once
-    # the AWS variables exist (docs/aws.md). The plan role is read-only.
+    # Only for branches in this repository (forks get no secrets and no AWS access),
+    # and only once AWS is set up (docs/aws.md). The plan role is read-only.
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && vars.AWS_PLAN_ROLE_ARN != ''
+      && vars.AWS_CONFIGURED == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write # to assume the read-only plan role through OIDC
     env:
+      # This repository is public, and so are its run logs. Everything that names the
+      # account or the org comes from secrets, which GitHub masks in logs.
       AWS_REGION: ${{ vars.AWS_REGION }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
       TF_VAR_region: ${{ vars.AWS_REGION }}
-      TF_VAR_teardown_role_arn: ${{ vars.TEARDOWN_ROLE_ARN }}
-      TF_VAR_okta_org_url: ${{ vars.OKTA_ORG_URL }}
-      TF_VAR_okta_client_id: ${{ vars.OKTA_CLIENT_ID }}
-      TF_VAR_okta_key_id: ${{ vars.OKTA_KEY_ID }}
-      TF_VAR_slack_channel_id: ${{ vars.SLACK_CHANNEL_ID }}
-      TF_VAR_slack_admin_user: ${{ vars.SLACK_ADMIN_USER }}
-      TF_VAR_slack_ciso_user: ${{ vars.SLACK_CISO_USER }}
-      TF_VAR_jira_base_url: ${{ vars.JIRA_BASE_URL }}
-      TF_VAR_jira_email: ${{ vars.JIRA_EMAIL }}
-      TF_VAR_jira_project: ${{ vars.JIRA_PROJECT }}
+      TF_VAR_teardown_role_arn: ${{ secrets.TEARDOWN_ROLE_ARN }}
+      TF_VAR_okta_org_url: ${{ secrets.OKTA_ORG_URL }}
+      TF_VAR_okta_client_id: ${{ secrets.OKTA_CLIENT_ID }}
+      TF_VAR_okta_key_id: ${{ secrets.OKTA_KEY_ID }}
+      TF_VAR_slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
+      TF_VAR_slack_admin_user: ${{ secrets.SLACK_ADMIN_USER }}
+      TF_VAR_slack_ciso_user: ${{ secrets.SLACK_CISO_USER }}
+      TF_VAR_jira_base_url: ${{ secrets.JIRA_BASE_URL }}
+      TF_VAR_jira_email: ${{ secrets.JIRA_EMAIL }}
+      TF_VAR_jira_project: ${{ secrets.JIRA_PROJECT }}
       TF_VAR_jira_parent_type: ${{ vars.JIRA_PARENT_TYPE }}
       TF_VAR_jira_child_type: ${{ vars.JIRA_CHILD_TYPE }}
-      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
+      TF_VAR_budget_email: ${{ secrets.BUDGET_EMAIL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -298,9 +300,10 @@ jobs:
         run: scripts/ci/install_terraform.sh amd64
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: uar-plan
+          mask-aws-account-id: true
       - name: Plan (no lock, no writes)
         working-directory: infra/main
         run: |
@@ -314,7 +317,16 @@ jobs:
           set +e
           terraform plan -input=false -lock=false -no-color > plan.txt 2>&1
           code=$?
-          { echo '### Terraform plan (infra/main)'; echo '```'; tail -c 60000 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # The full plan lists resource settings and this repository's logs are public,
+          # so only the totals (or the errors) are shown. Run the plan locally for details.
+          if [ "$code" -eq 0 ]; then
+            summary=$(grep -E '^(Plan:|No changes)' plan.txt)
+            echo "${summary:-No plan summary found}"
+            { echo '### Terraform plan (infra/main)'; echo; echo "${summary:-No plan summary found}"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            sed -n '/Error:/,$p' plan.txt | head -40
+          fi
+          rm -f plan.txt
           exit "$code"
 
   evidence:
@@ -358,8 +370,8 @@ jobs:
   deploy:
     name: Deploy
     needs: [tests, secret-scan, dependency-audit, workflow-lint, terraform]
-    # Master only, once the AWS variables exist, and only after someone approves the
-    # run in the protected "production" environment.
+    # Master only, once AWS is set up, and only after someone approves the run in the
+    # protected "production" environment (which holds the apply role's ARN).
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04-arm # builds the arm64 Lambda image natively
     environment: production
@@ -370,22 +382,24 @@ jobs:
       contents: read
       id-token: write # to assume the apply role through OIDC
     env:
+      # This repository is public, and so are its run logs. Everything that names the
+      # account or the org comes from secrets, which GitHub masks in logs.
       AWS_REGION: ${{ vars.AWS_REGION }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
       TF_VAR_region: ${{ vars.AWS_REGION }}
-      TF_VAR_teardown_role_arn: ${{ vars.TEARDOWN_ROLE_ARN }}
-      TF_VAR_okta_org_url: ${{ vars.OKTA_ORG_URL }}
-      TF_VAR_okta_client_id: ${{ vars.OKTA_CLIENT_ID }}
-      TF_VAR_okta_key_id: ${{ vars.OKTA_KEY_ID }}
-      TF_VAR_slack_channel_id: ${{ vars.SLACK_CHANNEL_ID }}
-      TF_VAR_slack_admin_user: ${{ vars.SLACK_ADMIN_USER }}
-      TF_VAR_slack_ciso_user: ${{ vars.SLACK_CISO_USER }}
-      TF_VAR_jira_base_url: ${{ vars.JIRA_BASE_URL }}
-      TF_VAR_jira_email: ${{ vars.JIRA_EMAIL }}
-      TF_VAR_jira_project: ${{ vars.JIRA_PROJECT }}
+      TF_VAR_teardown_role_arn: ${{ secrets.TEARDOWN_ROLE_ARN }}
+      TF_VAR_okta_org_url: ${{ secrets.OKTA_ORG_URL }}
+      TF_VAR_okta_client_id: ${{ secrets.OKTA_CLIENT_ID }}
+      TF_VAR_okta_key_id: ${{ secrets.OKTA_KEY_ID }}
+      TF_VAR_slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
+      TF_VAR_slack_admin_user: ${{ secrets.SLACK_ADMIN_USER }}
+      TF_VAR_slack_ciso_user: ${{ secrets.SLACK_CISO_USER }}
+      TF_VAR_jira_base_url: ${{ secrets.JIRA_BASE_URL }}
+      TF_VAR_jira_email: ${{ secrets.JIRA_EMAIL }}
+      TF_VAR_jira_project: ${{ secrets.JIRA_PROJECT }}
       TF_VAR_jira_parent_type: ${{ vars.JIRA_PARENT_TYPE }}
       TF_VAR_jira_child_type: ${{ vars.JIRA_CHILD_TYPE }}
-      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
+      TF_VAR_budget_email: ${{ secrets.BUDGET_EMAIL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -398,16 +412,22 @@ jobs:
         run: scripts/ci/install_terraform.sh arm64
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: uar-deploy
+          mask-aws-account-id: true
       - name: Make sure the image repository exists
         working-directory: infra/main
         run: |
           terraform init -input=false -lockfile=readonly \
             -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}" > /dev/null
+          set +e
           TF_VAR_image_digest="sha256:$(printf '0%.0s' $(seq 64))" terraform apply -input=false -auto-approve \
-            -target=aws_ecr_repository.app -target=aws_ecr_lifecycle_policy.app
+            -no-color -target=aws_ecr_repository.app -target=aws_ecr_lifecycle_policy.app > apply.txt 2>&1
+          code=$?
+          grep -E '^Apply complete' apply.txt || sed -n '/Error:/,$p' apply.txt | head -40
+          rm -f apply.txt
+          exit "$code"
       - name: Build and push the Lambda image
         run: |
           repo=$(terraform -chdir=infra/main output -raw ecr_repository_url)
@@ -418,4 +438,11 @@ jobs:
           echo "TF_VAR_image_digest=${digest##*@}" >> "$GITHUB_ENV"
       - name: Apply
         working-directory: infra/main
-        run: terraform apply -input=false -auto-approve
+        run: |
+          # Public logs: print the result, not every resource's settings.
+          set +e
+          terraform apply -input=false -auto-approve -no-color > apply.txt 2>&1
+          code=$?
+          grep -E '^Apply complete' apply.txt || sed -n '/Error:/,$p' apply.txt | head -40
+          rm -f apply.txt
+          exit "$code"
