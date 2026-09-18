@@ -91,31 +91,54 @@ aws ssm put-parameter --name /uar/okta/private_key --type SecureString --value f
 
 ### 3. Slack
 
-Create the app from [`slack/manifest.yaml`](../slack/manifest.yaml) and install it. Create a
-**private** review channel and invite the app. Then store the credentials:
+Create the app from [`slack/manifest.yaml`](../slack/manifest.yaml) as it is, and install it.
+Interactivity starts off, because Slack only accepts a real Request URL; you turn it on after the
+first deploy (step 6). Create a **private** review channel and invite the app.
+
+Store the two credentials by pasting each at a hidden prompt, so they don't end up in shell history
+or depend on what's on the clipboard. The bot token is under **OAuth & Permissions** (`xoxb-…`).
+The signing secret is under **Basic Information → App Credentials**: 32 hex characters, not the
+Client Secret or the Verification Token.
 
 ```bash
-aws ssm put-parameter --name /uar/slack/bot_token --type SecureString --value 'xoxb-…'
-aws ssm put-parameter --name /uar/slack/signing_secret --type SecureString --value '…'
+read -rs "V?Bot token: " && aws ssm put-parameter --name /uar/slack/bot_token --type SecureString --value "$V"; unset V
+read -rs "V?Signing secret: " && aws ssm put-parameter --name /uar/slack/signing_secret --type SecureString --value "$V"; unset V
 ```
 
-You'll need the channel ID, and the member IDs of the admin and the CISO (Profile → ⋯ → Copy member
-ID). The admin and the CISO must be different people.
+(Those are zsh prompts. In bash, use `read -rsp "Bot token: " V`.)
+
+You'll need the channel ID (channel name → **About**), and the member IDs of the admin and the CISO
+(profile → ⋯ → **Copy member ID**). The admin and the CISO must be different people.
 
 ### 4. Jira Service Management
 
-- Pick a project and restrict its issue security, because tickets name people.
-- Create a service account and give it a JSM agent license; creating issues through the REST API
-  needs one.
-- Give it permission to create issues and add comments in that project only.
-- Create an API token for it (a scoped token, if your site offers them), then store the token:
+- **Add JSM to the site**, if it isn't there already: admin.atlassian.com → **Apps** → **Add app** →
+  Jira Service Management. The **Free** plan (up to 3 agents) is enough.
+- **Create a service management project.** Jira now calls projects "spaces": sidebar → **Spaces** →
+  **+** → **Service management**. Use any key, and put it in `JIRA_PROJECT`.
+- **Create the account the review signs in as.** Use an Atlassian **service account**: admin.atlassian.com
+  → **Directory** → **Service accounts**. Give it Jira Service Management access and an API token
+  with at least `read:jira-work` and `write:jira-work`. A normal user with a JSM seat also works.
+- **Add it to the project** under **Project settings → People**, with the role **Service Desk Team**.
+  In JSM, only agents can browse every ticket, and the tickets name people.
+- **Store its token**, pasted at a hidden prompt:
 
 ```bash
-aws ssm put-parameter --name /uar/jira/api_token --type SecureString --value '…'
+read -rs "V?Jira API token: " && aws ssm put-parameter --name /uar/jira/api_token --type SecureString --value "$V"; unset V
 ```
 
-The parent ticket uses `jira_parent_type` (default `Task`) and the children use `jira_child_type`
-(default `Subtask`); both must exist in the project.
+Two things differ from a normal user:
+
+- **Base URL.** A service account's token only works through Atlassian's API gateway, so
+  `JIRA_BASE_URL` is `https://api.atlassian.com/ex/jira/<cloud id>`, not `https://<site>.atlassian.net`.
+  The cloud ID is at `https://<site>.atlassian.net/_edge/tenant_info`.
+- **Email.** It's the service account's own address (`…@serviceaccount.atlassian.com`), shown on its
+  page under Directory → Service accounts.
+
+The parent ticket type is `JIRA_PARENT_TYPE` (default `Task`), and the child type is
+`JIRA_CHILD_TYPE`. Service management templates usually call it **`Sub-task`**, with the hyphen;
+team-managed Jira projects call it `Subtask`. Both types must exist in the project, and their
+create screens must include summary, description, due date, labels and parent.
 
 ### 5. GitHub
 
@@ -159,10 +182,13 @@ Create a branch ruleset on `master`:
 
 ### 6. Deploy, then connect Slack
 
-Merge to `master` and approve the Deploy job. It creates the ECR repository, builds and pushes the
-image, and applies `infra/main`. Then:
+Set the `DEPLOY_ENABLED` variable to `true`, merge to `master`, and approve the Deploy job. It creates
+the ECR repository, builds and pushes the image, and applies `infra/main`. From then on, every merge
+to `master` deploys, each only after your approval. Then:
 
-- paste the `slack_request_url` output into the Slack app's **Interactivity → Request URL**
+- in the Slack app, open **Interactivity & Shortcuts**, turn it **on**, and paste in the
+  `slack_request_url` output (`terraform -chdir=infra/main output -raw slack_request_url`) as the
+  **Request URL**. Slack checks the URL when you save.
 - upload the inputs (the config must name the reviewing admin in `admin_login`):
 
 ```bash
