@@ -1,0 +1,49 @@
+# Checks that the deployed Okta settings work: the private key in SSM plus the
+# OKTA_* repository secrets get a DPoP-bound token with the review's read-only
+# scopes, and each API the review reads answers. Prints pass/fail and HTTP
+# statuses only (this repository's logs are public). Start it by hand, e.g. after
+# setting up or rotating the Okta key: Actions -> Okta check -> Run workflow.
+name: Okta check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: okta-check
+  cancel-in-progress: false
+
+jobs:
+  okta-check:
+    name: Okta check
+    runs-on: ubuntu-24.04
+    # Reading the key needs the apply role, which only this environment can assume;
+    # the environment's required reviewer approves each run.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # to assume the AWS role through OIDC
+    env:
+      UV_VERSION: "0.12.15"
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      OKTA_ORG_URL: ${{ secrets.OKTA_ORG_URL }}
+      OKTA_CLIENT_ID: ${{ secrets.OKTA_CLIENT_ID }}
+      OKTA_KEY_ID: ${{ secrets.OKTA_KEY_ID }}
+      OKTA_PRIVATE_KEY_PARAM: /uar/okta/private_key
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ secrets.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: uar-okta-check
+          mask-aws-account-id: true
+      - name: Sign in to Okta and read one of each
+        run: uv run --frozen python scripts/okta_auth_check.py
