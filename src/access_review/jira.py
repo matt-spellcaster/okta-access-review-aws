@@ -43,13 +43,22 @@ def check_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def browse_url(base_url: str, key: str) -> str | None:
+    """A ticket's page in Jira, or None when base_url is the API gateway, which
+    has no pages. Needs no credentials, so anything can build links."""
+    if not ISSUE_KEY.match(key):
+        return None
+    host = urlparse(base_url).hostname or ""
+    return f"{base_url.rstrip('/')}/browse/{key}" if host.endswith(".atlassian.net") else None
+
+
 class JiraClient:
     def __init__(self, base_url: str, email: str, token: str, project: str, session: requests.Session | None = None):
         self.base_url = check_base_url(base_url)
         if not PROJECT_KEY.match(project):
             raise JiraConfigError("JIRA_PROJECT must be a project key like UAR")
         if "@" not in email:
-            raise JiraConfigError("JIRA_EMAIL must be the service account's email address")
+            raise JiraConfigError("JIRA_EMAIL must be the email address of the Jira account the review uses")
         self.project = project
         self._auth = "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()
         self.session = session or requests.Session()
@@ -73,7 +82,7 @@ class JiraClient:
             except ValueError:
                 pass
             hint = {401: " (check JIRA_EMAIL and the API token)",
-                    403: " (the service account lacks permission in this project)"}.get(resp.status_code, "")
+                    403: " (the Jira account lacks permission in this project)"}.get(resp.status_code, "")
             raise JiraError(f"{what}: HTTP {resp.status_code}{fields}{hint}")
         if resp.status_code == 204 or not resp.content:
             return {}
@@ -109,6 +118,9 @@ class JiraClient:
         if not ISSUE_KEY.match(key) or not key.startswith(self.project + "-"):
             raise JiraError(f"add comment: refusing to comment outside project {self.project}")
         self._request("POST", f"/issue/{key}/comment", "add comment", json={"body": body})
+
+    def browse_url(self, key: str) -> str | None:
+        return browse_url(self.base_url, key)
 
     def issue_types(self) -> list[str]:
         """Issue type names the service account can create in the project, for setup checks."""

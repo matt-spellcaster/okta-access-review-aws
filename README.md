@@ -6,10 +6,11 @@ roles with an HR roster, flags access to remove or confirm, and saves the result
 SOC 2 (CC6.1–CC6.3) and ISO 27001:2022 (A.5.15–A.8.5). Okta is only ever read.
 
 - **In AWS** ([docs/aws.md](docs/aws.md)): a scheduled Step Functions workflow collects the review,
-  asks the admin to decide in Slack with proposals already filled in, and asks the CISO to sign off.
+  asks the CISO to decide in Slack with proposals already filled in, then to sign off.
   It then opens a JSM ticket for each piece of access to remove, under one parent ticket per quarter.
   Reminders, escalation to the CISO, and a daily check that each resolved ticket really changed
   Okta are built in. Built with Terraform, and removed with one script ([docs/teardown.md](docs/teardown.md)).
+  Running a review, step by step: [docs/runbook.md](docs/runbook.md).
 - **Or locally**, as the original command-line tool: the same checks and report, run on a laptop.
 
 Seeded from `okta-access-review` at commit 1a20697. The local tool below works the same way.

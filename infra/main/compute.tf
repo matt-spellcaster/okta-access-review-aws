@@ -28,11 +28,12 @@ resource "aws_ecr_lifecycle_policy" "app" {
 
 locals {
   common_env = {
-    EVIDENCE_BUCKET       = aws_s3_bucket.evidence.bucket
-    WORK_BUCKET           = aws_s3_bucket.work.bucket
-    SLACK_CHANNEL_ID      = var.slack_channel_id
-    SLACK_ADMIN_USER      = var.slack_admin_user
-    SLACK_CISO_USER       = var.slack_ciso_user
+    EVIDENCE_BUCKET  = aws_s3_bucket.evidence.bucket
+    WORK_BUCKET      = aws_s3_bucket.work.bucket
+    SLACK_CHANNEL_ID = var.slack_channel_id
+    SLACK_CISO_USER  = var.slack_ciso_user
+    # Not a secret; every function uses it to link to Jira tickets.
+    JIRA_BASE_URL         = var.jira_base_url
     SLACK_BOT_TOKEN_PARAM = local.params.slack_bot_token
     REVIEW_DAYS           = tostring(var.review_days)
     LEAVER_TICKET_HOURS   = tostring(var.leaver_ticket_hours)
@@ -45,7 +46,6 @@ locals {
     OKTA_PRIVATE_KEY_PARAM = local.params.okta_private_key
   }
   jira_env = {
-    JIRA_BASE_URL        = var.jira_base_url
     JIRA_EMAIL           = var.jira_email
     JIRA_PROJECT         = var.jira_project
     JIRA_PARENT_TYPE     = var.jira_parent_type

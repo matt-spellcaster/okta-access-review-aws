@@ -59,9 +59,6 @@ class Config:
     # App labels whose use doesn't show up as SSO sign-ins (long-lived sessions,
     # mobile tokens). Never flagged by AR-14; the reviewer decides instead.
     activity_exempt_apps: list[str] = field(default_factory=list)
-    # Okta login of the admin who reviews everything. Their own access goes to
-    # the CISO instead, so nobody approves their own access.
-    admin_login: str = ""
     # How many earlier reviews in the output folder to read for findings history.
     history_reviews: int = 12
     # PDF look; see pdf.Branding. Empty means the plain layout.

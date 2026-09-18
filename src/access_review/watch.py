@@ -1,9 +1,9 @@
 """Deadlines and follow-through, run on a schedule.
 
 hourly():
-  - reviews still open: reminder DMs at 3 and 6 days, escalation to the CISO
-    when the 7-day deadline passes (DM, channel note, JSM comment), then a daily
-    reminder to whoever still has items;
+  - reviews still open: reminder DMs to the CISO at 3 and 6 days; when the
+    7-day deadline passes, an overdue DM, a channel note and a JSM comment, then
+    a daily reminder;
   - signed-off reviews whose Step Functions callback didn't get through: retry;
   - remediation tickets past their due date: one DM digest to the CISO per day.
 
@@ -25,7 +25,6 @@ from datetime import datetime, timedelta
 from . import slack_review as msgs
 from . import store
 from .decisions import outstanding
-from .items import ADMIN, CISO
 from .jira import adf
 from .models import LIVE_STATUSES, Snapshot
 from .state import CLOSED, OPEN, SIGNED_OFF, claim_once, load_state, runs_with_status, update_state
@@ -38,8 +37,9 @@ def _t(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _dm(deps: Deps, role: str, text: str) -> None:
-    deps.bot.post_message(deps.bot.open_dm(deps.reviewers.slack_id(role)), msgs.channel_note(text))
+def _dm(deps: Deps, text: str) -> None:
+    """A note to the reviewer, the CISO."""
+    deps.bot.post_message(deps.bot.open_dm(deps.reviewers.ciso), msgs.channel_note(text))
 
 
 def hourly(deps: Deps, jira=None) -> dict:
@@ -50,36 +50,30 @@ def hourly(deps: Deps, jira=None) -> dict:
         state, _ = load_state(deps.s3, deps.work_bucket, run)
         data = load_run(deps, run)
         final = current_decisions(deps, data)
-        left = {role: len(outstanding(data.items, final, role)) for role in (ADMIN, CISO)}
-        if not any(left.values()):
+        left = len(outstanding(data.items, final))
+        if not left:
             continue  # waiting on the CISO's Approve, which has its own message
         opened, due = _t(state["opened_at"]), _t(state["due_at"])
         age = now - opened
         for days, what in REMINDERS:
             if age >= timedelta(days=days) and claim_once(deps.s3, deps.work_bucket, f"{run.lower()}-day{days}"):
-                for role, n in left.items():
-                    if n:
-                        _dm(deps, role, f":alarm_clock: Access review `{run}` {what}: {n} item(s) still need your "
-                                        f"decision. Due {state['due_at'][:10]}.")
-                        sent["reminders"] += 1
+                _dm(deps, f":alarm_clock: Access review `{run}` {what}: {left} item(s) still need your "
+                                f"decision. Due {state['due_at'][:10]}.")
+                sent["reminders"] += 1
         if now > due:
             if claim_once(deps.s3, deps.work_bucket, f"{run.lower()}-escalated"):
-                _dm(deps, CISO, f":rotating_light: Access review `{run}` is overdue (due {state['due_at'][:10]}). "
-                                f"Still open: {left[ADMIN]} with the admin, {left[CISO]} with you.")
+                _dm(deps, f":rotating_light: Access review `{run}` is overdue (due {state['due_at'][:10]}): "
+                                f"{left} item(s) still need your decision.")
                 deps.bot.post_message(deps.channel, msgs.channel_note(
-                    f":rotating_light: Access review `{run}` is past its deadline with "
-                    f"{sum(left.values())} item(s) undecided. Escalated to the CISO."))
+                    f":rotating_light: Access review `{run}` is past its deadline with {left} item(s) undecided."))
                 if jira is not None and state.get("parent_issue"):
                     jira.add_comment(state["parent_issue"], adf(
-                        f"Review overdue: due {state['due_at'][:10]}, {sum(left.values())} item(s) undecided on "
-                        f"{now.date()}. Escalated to the CISO."))
+                        f"Review overdue: due {state['due_at'][:10]}, {left} item(s) undecided on {now.date()}."))
                 sent["escalations"] += 1
             elif claim_once(deps.s3, deps.work_bucket, f"{run.lower()}-overdue-{now:%Y%m%d}"):
-                for role, n in left.items():
-                    if n:
-                        _dm(deps, role, f":rotating_light: Access review `{run}` is overdue: {n} item(s) still "
-                                        f"need your decision.")
-                        sent["reminders"] += 1
+                _dm(deps, f":rotating_light: Access review `{run}` is overdue: {left} item(s) still "
+                                f"need your decision.")
+                sent["reminders"] += 1
 
     for run in runs_with_status(deps.s3, deps.work_bucket, SIGNED_OFF):
         state, _ = load_state(deps.s3, deps.work_bucket, run)
@@ -95,8 +89,9 @@ def hourly(deps: Deps, jira=None) -> dict:
             f'project = "{jira.project}" AND labels = "access-review" AND statusCategory != Done '
             f'AND duedate < startOfDay()', ["duedate"], limit=200)
         if overdue and claim_once(deps.s3, deps.work_bucket, f"tickets-overdue-{now:%Y%m%d}"):
-            lines = [f"{i['key']} (due {i['fields'].get('duedate')})" for i in overdue]
-            _dm(deps, CISO, f":rotating_light: {len(overdue)} access review remediation ticket(s) are overdue: "
+            lines = [f"{msgs.ticket_link((i['key'], deps.ticket_url(i['key'])))} (due {i['fields'].get('duedate')})"
+                     for i in overdue]
+            _dm(deps, f":rotating_light: {len(overdue)} access review remediation ticket(s) are overdue: "
                             + ", ".join(lines))
             sent["overdue_tickets"] = len(overdue)
     return sent
@@ -190,7 +185,8 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None) -> dic
                 jira.add_comment(rec["issue"], adf(
                     f"Checked on {now.date()}: this ticket is resolved, but the access is still present in Okta. "
                     f"Please finish the change."))
-                _dm(deps, CISO, f":warning: {rec['issue']} is marked done but the access is still in Okta.")
+                _dm(deps, f":warning: {msgs.ticket_link((rec['issue'], deps.ticket_url(rec['issue'])))} is marked "
+                          f"done but the access is still in Okta.")
                 result["still_present"] += 1
         state, _ = load_state(deps.s3, deps.work_bucket, run)
         if state["status"] == SIGNED_OFF and state.get("remediated") and unverified == 0:

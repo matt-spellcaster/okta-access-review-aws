@@ -14,7 +14,7 @@ from access_review.settings import Settings, SettingsError, get_secret
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 ENV = {
     "EVIDENCE_BUCKET": "uar-evidence-test", "WORK_BUCKET": "uar-work-test",
-    "SLACK_CHANNEL_ID": "C0REVIEW001", "SLACK_ADMIN_USER": "U0ADMIN0001", "SLACK_CISO_USER": "U0CISO00001",
+    "SLACK_CHANNEL_ID": "C0REVIEW001", "SLACK_CISO_USER": "U0CISO00001",
     "OKTA_ORG_URL": "https://acme-demo.okta.com", "OKTA_CLIENT_ID": "0oaREVIEW", "OKTA_KEY_ID": "kid1",
     "OKTA_PRIVATE_KEY_PARAM": "/uar/okta/private_key", "SLACK_BOT_TOKEN_PARAM": "/uar/slack/bot_token",
     "SLACK_SIGNING_SECRET_PARAM": "/uar/slack/signing_secret", "JIRA_API_TOKEN_PARAM": "/uar/jira/api_token",
@@ -47,12 +47,12 @@ def test_parameter_names_outside_uar_are_refused_without_echo(monkeypatch):
         get_secret(FakeSSM({"/uar/unset": "placeholder"}), "X_PARAM")
 
 
-def test_settings_require_two_different_reviewers(monkeypatch):
+def test_the_reviewer_must_be_a_member_id_not_a_dm(monkeypatch):
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
-    assert Settings.from_env().review_days == 7
-    monkeypatch.setenv("SLACK_CISO_USER", "U0ADMIN0001")
-    with pytest.raises(SettingsError, match="different people"):
+    assert Settings.from_env().reviewers.ciso == "U0CISO00001"
+    monkeypatch.setenv("SLACK_CISO_USER", "D0DMCHANNEL1")  # the mistake made during setup
+    with pytest.raises(SettingsError, match="member ID"):
         Settings.from_env()
 
 
@@ -74,7 +74,6 @@ def aws(monkeypatch):
     monkeypatch.setattr(handlers, "collect_okta", lambda *a, **kw: snapshot)
     monkeypatch.setattr(handlers, "_okta", lambda: None)
     config = json.loads((FIXTURES / "demo_config.json").read_text())
-    config["admin_login"] = "priya.shah@acme.example"
     s3.objects[("uar-work-test", "inputs/config.json")] = json.dumps(config).encode()
     s3.objects[("uar-work-test", "inputs/roster.csv")] = (FIXTURES / "demo_roster.csv").read_bytes()
     monkeypatch.setattr(handlers, "_deps", _deps_with(handlers._deps, jira))
@@ -107,15 +106,6 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
     opened = handlers.open_review({"run": out["run"], "task_token": "tok"}, None)
     no_personal_data(opened)
     assert opened["urgent_tickets"] == 3
-
-
-def test_the_config_must_name_the_reviewing_admin(aws):
-    s3, *_ = aws
-    config = json.loads(s3.objects[("uar-work-test", "inputs/config.json")])
-    config["admin_login"] = ""
-    s3.objects[("uar-work-test", "inputs/config.json")] = json.dumps(config).encode()
-    with pytest.raises(SettingsError, match="admin_login"):
-        handlers.collect({}, None)
 
 
 def test_settings_module_has_no_default_secret_values():

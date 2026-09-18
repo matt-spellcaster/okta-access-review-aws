@@ -10,9 +10,8 @@ writes two more records:
                               to decisions.json's SHA-256, in the same shape as
                               attest.py's records
 
-Who may decide what is fixed here, not in Slack: the admin decides items
-routed to the admin, the CISO decides items routed to the CISO (the admin's
-own access), and only the CISO signs off. Slack user IDs are the identities.
+Who may decide is fixed here, not in Slack: the CISO is the single reviewer,
+deciding every item and signing off. Their Slack user ID is the identity.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from datetime import datetime, timezone
 
 from . import __version__
 from .attest import MAX_NOTE, check_text
-from .items import ADMIN, CISO, DECIDE, KEEP, REVOKE, ReviewItem
+from .items import DECIDE, KEEP, REVOKE, ReviewItem
 
 FORMAT = 1
 DECISIONS = (KEEP, REVOKE)
@@ -39,18 +38,14 @@ class DecisionError(ValueError):
 
 @dataclass(frozen=True)
 class Reviewers:
-    admin: str  # Slack user IDs
-    ciso: str
+    ciso: str  # Slack user ID of the single reviewer
 
     def __post_init__(self):
-        for who in (self.admin, self.ciso):
-            if not SLACK_USER.match(who):
-                raise ValueError("reviewer Slack user IDs must look like U0123ABCDEF")
-        if self.admin == self.ciso:
-            raise ValueError("the admin and the CISO must be different people")
+        if not SLACK_USER.match(self.ciso):
+            raise ValueError("the CISO's Slack user ID must look like U0123ABCDEF (a member ID, not a D… DM ID)")
 
-    def slack_id(self, role: str) -> str:
-        return self.admin if role == ADMIN else self.ciso
+    def may_decide(self, user: str) -> bool:
+        return user == self.ciso
 
 
 def _now(now: datetime | None) -> datetime:
@@ -87,11 +82,8 @@ def make_decision_record(
             raise DecisionError("that item isn't part of this review")
         if decision not in DECISIONS:
             raise DecisionError(f"decision must be one of {', '.join(DECISIONS)}")
-        if slack_user != reviewers.slack_id(item.reviewer):
-            raise DecisionError(
-                "only the CISO can decide on the admin's own access" if item.reviewer == CISO
-                else "only the reviewing admin can decide this item"
-            )
+        if not reviewers.may_decide(slack_user):
+            raise DecisionError("only the CISO can decide items in this review")
         try:
             reason = check_text(reason or "", "reason", MAX_NOTE, required=reason_required(item, decision))
         except ValueError:
@@ -118,13 +110,13 @@ def make_decision_record(
     return name, record
 
 
-def confirm_proposed(items: dict[str, ReviewItem], final: dict[str, dict], role: str) -> list[tuple[str, str, str]]:
-    """The "Confirm proposed" button: accept every keep/revoke proposal routed to
-    `role` that has no decision yet. Items marked decide are left alone."""
+def confirm_proposed(items: dict[str, ReviewItem], final: dict[str, dict]) -> list[tuple[str, str, str]]:
+    """The "Confirm proposed" button: accept every keep/revoke proposal that has
+    no decision yet. Items marked decide are left alone."""
     return [
         (key, item.proposed, "")
         for key, item in sorted(items.items())
-        if item.reviewer == role and item.proposed in DECISIONS and key not in final
+        if item.proposed in DECISIONS and key not in final
     ]
 
 
@@ -144,7 +136,7 @@ def consolidate(
             item = items.get(entry.get("item_key"))
             if item is None or entry.get("decision") not in DECISIONS:
                 continue
-            if rec.get("slack_user") != reviewers.slack_id(item.reviewer):
+            if not reviewers.may_decide(rec.get("slack_user", "")):
                 continue
             if reason_required(item, entry["decision"]) and not str(entry.get("reason", "")).strip():
                 continue
@@ -158,8 +150,8 @@ def consolidate(
     return final
 
 
-def outstanding(items: dict[str, ReviewItem], final: dict[str, dict], role: str | None = None) -> list[ReviewItem]:
-    return [i for k, i in sorted(items.items()) if k not in final and (role is None or i.reviewer == role)]
+def outstanding(items: dict[str, ReviewItem], final: dict[str, dict]) -> list[ReviewItem]:
+    return [i for k, i in sorted(items.items()) if k not in final]
 
 
 def progress(items: dict[str, ReviewItem], final: dict[str, dict]) -> dict[str, int]:
@@ -170,8 +162,7 @@ def progress(items: dict[str, ReviewItem], final: dict[str, dict]) -> dict[str, 
         "decided": len(decided),
         "keep": decided.count(KEEP),
         "revoke": decided.count(REVOKE),
-        "open_admin": len(outstanding(items, final, ADMIN)),
-        "open_ciso": len(outstanding(items, final, CISO)),
+        "open": len(items) - len(decided),
     }
 
 

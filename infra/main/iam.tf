@@ -78,8 +78,8 @@ locals {
       params         = ["slack_bot_token"]
       evidence_read  = []
       evidence_write = []
-      work_read      = []
-      work_write     = []
+      work_read      = ["state/*"]
+      work_write     = ["state/*"]
       invoke         = []
       sfn_callback   = false
     }

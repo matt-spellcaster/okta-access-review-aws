@@ -23,14 +23,14 @@ from fakes import FakeBot, FakeS3, FakeSfn  # noqa: E402
 from access_review import store, watch, workflow  # noqa: E402
 from access_review.checks import Config  # noqa: E402
 from access_review.decisions import Reviewers  # noqa: E402
-from access_review.items import ADMIN, CISO, DECIDE, KEEP  # noqa: E402
+from access_review.items import DECIDE, KEEP  # noqa: E402
 from access_review.models import Snapshot  # noqa: E402
 from access_review.review import run_review  # noqa: E402
 from access_review.roster import load_roster  # noqa: E402
 from access_review.tickets import Remediation  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
-R = Reviewers(admin="U0ADMIN0001", ciso="U0CISO00001")
+R = Reviewers(ciso="U0CISO00001")
 
 
 class PrintingJira:
@@ -65,7 +65,6 @@ def slack_text(payload: dict) -> str:
 def main() -> int:
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
-    config.admin_login = "priya.shah@acme.example"
     roster_path = FIXTURES / "demo_roster.csv"
     now = [datetime(2026, 9, 15, 15, tzinfo=timezone.utc)]
     clock = lambda: now[0]  # noqa: E731
@@ -81,13 +80,14 @@ def main() -> int:
     jira, bot = PrintingJira(), FakeBot()
     deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=bot, reviewers=R,
                          channel="C0REVIEW001", sfn=FakeSfn(), now=clock,
-                         tickets=Remediation(jira, s3, "evidence", "Task", "Subtask", now=clock))
+                         tickets=Remediation(jira, s3, "evidence", "Task", "Sub-task", now=clock),
+                         ticket_url=lambda key: f"https://acme.atlassian.net/browse/{key}")
     name = run.run_dir.name
     items = {i.key: i for i in run.items}
 
     def show_slack(since: int) -> None:
         for channel, payload, _ in bot.posts[since:]:
-            where = "channel" if channel == deps.channel else ("admin DM" if channel == "D0ADMIN0001" else "CISO DM")
+            where = "channel" if channel == deps.channel else "CISO DM"
             print(f"  Slack {where:9} {slack_text(payload)}")
 
     print("\n2. Open the review (Step Functions now waits for the sign-off)")
@@ -101,14 +101,22 @@ def main() -> int:
     watch.hourly(deps, jira)
     show_slack(seen)
 
-    print("\n4. The admin and the CISO decide")
+    print("\n4. The CISO decides: confirms the proposals, then keeps what needed a call")
     seen = len(bot.posts)
-    for role, user in ((ADMIN, R.admin), (CISO, R.ciso)):
-        workflow.confirm(deps, name, role, user, {"channel": "D" + user[1:]})
-        for key, item in items.items():
-            if item.reviewer == role and item.proposed == DECIDE:
-                workflow.record(deps, name, [(key, KEEP, "")], user, {"channel": "D" + user[1:]})
+    src = {"channel": "D0CISO00001"}
+    workflow.confirm(deps, name, R.ciso, src)
+    for key, item in items.items():
+        if item.proposed == DECIDE:
+            workflow.record(deps, name, [(key, KEEP, "")], R.ciso, src)
     show_slack(seen)
+    approve = next(p for _, p, _ in reversed(bot.posts) if "Approve review" in json.dumps(p))
+    print("  --- the sign-off message, block by block ---")
+    for b in approve["blocks"]:
+        if b["type"] == "section":
+            for line in b["text"]["text"].splitlines():
+                print("   ", line[:140])
+        elif b["type"] == "actions":
+            print("    [" + "] [".join(e["text"]["text"] for e in b["elements"]) + "]")
     print(f"  Slack uploads: {[u[1] for u in bot.uploads]}")
 
     print("\n5. The CISO approves")
@@ -117,10 +125,12 @@ def main() -> int:
     show_slack(seen)
     print(f"  Step Functions callback: {deps.sfn.successes[0][1]}")
 
-    print("\n6. Remediate")
+    print("\n6. Remediate, then the finished summary in the channel")
     seen = len(bot.posts)
     workflow.remediate(deps, name)
-    show_slack(seen)
+    finished = bot.posts[-1][1]["blocks"][0]["text"]["text"]
+    for line in finished.splitlines():
+        print("  channel |", line[:140])
 
     records = {k.split("/")[2] for (_, k) in s3.objects if k.count("/") == 3}
     print(f"\nEvidence records written: {sorted(records)}; {out['revoke']} revoke decision(s).")

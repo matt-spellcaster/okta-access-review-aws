@@ -3,7 +3,7 @@
 front() runs behind the Lambda function URL that Slack calls. It must answer
 within 3 seconds, so it only:
   1. verifies Slack's signature and rejects anything older than 5 minutes,
-  2. rejects anyone who isn't the configured admin or CISO,
+  2. ignores anyone who isn't the configured CISO (the single reviewer),
   3. opens the "reason" modal when a decision needs one (the trigger_id only
      lives for 3 seconds), or checks a submitted reason,
   4. hands the action to the worker and returns.
@@ -106,12 +106,12 @@ def front(
         return DENIED
     payload = _json(parse_qs(body.decode(errors="replace")).get("payload", [""])[0])
     user = (payload.get("user") or {}).get("id", "")
-    if user not in (reviewers.admin, reviewers.ciso):
+    if not reviewers.may_decide(user):
         return OK  # a verified request from someone else in the workspace; nothing to do
 
     try:
         if payload.get("type") == "block_actions":
-            return _block_action(payload, user, reviewers, items, bot, enqueue)
+            return _block_action(payload, user, items, bot, enqueue)
         if payload.get("type") == "view_submission" and (payload.get("view") or {}).get("callback_id") == "reason":
             return _reason_submitted(payload, user, items, enqueue)
     except DecisionError as e:
@@ -119,7 +119,7 @@ def front(
     return OK
 
 
-def _block_action(payload, user, reviewers, items, bot, enqueue) -> dict:
+def _block_action(payload, user, items, bot, enqueue) -> dict:
     action = (payload.get("actions") or [{}])[0]
     action_id = action.get("action_id", "")
     value = _json(action.get("value", ""))
@@ -130,8 +130,6 @@ def _block_action(payload, user, reviewers, items, bot, enqueue) -> dict:
         item = items.get(run).get(str(value.get("k", "")))
         if item is None:
             raise DecisionError("that item isn't part of this review")
-        if user != reviewers.slack_id(item.reviewer):
-            raise DecisionError("that item is for the other reviewer")
         if reason_required(item, decision):
             bot.open_modal(payload.get("trigger_id", ""), msgs.reason_modal(
                 run, item, decision, {"ch": source["channel"], "ts": source["message_ts"], "t": source["team"]}))
@@ -139,11 +137,8 @@ def _block_action(payload, user, reviewers, items, bot, enqueue) -> dict:
         enqueue({"action": "decide", "run": run, "choices": [[item.key, decision, ""]], "user": user,
                  "source": source})
     elif action_id == "confirm_proposed":
-        enqueue({"action": "confirm", "run": run, "role": str(value.get("role", "")), "user": user,
-                 "source": source})
+        enqueue({"action": "confirm", "run": run, "user": user, "source": source})
     elif action_id == "approve":
-        if user != reviewers.ciso:
-            raise DecisionError("only the CISO can sign off the review")
         enqueue({"action": "approve", "run": run, "user": user, "source": source})
     return OK
 
@@ -187,7 +182,7 @@ def worker(event: dict, deps) -> dict:
         if action == "decide":
             result = workflow.record(deps, run, [tuple(c) for c in event["choices"]], user, source)
         elif action == "confirm":
-            result = workflow.confirm(deps, run, event["role"], user, source)
+            result = workflow.confirm(deps, run, user, source)
         elif action == "approve":
             result = workflow.approve(deps, run, user, source)
         else:

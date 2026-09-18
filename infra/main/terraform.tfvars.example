@@ -8,7 +8,6 @@ okta_client_id = "0oa..."
 okta_key_id    = "..."
 
 slack_channel_id = "C0123456789"
-slack_admin_user = "U0123456789"
 slack_ciso_user  = "U0987654321"
 
 jira_base_url    = "https://your-site.atlassian.net"
