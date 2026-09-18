@@ -49,7 +49,6 @@ The tool never writes to Okta, so these steps are manual:
 - **Slack:** delete the Access Review app.
 - **Jira:** revoke the service account's API token, and deactivate the account if nothing else
   uses it.
-- **GitHub:** delete the `production` environment and the AWS, Okta, Slack and Jira repository
-  variables.
+- **GitHub:** delete the `production` environment and the repository secrets and variables.
 - **AWS:** close the account (Organizations → Accounts → Close). This removes anything the steps
   above missed.

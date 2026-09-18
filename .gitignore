@@ -24,3 +24,6 @@ requirements.txt
 !*.tfvars.example
 crash.log
 tfplan
+
+# Backend settings name the state bucket, which includes the AWS account ID
+backend.hcl

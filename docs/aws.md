@@ -60,14 +60,24 @@ Docker, and admin access to Okta, Slack and Jira.
 
 ### 1. Bootstrap (state bucket and CI roles)
 
+The state bucket doesn't exist before the first apply, so that one apply uses local state:
+
 ```bash
 cd infra/bootstrap
-cp terraform.tfvars.example terraform.tfvars   # set github_repo
+cp terraform.tfvars.example terraform.tfvars   # set github_repo, github_owner_id, github_repo_id
+# comment out the backend "s3" block in versions.tf for this first apply
 terraform init && terraform apply
-cp backend.hcl.example backend.hcl             # bucket = the state_bucket output
-# uncomment the backend block in versions.tf, then:
+cp backend.hcl.example backend.hcl             # bucket = the state_bucket output (git-ignored)
+# restore the backend block, then move the state into the bucket:
 terraform init -backend-config=backend.hcl -migrate-state
 ```
+
+Once the state is in S3, delete the local `terraform.tfstate*` files.
+
+The CI roles trust GitHub's immutable OIDC subject, `repo:<owner>@<owner id>/<name>@<repo id>:…`,
+which new repositories use by default. Because it includes the numeric IDs, a repository deleted
+and recreated under the same name can't assume the roles. Get the IDs with
+`gh api users/<owner> --jq .id` and `gh api repos/<owner>/<name> --jq .id`.
 
 ### 2. Okta
 
@@ -109,21 +119,43 @@ The parent ticket uses `jira_parent_type` (default `Task`) and the children use 
 
 ### 5. GitHub
 
-Repository **variables** (none of these are secrets):
+The repository is public, and so are its workflow logs. Anything that names the AWS account or the
+org is therefore a **secret**, which GitHub masks in logs. Only harmless settings are plain variables.
+The plan and deploy jobs print totals only, never the full plan or apply output.
 
-| Variable | Value |
+Repository **secrets** (Settings → Secrets and variables → Actions → Secrets):
+
+| Secret | Value |
 |---|---|
-| `AWS_REGION`, `TF_STATE_BUCKET` | From bootstrap |
+| `TF_STATE_BUCKET` | The bootstrap `state_bucket` output |
 | `AWS_PLAN_ROLE_ARN` | The `plan_role_arn` output |
 | `TEARDOWN_ROLE_ARN` | The `apply_role_arn` output |
 | `OKTA_ORG_URL`, `OKTA_CLIENT_ID`, `OKTA_KEY_ID` | The Okta app |
 | `SLACK_CHANNEL_ID`, `SLACK_ADMIN_USER`, `SLACK_CISO_USER` | Slack IDs |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_PROJECT`, `JIRA_PARENT_TYPE`, `JIRA_CHILD_TYPE` | Jira |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_PROJECT` | Jira |
 | `BUDGET_EMAIL` | Where cost alerts go |
-| `DEPLOY_ENABLED` | `true` once everything above is set |
 
-Then create an environment named **`production`** with required reviewers (you), add the variable
-`AWS_APPLY_ROLE_ARN` (the `apply_role_arn` output) to it, and restrict it to `master`.
+Repository **variables**:
+
+| Variable | Value |
+|---|---|
+| `AWS_REGION` | e.g. `us-east-1` |
+| `JIRA_PARENT_TYPE`, `JIRA_CHILD_TYPE` | e.g. `Task`, `Subtask` |
+| `AWS_CONFIGURED` | `true` once the secrets above are set: turns on the plan job for pull requests |
+| `DEPLOY_ENABLED` | `true` when you're ready to deploy |
+
+Create an environment named **`production`**:
+- add yourself as a required reviewer
+- allow deployments only from `master`
+- add the environment **secret** `AWS_APPLY_ROLE_ARN` (the `apply_role_arn` output)
+
+Only the Deploy job runs in that environment, so only it can assume the apply role.
+
+Create a branch ruleset on `master`:
+- require a pull request before merging
+- require these status checks: `Tests`, `Secret scan`, `Dependency audit`, `Workflow lint` and `Terraform`
+- block force pushes
+- restrict deletions
 
 ### 6. Deploy, then connect Slack
 

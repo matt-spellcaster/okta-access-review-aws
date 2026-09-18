@@ -37,7 +37,7 @@ Outside AWS (the tool never writes to Okta, so these are yours):
   - Okta: deactivate and delete the access review API service app.
   - Slack: delete the Access Review app (api.slack.com/apps).
   - Jira: revoke the service account's API token; deactivate the account if nothing else uses it.
-  - GitHub: delete the production environment and the AWS_* / TF_* repository variables.
+  - GitHub: delete the production environment and the repository secrets and variables.
   - AWS: close the account (Organizations > Accounts > Close), once terraform destroy has finished.
 """
 
