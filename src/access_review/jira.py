@@ -1,6 +1,8 @@
 """The few Jira Cloud REST calls the review needs: search, create, comment.
 
 Writes go to one project only: create_issue refuses any other project key.
+The only workflow move is close(), used for a review's tracking ticket once
+everything under it is verified.
 The API token is a secret; it never appears in errors, and neither does
 anything Jira echoes back from an issue (field values can hold personal data),
 only the status and the names of the fields it complained about.
@@ -115,12 +117,34 @@ class JiraClient:
         return key
 
     def add_comment(self, key: str, body: dict) -> None:
-        if not ISSUE_KEY.match(key) or not key.startswith(self.project + "-"):
-            raise JiraError(f"add comment: refusing to comment outside project {self.project}")
+        self._own(key, "add comment")
         self._request("POST", f"/issue/{key}/comment", "add comment", json={"body": body})
 
     def browse_url(self, key: str) -> str | None:
         return browse_url(self.base_url, key)
+
+    def status_category(self, key: str) -> str:
+        """new, indeterminate or done."""
+        self._own(key, "read status")
+        issue = self._request("GET", f"/issue/{key}", "read status", params={"fields": "status"})
+        return issue["fields"]["status"]["statusCategory"]["key"]
+
+    def close(self, key: str) -> bool:
+        """Move an issue to its workflow's first Done status. False if it's already
+        done or no transition leads there."""
+        self._own(key, "close")
+        if self.status_category(key) == "done":
+            return False
+        transitions = self._request("GET", f"/issue/{key}/transitions", "list transitions").get("transitions", [])
+        done = next((t for t in transitions if t.get("to", {}).get("statusCategory", {}).get("key") == "done"), None)
+        if done is None:
+            return False
+        self._request("POST", f"/issue/{key}/transitions", "close", json={"transition": {"id": done["id"]}})
+        return True
+
+    def _own(self, key: str, what: str) -> None:
+        if not ISSUE_KEY.match(key) or not key.startswith(self.project + "-"):
+            raise JiraError(f"{what}: refusing to touch an issue outside project {self.project}")
 
     def issue_types(self) -> list[str]:
         """Issue type names the service account can create in the project, for setup checks."""
@@ -128,9 +152,10 @@ class JiraClient:
         return sorted(t.get("name", "") for t in page.get("issueTypes", page.get("values", [])))
 
 
-def adf(*paragraphs: str | list[tuple[str, str | None]]) -> dict:
+def adf(*paragraphs: str | list[tuple[str, str | tuple | None]]) -> dict:
     """Atlassian Document Format from plain paragraphs. A paragraph is a string,
-    or a list of (text, mark) pieces where mark is None, "strong" or "code"."""
+    or a list of (text, mark) pieces where mark is None, "strong", "code", or
+    ("link", url)."""
     content = []
     for p in paragraphs:
         pieces = [(p, None)] if isinstance(p, str) else p
@@ -139,7 +164,9 @@ def adf(*paragraphs: str | list[tuple[str, str | None]]) -> dict:
             if not text:
                 continue
             node = {"type": "text", "text": text}
-            if mark:
+            if isinstance(mark, tuple) and mark[0] == "link":
+                node["marks"] = [{"type": "link", "attrs": {"href": mark[1]}}]
+            elif mark:
                 node["marks"] = [{"type": mark}]
             nodes.append(node)
         content.append({"type": "paragraph", "content": nodes} if nodes else {"type": "paragraph"})

@@ -32,15 +32,17 @@ locals {
     WORK_BUCKET      = aws_s3_bucket.work.bucket
     SLACK_CHANNEL_ID = var.slack_channel_id
     SLACK_CISO_USER  = var.slack_ciso_user
-    # Not a secret; every function uses it to link to Jira tickets.
+    # Not secrets: links to Jira tickets and to people in the Okta admin console,
+    # and the PDF-in-channel switch.
     JIRA_BASE_URL         = var.jira_base_url
+    OKTA_ORG_URL          = var.okta_org_url
+    SLACK_CHANNEL_PDF     = tostring(var.slack_channel_pdf)
     SLACK_BOT_TOKEN_PARAM = local.params.slack_bot_token
     REVIEW_DAYS           = tostring(var.review_days)
     LEAVER_TICKET_HOURS   = tostring(var.leaver_ticket_hours)
     REVOKE_TICKET_DAYS    = tostring(var.revoke_ticket_days)
   }
   okta_env = {
-    OKTA_ORG_URL           = var.okta_org_url
     OKTA_CLIENT_ID         = var.okta_client_id
     OKTA_KEY_ID            = var.okta_key_id
     OKTA_PRIVATE_KEY_PARAM = local.params.okta_private_key

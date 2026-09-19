@@ -117,3 +117,30 @@ def test_a_tampered_proposal_is_rejected(demo):
     data["items"][0]["proposed"] = "approve-everything"
     with pytest.raises(ItemsError):
         load_items(json.dumps(data))
+
+
+def test_items_carry_the_facts_and_why_it_could_be_an_issue(demo):
+    findings, _ = run_checks(demo)
+    items = {(i.user.split("@")[0], i.target): i for i in build_items(demo, findings)}
+    sf = items[("lee.chen", "Salesforce")]
+    assert sf.name == "Lee Chen"
+    assert sf.facts[0].startswith("Okta: ACTIVE") and "MFA: none" in sf.facts[0]
+    assert sf.facts[1].startswith("HR: employee, active") and "manager Priya Shah" in sf.facts[1]
+    assert "assigned 2025-06-02" in sf.facts[2]
+    assert any("AR-04" in c for c in sf.concerns) and any("AR-14" in c for c in sf.concerns)
+    # AR-14 is about the one unused app, not every app Lee has.
+    assert not any("AR-14" in c for c in items[("lee.chen", "GitHub")].concerns)
+    # Admin roles say what the role can do.
+    assert "Full control of Okta" in items[("priya.shah", "Super Administrator")].concerns[0]
+    # Nothing flagged means no concerns, not an empty placeholder.
+    assert items[("priya.shah", "GitHub")].concerns == ()
+
+
+def test_item_files_from_earlier_runs_still_load(demo):
+    data = json.loads(items_json(build_items(demo), AS_OF, 90))
+    data["format"] = 1
+    for d in data["items"]:
+        for k in ("name", "facts", "concerns"):
+            d.pop(k)
+    old = load_items(json.dumps(data))
+    assert old and old[0].facts == () and old[0].name == ""

@@ -66,14 +66,25 @@ def _route(item: ReviewItem) -> str:
 
 def describe(item: ReviewItem) -> str:
     """One line naming the person, the access and how they have it."""
-    return f"*{_esc(item.user)}* · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
+    who = f"*{_esc(item.name)}* ({_esc(item.user)})" if item.name else f"*{_esc(item.user)}*"
+    return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
+
+
+def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
+    """The facts, then why it could be an issue, then the proposal."""
+    lines = [describe(item), "*Facts*"]
+    lines += [f"• {_esc(f)}" for f in item.facts] or ["• (not recorded for this review)"]
+    lines.append("*Why it could be an issue*")
+    lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or ["• Nothing flagged."]
+    if ticket:
+        lines.append(f"• :ticket: Leaver ticket {ticket_link(ticket)}")
+    lines.append(f"*Proposed: {LABEL[item.proposed]}.* {_esc(item.reason)}")
+    return lines
 
 
 def item_blocks(run: str, item: ReviewItem, chunk: int, decided: dict | None,
                 ticket: Ticket | None = None) -> list[dict]:
-    lines = [describe(item), f"Proposed: *{LABEL[item.proposed]}*. {_esc(item.reason)}"]
-    if ticket:
-        lines.append(f":ticket: Leaver ticket {ticket_link(ticket)}")
+    lines = card_lines(item, ticket)
     section = {"type": "section", "block_id": f"i:{item.key}",
                "text": {"type": "mrkdwn", "text": _clip("\n".join(lines))}}
     if decided:
@@ -149,23 +160,28 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
         d = final.get(item.key)
         if not d:
             continue
-        line = f"• {describe(item)}"
-        notes = []
+        lines = [f"• {describe(item)}"]
+        for fact in item.facts:
+            if fact.startswith(("Okta:", "Access:")):
+                lines.append(f"      {_esc(fact)}")
+        for concern in item.concerns:
+            lines.append(f"      :warning: {_esc(concern)}")
+        why = []
         if item.proposed not in (DECIDE, d["decision"]):
-            notes.append(f"overrode proposed {LABEL[item.proposed].lower()}")
+            why.append(f"overrode proposed {LABEL[item.proposed].lower()}")
         if d.get("reason"):
-            notes.append(f"reason: _{_esc(d['reason'])}_")
+            why.append(f"reason: _{_esc(d['reason'])}_")
         elif item.proposed == d["decision"]:
-            notes.append(_esc(item.reason))
-        if notes:
-            line += " — " + "; ".join(notes)
-        grouped[d["decision"]].append(line)
+            why.append(f"as proposed: {_esc(item.reason)}")
+        if why:
+            lines.append("      " + "; ".join(why))
+        grouped[d["decision"]].append("\n".join(lines))
     return grouped
 
 
-def _sections(title: str, lines: list[str]) -> list[dict]:
+def _sections(title: str, lines: list[str], bold: bool = True) -> list[dict]:
     """A titled list split into sections under Slack's size limit."""
-    out, current = [], f"*{title}*"
+    out, current = [], f"*{title}*" if bold else title
     for line in lines:
         if len(current) + 1 + len(line) > MAX_TEXT:
             out.append({"type": "section", "text": {"type": "mrkdwn", "text": current}})
@@ -268,7 +284,7 @@ SEVERITY_EMOJI = {"critical": ":red_circle:", "high": ":large_orange_circle:", "
 
 
 def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str, str, int]], attestation: dict,
-                     keeps: int, revokes: int, parent: Ticket | None, revoke_days: int) -> dict:
+                     keeps: int, revokes: int, parent: Ticket | None, revoke_days: int, fixes: int = 0) -> dict:
     """attestation is the signoff record; its manifest_sha256 is the hash shown."""
     """The finished review, for the channel: counts, check titles and links only."""
     counts = manifest.get("finding_counts") or {}
@@ -284,14 +300,41 @@ def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str
     order = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     for check_id, title, severity, n in sorted(check_counts, key=lambda c: (order.get(c[2], 9), c[0])):
         lines.append(f"{SEVERITY_EMOJI.get(severity, '•')}  `{check_id}` {_esc(title)} ×{n}")
-    lines.append(
-        f"*Decisions:* {keeps} keep, {revokes} revoke. "
-        + (f"{revokes} remediation ticket(s) under {ticket_link(parent) or '-'}, due in {revoke_days} days."
-           if revokes else f"No access to remove. Tracking ticket {ticket_link(parent) or '-'}.")
-    )
+    lines.append(f"*Decisions:* {keeps} keep, {revokes} revoke.")
+    if revokes or fixes:
+        lines.append(f"*Tickets:* {revokes} to remove access and {fixes} to fix findings, under "
+                     f"{ticket_link(parent) or '-'}, due in {revoke_days} days. The action list is in the "
+                     f"approval thread; the tracking ticket closes once all are verified.")
+    else:
+        lines.append(f"Nothing to fix. Tracking ticket {ticket_link(parent) or '-'} closes at the next daily check.")
     return {"text": f"Okta access review {run} is finished", "blocks": [
         {"type": "section", "text": {"type": "mrkdwn", "text": _clip("\n".join(lines))}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text":
             f"Manifest SHA-256 `{attestation['manifest_sha256']}` · :lock: Names and details are only in the "
             f"report and JSM."}]},
     ]}
+
+
+def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> dict:
+    """What has to happen before the tracking ticket can close. Each entry is
+    {"ticket": Ticket, "todo": str, "due": str, "verified": str | None}; the
+    daily check ticks entries off as it confirms them in Okta."""
+    done = sum(1 for e in entries if e.get("verified"))
+    lines = [f":clipboard: *To close {ticket_link(parent) or 'the tracking ticket'}* "
+             f"({done} of {len(entries)} done)"]
+    for e in sorted(entries, key=lambda e: (bool(e.get("verified")), e.get("due") or "", e["ticket"][0])):
+        link = ticket_link(e["ticket"])
+        if e.get("verified"):
+            lines.append(f":white_check_mark: {link} {_esc(e['todo'])} — verified {e['verified']}")
+        else:
+            lines.append(f":white_large_square: {link} {_esc(e['todo'])} — due {e.get('due') or '?'}")
+    if entries:
+        how = ("How: make each change in Okta, then resolve its ticket in JSM. The daily check (07:00) "
+               "confirms it in Okta and ticks it off here. When every line is ticked, "
+               f"{ticket_link(parent) or 'the tracking ticket'} closes automatically.")
+    else:
+        how = f"Nothing to fix. {ticket_link(parent) or 'The tracking ticket'} closes at the next daily check."
+    # One section per ~3000 characters, so a long list is split rather than cut off.
+    blocks = _sections(lines[0], lines[1:], bold=False) + [
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": how}]}]
+    return {"text": f"Access review {run}: {done} of {len(entries)} action items done", "blocks": blocks}

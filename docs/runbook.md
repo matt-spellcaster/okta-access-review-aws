@@ -8,9 +8,9 @@ item and sign off.
 
 | Where | What appears | Personal data? |
 |---|---|---|
-| **Review channel** | "Review is open", overdue notes, and a finished summary at the end. Ticket links. | No. Counts only. |
-| **CISO's DM** with the Access Review app | Every item to decide, then one sign-off message listing all decisions | Yes |
-| **JSM project** | A tracking ticket per review, leaver tickets, then one ticket per revoke | Yes |
+| **Review channel** | One thread per review: "review is open", the report PDF (if turned on), overdue notes, the finished summary, and "complete" at the very end. | Counts and links in the posts; the PDF has names |
+| **CISO's DM** with the Access Review app | Every item to decide, then one sign-off message listing all decisions, then the action checklist in its thread | Yes |
+| **JSM project** | A tracking ticket per review; leaver tickets; after sign-off, revoke tickets and fix tickets | Yes |
 
 In Slack, the DM is under **Apps → Access Review** in the sidebar (the app's **Messages** tab).
 
@@ -50,9 +50,17 @@ If the channel says *"stopped before it finished"* instead, see [If something go
 
 ## 2. The CISO decides every item
 
-Each item shows the person, the access (app, admin role or admin group, and whether it's direct or
-through a group), the proposed decision with its reason, and a link to their leaver ticket if they
-have one. Under it are the **Keep** and **Revoke** buttons; the proposed one is coloured.
+Each item is a card, read top to bottom:
+
+- **Who and what:** the person's name and login, and the access (app, admin role or admin group, and
+  whether it's direct or through a group).
+- **Facts:** Okta status, last sign-in and MFA; the HR record (employment type, status, end date,
+  manager); and the access itself: when it was assigned and when it was last used.
+- **Why it could be an issue:** every finding about this person or this access (for example *no MFA
+  enrolled*, *HR shows terminated*, *not used in 90 days*), and what an admin role can do. It says
+  *Nothing flagged* when there's nothing. A leaver's ticket is linked here.
+- **Proposed:** Keep, Revoke or Your call, with the reason. Under it are the **Keep** and **Revoke**
+  buttons; the proposed one is coloured.
 
 1. **Accept the easy ones:** click **Confirm N proposed** in the summary message, then **Confirm**.
    This accepts every *Keep* and *Revoke* proposal at once. Items marked **Your call** stay open.
@@ -73,8 +81,9 @@ summary counts how many are done.
 When the last item is decided, one more message arrives in the DM:
 
 - *"Every item in access review `<run>` has a decision."*, with the totals and the tracking ticket
-- **Every decision**, grouped: ⛔ **Revoke** first, then ✅ **Keep**. Each line shows the person,
-  the access, and the reason. Overrides are marked *"overrode proposed …"*.
+- **Every decision**, grouped: ⛔ **Revoke** first, then ✅ **Keep**. Each shows the person, their
+  Okta facts, the access, every concern (⚠️), and why it was decided that way. Overrides are marked
+  *"overrode proposed …"*.
 - The manifest SHA-256, with the report PDF in the message's thread
 - **Approve review**
 
@@ -87,22 +96,34 @@ Signing off records your approval against the exact report (by its hash), and ca
 
 Within a minute:
 
-- **JSM:** one *"Revoke <access> for <person>"* sub-ticket per revoke, under the tracking ticket,
-  due in 7 days, each saying exactly what to change in Okta. The tracking ticket gets a comment with
-  the sign-off.
-- **Review channel:** the finished summary. It shows who signed off and when, findings by severity
-  and by check, the keep and revoke totals, and a link to the tracking ticket. It contains no names.
+- **JSM:** under the tracking ticket, due in 7 days:
+  - one *"Revoke <access> for <person>"* ticket per revoke, saying exactly what to change
+  - one *"Fix: <finding> — <person>"* ticket per finding that isn't an access decision: no MFA, no
+    HR record, inactive or unused account, contractor in an employee-only group, missing manager,
+    disabled account still holding access, or an API client with admin rights
 
-Then do the work:
+  Every ticket links to the person's page in the Okta admin console.
+- **The approval thread** (under the sign-off message): the **action checklist**. It lists every
+  ticket that must be done to close the tracking ticket, with links and due dates, and it ticks
+  itself off as the daily check verifies each one. The same list is a comment on the tracking
+  ticket.
+- **Review channel:** the finished summary, in the review's thread (and shown in the channel). It
+  shows who signed off, findings by severity and by check, the decisions, and the ticket counts. It
+  contains no names.
 
-1. For each ticket, make the change in Okta. The tool never changes Okta itself.
+Then work through the checklist:
+
+1. For each ticket, make the change in Okta; the link on the ticket takes you to the person. The
+   tool never changes Okta itself.
 2. Resolve the ticket in JSM.
-3. The next morning's check compares the ticket with Okta:
-   - **Removed:** a *"Verified…"* comment on the ticket, and a verification record in the evidence.
-   - **Still there:** a comment on the ticket and a DM to the CISO. Finish the change; it's checked
+3. The next morning's check (07:00 Central) compares the ticket with Okta. It looks for the access
+   on leaver and revoke tickets, and re-runs the check on fix tickets:
+   - **Done:** a *"Verified…"* comment on the ticket, a verification record in the evidence, and a
+     ✅ on the checklist.
+   - **Not done:** a comment on the ticket and a DM to the CISO. Finish the change; it's checked
      again daily.
-4. When every ticket is verified, the channel says *"All remediation for access review `<run>` is
-   verified in Okta."* The review is complete.
+4. When every line is ✅, the **tracking ticket closes itself**, and the channel says *"Access review
+   `<run>` is complete"*. That's the only ticket the tool ever moves.
 
 ## Deadlines and reminders
 

@@ -457,3 +457,13 @@ def test_forbidden_app_usage_is_a_gap_not_an_error(keypair):
 
     assert snap.app_usage_since is None and snap.app_usage_complete is False
     assert any("AR-14 and review proposals" in g for g in snap.gaps)
+
+
+def test_admin_console_links_only_for_okta_orgs():
+    from access_review.okta import admin_url
+    assert admin_url("https://acme.okta.com", "user", "00u1abcDEF") == \
+        "https://acme-admin.okta.com/admin/user/profile/view/00u1abcDEF"
+    assert admin_url("https://acme.oktapreview.com/", "group", "00g1abcDEF") == \
+        "https://acme-admin.oktapreview.com/admin/group/00g1abcDEF"
+    assert admin_url("https://evil.test", "user", "00u1abcDEF") is None
+    assert admin_url("https://acme.okta.com", "user", "../../x") is None

@@ -49,6 +49,12 @@ variable "slack_ciso_user" {
   type        = string
 }
 
+variable "slack_channel_pdf" {
+  description = "Also post the report PDF in the review channel's thread. It names people and their access, so only turn this on if everyone in the channel may see that."
+  type        = bool
+  default     = false
+}
+
 # --- Jira Service Management (non-secret) ---
 
 variable "jira_base_url" {

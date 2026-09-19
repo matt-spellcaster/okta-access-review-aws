@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import time
 import uuid
 
@@ -212,3 +213,13 @@ def _error_text(resp: requests.Response) -> str:
     # Okta often explains 401/403 only in this header (e.g. insufficient_scope).
     challenge = resp.headers.get("WWW-Authenticate")
     return "; ".join(p for p in (text, challenge) if p) or "no details"
+
+
+def admin_url(org_url: str, kind: str, object_id: str) -> str | None:
+    """A page in the Okta admin console, for a person ("user") or a group.
+    https://acme.okta.com -> https://acme-admin.okta.com/admin/user/profile/view/<id>"""
+    m = re.fullmatch(r"https://([a-z0-9-]+)\.(okta|oktapreview|okta-emea)\.com/?", org_url or "")
+    if not m or not re.fullmatch(r"[A-Za-z0-9]{1,40}", object_id or ""):
+        return None
+    base = f"https://{m.group(1)}-admin.{m.group(2)}.com/admin"
+    return {"user": f"{base}/user/profile/view/{object_id}", "group": f"{base}/group/{object_id}"}.get(kind)

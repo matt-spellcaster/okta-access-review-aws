@@ -68,6 +68,7 @@ class Settings:
     review_days: int
     leaver_ticket_hours: int
     revoke_ticket_days: int
+    channel_pdf: bool = False  # also post the report PDF in the review channel
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -82,8 +83,11 @@ class Settings:
             reviewers = Reviewers(ciso=_env("SLACK_CISO_USER"))
         except ValueError as e:
             raise SettingsError(str(e)) from None
+        pdf = _env("SLACK_CHANNEL_PDF", required=False, default="false").lower()
+        if pdf not in ("true", "false"):
+            raise SettingsError("SLACK_CHANNEL_PDF must be true or false")
         return cls(evidence, work, channel, reviewers, _int("REVIEW_DAYS", 7),
-                   _int("LEAVER_TICKET_HOURS", 24), _int("REVOKE_TICKET_DAYS", 7))
+                   _int("LEAVER_TICKET_HOURS", 24), _int("REVOKE_TICKET_DAYS", 7), pdf == "true")
 
 
 @dataclass(frozen=True)

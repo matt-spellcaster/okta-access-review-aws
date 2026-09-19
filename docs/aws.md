@@ -25,9 +25,9 @@ Slack → function URL → uar-interact   checks the signature, then hands the c
 
 | Who | Sees | Does |
 |---|---|---|
-| CISO (the only reviewer) | A DM with every item and its proposed decision, linked to the tracking ticket and to any leaver's ticket. Once everything is decided: one message listing every decision, the manifest hash, the PDF and **Approve review** | Clicks **Confirm N proposed**, then Keep or Revoke on what's left. A reason is required to keep something proposed for revocation, or to override any proposal. Then checks the list and signs off. Gets the reminders. |
-| Review channel | Counts only, with ticket links: opened, overdue, and a finished summary (findings by check, decisions, who signed off) | Nothing |
-| JSM | A parent ticket per review. Leaver tickets due in 24 hours, revoke tickets due in 7 days | A person makes the change in Okta and resolves the ticket. The daily check comments to confirm it, and never moves the ticket. |
+| CISO (the only reviewer) | A DM with every item as a card: the **facts** (Okta status, last sign-in, MFA, HR record, the access and when it was last used), then **why it could be an issue** (the findings), then the proposal and the buttons. Once everything is decided: one message listing every decision the same way, the PDF and **Approve review**. After sign-off: the action checklist in that message's thread. | Clicks **Confirm N proposed**, then Keep or Revoke on what's left. A reason is required to keep something proposed for revocation, or to override any proposal. Then checks the list and signs off. Gets the reminders. |
+| Review channel | One thread per review: "open" (counts and the tracking ticket), the PDF if `slack_channel_pdf` is on, overdue notes, the finished summary, and "complete" when everything is verified. Counts, check titles and links only. | Nothing |
+| JSM | A tracking ticket per review. Leaver tickets due in 24 hours; after sign-off, one ticket per revoke and one **fix ticket** per finding that isn't an access decision (no MFA, no HR record, …), due in 7 days. Each links to the person in the Okta admin console. | A person makes the change in Okta and resolves the ticket. The daily check confirms it, ticks the checklist, and closes the tracking ticket when everything is verified. |
 
 **Proposals.**
 - *Revoke:* direct app access with no SSO sign-in to that app for 90 days (`app_unused_days`), and
@@ -163,6 +163,7 @@ Repository **variables**:
 |---|---|
 | `AWS_REGION` | e.g. `us-east-1` |
 | `JIRA_PARENT_TYPE`, `JIRA_CHILD_TYPE` | e.g. `Task`, `Subtask` |
+| `SLACK_CHANNEL_PDF` | `true` to also post the report PDF in the review channel's thread. It names people and their access, so only if everyone in the channel may see that. Default `false`. |
 | `AWS_CONFIGURED` | `true` once the secrets above are set: turns on the plan job for pull requests |
 | `DEPLOY_ENABLED` | `true` when you're ready to deploy |
 
@@ -255,7 +256,7 @@ alert fires at 80% of `budget_limit_usd` (default $5).
   window before anything else. Only the configured CISO can act, and the worker re-checks
   every permission itself.
 - **No personal data in Step Functions, channel posts or logs.** Personal data is only in S3, the
-  CISO's DM, and JSM.
+  CISO's DM, and JSM, plus the report PDF in the channel if you turn on `SLACK_CHANNEL_PDF`.
 - **One reviewer.** The CISO decides every item, including their own access. That keeps a small
   review simple, but an auditor will usually want someone else to approve the reviewer's own access;
   if you need that, have a second person confirm those items outside the tool and note it on the

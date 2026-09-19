@@ -234,6 +234,6 @@ def main(argv: list[str], now: datetime | None = None) -> int:
         record = sign(args.run_dir, v, records, reviewer, args.decision, note, now or datetime.now(timezone.utc))
         print(f"Recorded: {record['decision']} by {record['reviewer']} at {record['signed_at']} "
               f"in {args.run_dir / 'attestations.json'}")
-    elif not records:
+    elif not records and slack is None:
         print("No sign-offs recorded yet.")
     return 0

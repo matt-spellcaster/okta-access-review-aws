@@ -27,7 +27,7 @@ class FakeJira:
     project = "UAR"
 
     def __init__(self):
-        self.issues, self.comments = {}, []
+        self.issues, self.comments, self.closed = {}, [], []
 
     def search(self, jql, fields, limit=1000):
         hits = []
@@ -50,6 +50,13 @@ class FakeJira:
 
     def add_comment(self, key, body):
         self.comments.append((key, json.dumps(body)))
+
+    def close(self, key):
+        if self.issues[key].get("done"):
+            return False
+        self.issues[key]["done"] = True
+        self.closed.append(key)
+        return True
 
 
 def leavers(snapshot):
@@ -83,7 +90,8 @@ def world(tmp_path):
     jira.today = "2026-09-16"
     tickets = Remediation(jira, s3, "evidence", "Task", "Subtask", now=clock)
     deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=FakeBot(), reviewers=R,
-                         channel="C0REVIEW001", tickets=tickets, sfn=FakeSfn(), now=clock)
+                         channel="C0REVIEW001", tickets=tickets, sfn=FakeSfn(), now=clock,
+                         ticket_url=lambda key: f"https://acme.atlassian.net/browse/{key}")
     workflow.open_review(deps, run.run_dir.name, "token-1")
     return deps, run.run_dir.name, {i.key: i for i in run.items}, clock, jira, snapshot
 
@@ -140,7 +148,8 @@ def finish_review(deps, run, items):
 def test_remediation_follows_the_signed_decisions(world):
     deps, run, items, _, jira, _ = world
     out = finish_review(deps, run, items)
-    assert out["revoke_tickets"] == out["opened_now"] == 7
+    # 7 revokes, plus a fix ticket for each finding that isn't an access decision.
+    assert out["revoke_tickets"] == 7 and out["fix_tickets"] == 8 and out["opened_now"] == 15
     parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
     assert any(k == parent and "Signed off in Slack" in body for k, body in jira.comments)
     # Tampering with the signed decisions stops remediation.
@@ -168,7 +177,7 @@ def test_daily_verification_checks_resolved_tickets_against_okta(world):
     assert watch.daily(deps, jira, fresh, leavers(fresh)) == {"verified": 1, "still_present": 1}
     verifications = dict(store.list_records(deps.s3, "evidence", run, "verifications"))
     assert verifications[f"{lee['label']}-verified.json"]["result"] == "removed"
-    assert any(k == marcus["issue"] and "still present" in body for k, body in jira.comments)
+    assert any(k == marcus["issue"] and "Okta still shows the problem" in body for k, body in jira.comments)
     assert marcus["issue"] in dms_to(deps, R.ciso)[-1]
     # Same day again: no repeat comments or alerts.
     comments = len(jira.comments)
@@ -176,9 +185,10 @@ def test_daily_verification_checks_resolved_tickets_against_okta(world):
     assert len(jira.comments) == comments
 
 
-def test_a_review_closes_once_everything_is_verified(world):
+def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     deps, run, items, clock, jira, snapshot = world
     finish_review(deps, run, items)
+    parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
     for rec in [r for _, r in store.list_records(deps.s3, "evidence", run, "tickets") if r["kind"] != "parent"]:
         jira.issues[rec["issue"]]["done"] = True
     gone = copy.deepcopy(snapshot)
@@ -188,10 +198,55 @@ def test_a_review_closes_once_everything_is_verified(world):
     gone.users = [u for u in gone.users if not u.login.startswith(("marcus", "sofia", "victor"))]
     gone.events = []  # nobody left who set up an API client
 
-    watch.daily(deps, jira, gone, leavers(gone))
+    # Fix tickets aren't verified while their findings are still reported.
+    watch.daily(deps, jira, gone, leavers(gone), current={("AR-04", "lee.chen@acme.example")})
+    assert load_state(deps.s3, "work", run)[0]["status"] != CLOSED and jira.closed == []
+
+    clock.now += timedelta(days=1)
+    watch.daily(deps, jira, gone, leavers(gone), current=set())
 
     assert load_state(deps.s3, "work", run)[0]["status"] == CLOSED
-    assert "verified in Okta" in json.dumps(deps.bot.posts[-1][1])
+    assert jira.closed == [parent]  # the one ticket the tool moves
+    last = json.dumps(deps.bot.posts[-1][1])
+    assert "is complete" in last and parent in last
+
+
+def test_the_checklist_ticks_off_verified_tickets(world):
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    state = load_state(deps.s3, "work", run)[0]
+    [(channel, checklist, _)] = [(c, p, ts) for c, p, ts in deps.bot.posts if "To close" in json.dumps(p)]
+    text = json.dumps(checklist)
+    assert checklist["thread_ts"] == state["approve"]["ts"]  # in the approval message's thread
+    assert "0 of 18 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
+    assert any(k == state["parent_issue"] and "To close this ticket" in body for k, body in jira.comments)
+
+    lee = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+               if r.get("item_key") and items[r["item_key"]].target == "Salesforce"
+               and items[r["item_key"]].user.startswith("lee.chen"))
+    jira.issues[lee["issue"]]["done"] = True
+    fresh = copy.deepcopy(snapshot)
+    next(a for a in fresh.apps if a.label == "Salesforce").users.discard("u05")
+    watch.daily(deps, jira, fresh, leavers(fresh))
+
+    ts = state["checklist"]["ts"] if "checklist" in state else load_state(deps.s3, "work", run)[0]["checklist"]["ts"]
+    updated = [p for c, t, p in deps.bot.updates if t == ts][-1]
+    assert "1 of 18 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
+
+
+def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    mfa = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+               if r["kind"] == "finding" and r["check_id"] == "AR-04")
+    jira.issues[mfa["issue"]]["done"] = True
+
+    assert watch.daily(deps, jira, snapshot, leavers(snapshot), current={("AR-04", "lee.chen@acme.example")}) \
+        == {"verified": 0, "still_present": 1}
+    clock.now += timedelta(days=1)
+    assert watch.daily(deps, jira, snapshot, leavers(snapshot), current=set())["verified"] == 1
+    # Without fresh findings (e.g. the checks couldn't run), nothing is verified.
+    assert watch.still_present(mfa, snapshot, {}, None, None) == (None, {})
 
 
 def test_a_leaver_with_a_working_api_client_is_not_cleared(world):
