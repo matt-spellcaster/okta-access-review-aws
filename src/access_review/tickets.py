@@ -151,7 +151,7 @@ class Remediation:
             item = items[key]
             _, new = self._create(run, ticket_label("revoke", run, key), {
                 "kind": "revoke", "run": run, "item_key": key, "due": due,
-                "todo": what_to_do(item)[:1].upper() + what_to_do(item)[1:],
+                "todo": _sentence(what_to_do(item)),
             }, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
@@ -201,6 +201,11 @@ class Remediation:
             })
             created += new
         return created
+
+
+def _sentence(text: str) -> str:
+    """Capitalise a to-do that starts with a verb; leave one that starts with a login alone."""
+    return text[:1].upper() + text[1:] if text.split(" ", 1)[0] in ("unassign", "remove") else text
 
 
 def what_to_do(item: ReviewItem) -> str:

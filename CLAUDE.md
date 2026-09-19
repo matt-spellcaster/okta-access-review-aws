@@ -46,7 +46,8 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   case in `fixtures/demo_snapshot.json`, and an updated expectation in
   `test_demo_findings_are_exactly_the_planted_ones`.
 - After changing the PDF layout or demo fixtures, run `uv run python scripts/render_samples.py`
-  and look at `docs/images/*.png` before committing. The README sample must only ever use fixture data.
+  and look at `docs/images/*.png` before committing. README images use fixture data, or real
+  screenshots with every name, email, org URL and ID blacked out, including inside PDF previews.
 - Keep the snapshot format (`models.py`) the same for live and fixture data; checks only see `Snapshot`.
 - Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
   "decide" instead.
