@@ -5,12 +5,13 @@ as Jira Service Management tickets. It compares Okta users, groups, apps, MFA en
 roles with an HR roster, flags access to remove or confirm, and saves the results as evidence for
 SOC 2 (CC6.1–CC6.3) and ISO 27001:2022 (A.5.15–A.8.5). Okta is only ever read.
 
-- **In AWS** ([docs/aws.md](docs/aws.md)): a scheduled Step Functions workflow collects the review,
-  asks the CISO to decide in Slack with proposals already filled in, then to sign off.
-  It then opens a JSM ticket for each piece of access to remove, under one parent ticket per quarter.
-  Reminders, escalation to the CISO, and a daily check that each resolved ticket really changed
-  Okta are built in. Built with Terraform, and removed with one script ([docs/teardown.md](docs/teardown.md)).
-  Running a review, step by step: [docs/runbook.md](docs/runbook.md).
+- **In AWS** ([docs/aws.md](docs/aws.md)): a scheduled Step Functions workflow collects the review
+  and asks the CISO to decide each item in Slack, showing the facts, why it could be an issue, and
+  a proposed decision. After sign-off it opens a JSM ticket for each piece of access to remove and
+  each finding to fix, under one tracking ticket per quarter, and posts an action checklist. A daily
+  check confirms each resolved ticket really changed Okta, ticks it off, and closes the tracking
+  ticket once everything is verified. Built with Terraform, and removed with one script
+  ([docs/teardown.md](docs/teardown.md)). Running a review, step by step: [docs/runbook.md](docs/runbook.md).
 - **Or locally**, as the original command-line tool: the same checks and report, run on a laptop.
 
 Seeded from `okta-access-review` at commit 1a20697. The local tool below works the same way.
@@ -23,6 +24,46 @@ Seeded from `okta-access-review` at commit 1a20697. The local tool below works t
   verified, and `access-review attest` records a sign-off tied to the report's manifest.
 - The report is marked incomplete if Okta withholds any data.
 - Optionally emails the PDF and posts a summary to Slack. Messages contain no personal data.
+
+## How a review looks
+
+Screenshots from a real run against a development Okta org, and from a demo run with the fictional
+**Acme** company (`scripts/demo_to_slack.py`). Real names, emails and the org URL are blacked out.
+
+**1. The review opens.** The review channel gets counts only and a link to the tracking ticket, with
+the full report PDF in the thread.
+
+![Slack channel: "Okta access review is open" with counts and the tracking ticket, and the report PDF in the thread](docs/images/slack-review-open.png)
+
+**2. The CISO decides each item** in a DM. Each card shows the facts, then why it could be an issue,
+then the proposal and the buttons. **Confirm N proposed** accepts every proposal at once.
+
+![Slack DM: summary with Confirm 4 proposed, then item cards with Facts, Why it could be an issue, and Keep/Revoke buttons](docs/images/slack-review-cards.png)
+
+**3. The CISO signs off.** Once every item is decided, one message lists every decision with its facts
+and concerns, bound to the report's SHA-256, with **Approve review** below.
+
+![Slack DM: every decision listed with facts and concerns, the manifest hash, and the signed-off line, with the PDF in the thread](docs/images/slack-signoff.png)
+
+**4. The review finishes.** Tickets are opened and the channel thread gets a summary: who signed off,
+findings by check, the decisions, and where the tickets are.
+
+![Slack thread: "Okta access review is finished" with findings by severity and check, decisions, and ticket counts](docs/images/slack-review-finished.png)
+
+<details>
+<summary>The tickets in Jira Service Management</summary>
+
+One tracking ticket per review, with the manifest hash and where the evidence is:
+
+![JSM tracking ticket "Okta Access Review 2026-Q3" with counts, manifest SHA-256 and evidence path](docs/images/jira-tracking-ticket.png)
+
+Under it, one sub-ticket for each leaver, each revoke and each finding to fix. Each links to the
+person in the Okta admin console. The tracking ticket closes itself once the daily check has
+verified all of them.
+
+![JSM sub-tickets: leaver removals, revokes and fixes for the Acme demo](docs/images/jira-subtasks.png)
+
+</details>
 
 ## Sample report
 
