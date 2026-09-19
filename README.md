@@ -25,6 +25,22 @@ Seeded from `okta-access-review` at commit 1a20697. The local tool below works t
 - The report is marked incomplete if Okta withholds any data.
 - Optionally emails the PDF and posts a summary to Slack. Messages contain no personal data.
 
+## Built with
+
+| | Used for |
+|---|---|
+| **Okta** | The system being reviewed, read through its API with read-only scopes |
+| **Slack** | The review and sign-off: a bot posts to one channel and DMs the reviewer (the CISO), who decides with buttons |
+| **Jira Service Management** | A tracking ticket per review, and a ticket for each piece of access to remove and each finding to fix |
+| **AWS Lambda** | All of the compute and automation: collecting from Okta, posting to Slack, handling button clicks, opening tickets, reminders, and the daily check. Eight functions share one container image (Python, arm64). |
+| **AWS Step Functions** | Runs the steps of a review in order and waits for the sign-off |
+| **Amazon EventBridge Scheduler** | Starts the quarterly review and the hourly and daily jobs |
+| **Amazon S3** | The evidence, kept create-only under Object Lock, and the review's working state |
+| **AWS Systems Manager Parameter Store** | The four secrets: the Okta key, the Slack token and signing secret, and the Jira token |
+| **Amazon ECR, IAM, CloudWatch Logs, AWS Budgets** | The container image, one least-privilege role per function, 30-day logs, and a cost alert |
+| **Terraform** | **All of the AWS infrastructure.** A one-time bootstrap creates the state bucket and the CI roles; everything else is `infra/main`. The only AWS step done by hand is storing the four secret values, which Terraform deliberately never holds. |
+| **GitHub Actions** | Tests, security checks and Terraform on every pull request; on `master`, builds the image and applies Terraform after an approval. It signs in to AWS through OIDC, so there are no stored AWS keys. |
+
 ## How a review looks
 
 Screenshots from a real run against a development Okta org, and from a demo run with the fictional
