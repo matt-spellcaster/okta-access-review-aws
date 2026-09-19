@@ -40,7 +40,6 @@ locals {
     REVOKE_TICKET_DAYS    = tostring(var.revoke_ticket_days)
   }
   okta_env = {
-    OKTA_ORG_URL           = var.okta_org_url
     OKTA_CLIENT_ID         = var.okta_client_id
     OKTA_KEY_ID            = var.okta_key_id
     OKTA_PRIVATE_KEY_PARAM = local.params.okta_private_key

@@ -285,6 +285,7 @@ jobs:
       TF_VAR_okta_key_id: ${{ secrets.OKTA_KEY_ID }}
       TF_VAR_slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
       TF_VAR_slack_ciso_user: ${{ secrets.SLACK_CISO_USER }}
+      TF_VAR_slack_channel_pdf: ${{ vars.SLACK_CHANNEL_PDF || 'false' }}
       TF_VAR_jira_base_url: ${{ secrets.JIRA_BASE_URL }}
       TF_VAR_jira_email: ${{ secrets.JIRA_EMAIL }}
       TF_VAR_jira_project: ${{ secrets.JIRA_PROJECT }}
@@ -392,6 +393,7 @@ jobs:
       TF_VAR_okta_key_id: ${{ secrets.OKTA_KEY_ID }}
       TF_VAR_slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
       TF_VAR_slack_ciso_user: ${{ secrets.SLACK_CISO_USER }}
+      TF_VAR_slack_channel_pdf: ${{ vars.SLACK_CHANNEL_PDF || 'false' }}
       TF_VAR_jira_base_url: ${{ secrets.JIRA_BASE_URL }}
       TF_VAR_jira_email: ${{ secrets.JIRA_EMAIL }}
       TF_VAR_jira_project: ${{ secrets.JIRA_PROJECT }}

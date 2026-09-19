@@ -228,3 +228,34 @@ def test_the_worker_rechecks_permissions_itself(frontend):
     assert worker(forged, deps) == {"ok": False, "run": run}
     assert store.list_records(deps.s3, "evidence", run, "decisions") == []
     assert worker({"action": "approve", "run": run, "user": STRANGER, "source": {}}, deps)["ok"] is False
+
+
+def test_channel_posts_after_opening_go_in_the_reviews_thread(env):
+    deps, run, items = env
+    deps.channel_pdf = True
+    workflow.open_review(deps, run, "token-1")
+    state, _ = load_state(deps.s3, "work", run)
+    thread = state["channel_ts"]
+    # The report goes in the channel's thread as well as the approver's.
+    assert (deps.channel, f"okta-access-review-{run}.pdf", thread, b"%PDF") in deps.bot.uploads
+    decide_everything(deps, run, items)
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    workflow.remediate(deps, run)
+    finished = [p for c, p, _ in deps.bot.posts if c == deps.channel][-1]
+    assert finished["thread_ts"] == thread and finished["reply_broadcast"] is True
+    assert "to fix findings" in json.dumps(finished)
+
+
+def test_no_report_in_the_channel_unless_turned_on(env):
+    deps, run, _ = env
+    workflow.open_review(deps, run, "token-1")
+    assert not [u for u in deps.bot.uploads if u[0] == deps.channel]
+
+
+def test_item_cards_show_facts_then_why(env):
+    deps, run, _ = env
+    workflow.open_review(deps, run, "token-1")
+    dm = " ".join(posts_to(deps, CISO_DM))
+    assert "*Facts*" in dm and "*Why it could be an issue*" in dm
+    assert dm.index("*Facts*") < dm.index("*Why it could be an issue*") < dm.index("*Proposed:")
+    assert "Lee Chen" in dm and "MFA: none" in dm

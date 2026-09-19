@@ -161,3 +161,68 @@ def test_group_access_tickets_explain_the_side_effects(signed_review):
 def test_quarters():
     assert quarter("2026-01-01") == "2026-Q1" and quarter("2026-09-15") == "2026-Q3"
     assert quarter("2026-12-31") == "2026-Q4"
+
+
+def test_tickets_link_to_the_person_in_okta(signed_review):
+    rem, session, run, s3 = signed_review
+    rem.okta_org_url = "https://acme-demo.okta.com"
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    people = workflow.people(deps, run.run_dir.name)
+    rem.open_urgent(run.run_dir.name, "UAR-99", workflow.urgent_findings(deps, run.run_dir.name), people)
+    items = {i.key: i for i in run.items}
+    rem.open_revokes(run.run_dir.name, "UAR-99", items,
+                     {k: {"decision": REVOKE, "reason": ""} for k, i in items.items() if i.proposed == REVOKE})
+    marcus = next(f for f in session.issues.values() if f["summary"] == "Remove access for leaver marcus.lee@acme.example")
+    lee = next(f for f in session.issues.values() if f["summary"] == "Revoke Salesforce for lee.chen@acme.example")
+    for fields, uid in ((marcus, "u02"), (lee, "u05")):
+        body = json.dumps(fields["description"])
+        assert f"https://acme-demo-admin.okta.com/admin/user/profile/view/{uid}" in body
+        assert '"type": "link"' in body
+
+
+def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
+    rem, session, run, s3 = signed_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    rows = workflow.all_findings(deps, run.run_dir.name)
+
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 8
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0  # never twice
+    summaries = sorted(f["summary"] for f in session.issues.values())
+    assert "Fix: No MFA factor enrolled — lee.chen@acme.example" in summaries
+    # Leaver findings have leaver tickets, and AR-11/AR-14 are review items.
+    assert not any(s.startswith("Fix: ") and ("Terminated" in s or "Admin user" in s or "unused" in s)
+                   for s in summaries)
+    records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")]
+    assert {r["check_id"] for r in records if r["kind"] == "finding"} == {
+        "AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10"}
+    assert all(r.get("todo") for r in records)
+
+
+class TransitionSession(FakeJiraSession):
+    def __init__(self, status="new"):
+        super().__init__()
+        self.status = status
+        self.moved = []
+
+    def request(self, method, url, timeout, headers, json=None, params=None):
+        path = url.removeprefix(BASE + "/rest/api/3")
+        if path == "/issue/UAR-1" and method == "GET":
+            return Resp(body={"fields": {"status": {"statusCategory": {"key": self.status}}}})
+        if path == "/issue/UAR-1/transitions" and method == "GET":
+            return Resp(body={"transitions": [
+                {"id": "11", "to": {"statusCategory": {"key": "indeterminate"}}},
+                {"id": "61", "to": {"statusCategory": {"key": "done"}}}]})
+        if path == "/issue/UAR-1/transitions" and method == "POST":
+            self.moved.append(json["transition"]["id"])
+            return Resp(204)
+        return super().request(method, url, timeout, headers, json, params)
+
+
+def test_close_moves_only_its_own_project_to_done():
+    s = TransitionSession()
+    assert client(s).close("UAR-1") is True and s.moved == ["61"]
+    assert client(TransitionSession(status="done")).close("UAR-1") is False
+    with pytest.raises(JiraError, match="outside project"):
+        client(TransitionSession()).close("HR-1")

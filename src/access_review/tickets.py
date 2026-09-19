@@ -1,9 +1,13 @@
 """Remediation tickets in JSM, one parent per quarterly review.
 
-    open_parent   the review's tracking ticket, when the review opens
-    open_urgent   one ticket per person who has left but can still get in
-                  (AR-01/02/12/13), when the review opens, due in 24 hours
-    open_revokes  one ticket per Revoke decision, after sign-off, due in 7 days
+    open_parent    the review's tracking ticket, when the review opens
+    open_urgent    one ticket per person who has left but can still get in
+                   (AR-01/02/12/13), when the review opens, due in 24 hours
+    open_revokes   one ticket per Revoke decision, after sign-off, due in 7 days
+    open_findings  one ticket per finding that isn't an access decision (no MFA,
+                   no HR record, ...), after sign-off, due in 7 days
+
+Tickets about a person link to their page in the Okta admin console.
 
 Every ticket carries a label derived from what it is about (uar-key-...), and
 Jira is searched for that label before anything is created, so running a step
@@ -25,8 +29,13 @@ from typing import Callable
 from . import store
 from .items import REVOKE, ReviewItem
 from .jira import JiraClient, adf
+from .okta import admin_url
 
 LABEL = "access-review"
+# Findings that need a fix but aren't a Keep/Revoke decision: each gets a ticket
+# after sign-off. Leaver findings (AR-01/02/12/13) already have leaver tickets,
+# AR-11 and AR-14 are decided as review items.
+FIX_CHECKS = ("AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10")
 
 
 def quarter(review_date: str) -> str:
@@ -48,8 +57,13 @@ class Remediation:
     leaver_hours: int = 24
     revoke_days: int = 7
     now: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
+    okta_org_url: str = ""  # for links to people in the Okta admin console
 
     # --- helpers -------------------------------------------------------------
+
+    def _okta_link(self, user_id: str | None, who: str) -> list | None:
+        url = admin_url(self.okta_org_url, "user", user_id or "")
+        return [("Okta: ", "strong"), (f"open {who} in the Okta admin console", ("link", url))] if url else None
 
     def _existing(self, label: str) -> str | None:
         found = self.jira.search(f'project = "{self.jira.project}" AND labels = "{label}"', ["summary"], limit=2)
@@ -93,8 +107,10 @@ class Remediation:
         })
         return key
 
-    def open_urgent(self, run: str, parent: str, findings: list[dict]) -> int:
-        """One ticket per person, listing every leaver finding about them."""
+    def open_urgent(self, run: str, parent: str, findings: list[dict], people: dict[str, str] | None = None) -> int:
+        """One ticket per person, listing every leaver finding about them.
+        people maps a lowercased login to their Okta user ID, for the link."""
+        people = people or {}
         by_subject: dict[str, list[dict]] = defaultdict(list)
         for f in findings:
             by_subject[f["subject"]].append(f)
@@ -109,9 +125,14 @@ class Remediation:
             for r in rows:
                 paragraphs.append([(f"{r['check_id']} {r['title']}: ", "strong"), (r["detail"], None)])
                 paragraphs.append(f"To do: {r['remediation']}")
+            link = self._okta_link(people.get(subject.lower()), subject)
+            if link:
+                paragraphs.append(link)
             paragraphs.append("Resolve this ticket once done; the next daily check confirms it in Okta.")
             _, new = self._create(run, label, {"kind": "leaver", "run": run, "subject": subject,
-                                               "checks": [r["check_id"] for r in rows], "due": due}, {
+                                               "checks": [r["check_id"] for r in rows], "due": due,
+                                               "todo": f"Remove every way in for leaver {subject} "
+                                                       f"(account, API tokens, API clients they set up)"}, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
                 "summary": f"Remove access for leaver {subject}",
@@ -130,18 +151,53 @@ class Remediation:
             item = items[key]
             _, new = self._create(run, ticket_label("revoke", run, key), {
                 "kind": "revoke", "run": run, "item_key": key, "due": due,
+                "todo": what_to_do(item)[:1].upper() + what_to_do(item)[1:],
             }, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
                 "summary": f"Revoke {item.target} for {item.user}",
                 "duedate": due,
-                "description": adf(
+                "description": adf(*[p for p in (
                     [("Change in Okta: ", "strong"), (what_to_do(item), None)],
+                    self._okta_link(item.user_id, item.user),
                     f"Why: {final[key].get('reason') or item.reason}",
+                    *[f"Fact: {f}" for f in item.facts],
+                    *[f"Concern: {c}" for c in item.concerns],
                     f"Decided in the access review {run} and signed off by the CISO.",
                     [("Review item: ", None), (key, "code")],
                     "Resolve this ticket once done; the next daily check confirms it in Okta.",
-                ),
+                ) if p]),
+            })
+            created += new
+        return created
+
+
+    def open_findings(self, run: str, parent: str, findings: list[dict], people: dict[str, str] | None = None) -> int:
+        """One ticket per finding in FIX_CHECKS: the fixes the review found that
+        aren't access decisions. Closed by the daily check once the finding is gone."""
+        people = people or {}
+        due = (self.now() + timedelta(days=self.revoke_days)).date().isoformat()
+        created = 0
+        for f in sorted(findings, key=lambda r: (r["check_id"], r["subject"].lower())):
+            if f["check_id"] not in FIX_CHECKS:
+                continue
+            subject = f["subject"]
+            label = ticket_label("finding", run, f["check_id"], subject.lower())
+            _, new = self._create(run, label, {
+                "kind": "finding", "run": run, "check_id": f["check_id"], "subject": subject, "due": due,
+                "todo": f"{f['title']} ({f['check_id']}) for {subject}: {f['remediation']}",
+            }, {
+                "issuetype": {"name": self.child_type},
+                "parent": {"key": parent},
+                "summary": f"Fix: {f['title']} — {subject}",
+                "duedate": due,
+                "description": adf(*[p for p in (
+                    [(f"{f['check_id']} {f['title']}: ", "strong"), (f["detail"], None)],
+                    [("To do: ", "strong"), (f["remediation"], None)],
+                    self._okta_link(people.get(subject.lower()), subject),
+                    f"Found in the access review {run}. Resolve this ticket once done; "
+                    f"the next daily check confirms the finding is gone.",
+                ) if p]),
             })
             created += new
         return created

@@ -70,13 +70,15 @@ def _deps(tickets: bool = False, sfn: bool = False) -> workflow.Deps:
     if tickets:
         j = JiraSettings.from_env()
         remediation = Remediation(_jira(), _client("s3"), s.evidence_bucket, j.parent_type, j.child_type,
-                                  s.leaver_ticket_hours, s.revoke_ticket_days)
+                                  s.leaver_ticket_hours, s.revoke_ticket_days,
+                                  okta_org_url=_env("OKTA_ORG_URL", required=False))
     base = _env("JIRA_BASE_URL", required=False)
     return workflow.Deps(
         s3=_client("s3"), evidence_bucket=s.evidence_bucket, work_bucket=s.work_bucket,
         bot=BotClient(_secret("SLACK_BOT_TOKEN_PARAM")), reviewers=s.reviewers, channel=s.slack_channel,
         tickets=remediation, sfn=_client("stepfunctions") if sfn else None, review_days=s.review_days,
         ticket_url=(lambda key: browse_url(base, key)) if base else (lambda key: None),
+        channel_pdf=s.channel_pdf,
     )
 
 
@@ -139,10 +141,9 @@ def failed(event, context):
     closed = False
     if store.RUN_NAME.match(run):
         closed = workflow.close_review(_deps(), run, "the review execution stopped before it finished")
-    s = _settings()
-    BotClient(_secret("SLACK_BOT_TOKEN_PARAM")).post_message(s.slack_channel, msgs.channel_note(
+    workflow.post_to_channel(_deps(), run, msgs.channel_note(
         f":x: Okta access review `{run or 'unknown'}` stopped before it finished"
-        + (" and has been closed" if closed else "") + ". Check the Step Functions execution."))
+        + (" and has been closed" if closed else "") + ". Check the Step Functions execution."), broadcast=True)
     return {"run": run or "unknown", "notified": True, "closed": closed}
 
 
@@ -180,4 +181,6 @@ def verify_daily(event, context):
     as_of = datetime.now(timezone.utc).date()
     snapshot = collect_okta(_okta(), roster, as_of, config.activity_lookback_days, config.timezone())
     findings, _ = run_checks(ReviewContext(snapshot, roster, config, as_of))
-    return watch.daily(_deps(), _jira(), snapshot, watch.leaver_access(findings, snapshot))
+    jira = _jira()
+    return watch.daily(_deps(tickets=True), jira, snapshot, watch.leaver_access(findings, snapshot),
+                       watch.finding_keys(findings))

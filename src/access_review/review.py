@@ -45,7 +45,7 @@ def run_review(
     findings, skipped = run_checks(ctx)
     history = load_history(out_dir, run_dir_name(snapshot), snapshot.org_url, as_of, config.history_reviews)
     age_findings(findings, history, as_of)
-    items = build_items(ctx) if require_items else None
+    items = build_items(ctx, findings) if require_items else None
     extra = {ITEMS_FILE: items_json(items, as_of, config.app_unused_days)} if items is not None else None
     run_dir = write_report(out_dir, snapshot, findings, skipped, config, as_of,
                            roster_path=roster_path, history=history, extra_files=extra)

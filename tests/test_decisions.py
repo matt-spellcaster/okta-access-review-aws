@@ -145,7 +145,8 @@ def test_a_signed_off_run_verifies_after_download(review, tmp_path, capsys):
 
     folder = store.download_run(s3, BUCKET, run.run_dir.name, tmp_path / "dl")
     assert attest_main([str(folder)]) == 0
-    assert "Slack sign-off" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Slack sign-off" in out and "No sign-offs recorded yet" not in out
 
     # Changing a decision after the sign-off is caught.
     doc = json.loads((folder / "signoff" / "decisions.json").read_text())

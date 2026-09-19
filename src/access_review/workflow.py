@@ -67,6 +67,8 @@ class Deps:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # A Jira ticket's page, or None when there is none to link to (see JiraClient.browse_url).
     ticket_url: Callable[[str], str | None] = field(default=lambda key: None)
+    # Also post the report PDF in the review channel's thread (it holds personal data).
+    channel_pdf: bool = False
 
 
 @dataclass
@@ -127,6 +129,33 @@ def leaver_tickets(deps: Deps, run: str) -> dict[str, msgs.Ticket]:
     }
 
 
+def people(deps: Deps, run: str) -> dict[str, str]:
+    """Okta user ID by lowercased login, from the run's snapshot, for admin console links."""
+    snap = json.loads(store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "snapshot.json")))
+    return {u["login"].lower(): u["id"] for u in snap.get("users", [])}
+
+
+def post_to_channel(deps: Deps, run: str, payload: dict, broadcast: bool = False) -> str:
+    """Post in the review channel, as a reply in the review's thread once it has
+    one. broadcast also shows the reply in the channel itself."""
+    try:
+        state, _ = load_state(deps.s3, deps.work_bucket, run)
+        thread = state.get("channel_ts")
+    except FileNotFoundError:
+        thread = None
+    if thread:
+        payload = {**payload, "thread_ts": thread, **({"reply_broadcast": True} if broadcast else {})}
+    return deps.bot.post_message(deps.channel, payload)
+
+
+def _upload_pdf(deps: Deps, run: str, channel: str, thread_ts: str, comment: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "report.pdf"
+        pdf.write_bytes(store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "report.pdf")))
+        deps.bot.upload_file(channel, pdf, filename=f"okta-access-review-{run}.pdf",
+                             title=f"Okta access review ({run})", thread_ts=thread_ts, comment=comment)
+
+
 def _post_dm(deps: Deps, data: RunData, final: dict, due: str, parent: str | None) -> dict:
     channel = deps.bot.open_dm(deps.reviewers.ciso)
     summary_ts = deps.bot.post_message(channel, msgs.summary_message(
@@ -165,13 +194,18 @@ def open_review(deps: Deps, run: str, task_token: str) -> dict:
     if deps.tickets is not None:
         counts = summary(data.item_list)
         parent = deps.tickets.open_parent(run, data.manifest, data.manifest_sha256, counts, due_at)
-        urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run))
+        urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run), people(deps, run))
         update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(parent_issue=parent))
 
     dms = {CISO: _post_dm(deps, data, {}, due, parent)} if data.item_list else {}
     update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(dms=dms))
-    deps.bot.post_message(deps.channel, msgs.channel_opened(
+    # The review's thread in the channel: everything later about it goes under this post.
+    channel_ts = deps.bot.post_message(deps.channel, msgs.channel_opened(
         run, summary(data.item_list), due, _ticket(deps, parent), urgent))
+    update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(channel_ts=channel_ts))
+    if deps.channel_pdf:
+        _upload_pdf(deps, run, deps.channel, channel_ts,
+                    ":page_facing_up: The full report. :lock: Contains names and access details.")
     maybe_ready(deps, data, {})  # a review with nothing to decide goes straight to sign-off
     return {"run": run, "items": len(data.item_list), "urgent_tickets": urgent}
 
@@ -211,12 +245,7 @@ def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
     ts = deps.bot.post_message(channel, msgs.approve_message(
         data.run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
         _ticket(deps, state.get("parent_issue"))))
-    with tempfile.TemporaryDirectory() as tmp:
-        pdf = Path(tmp) / "report.pdf"
-        pdf.write_bytes(store.get_bytes(deps.s3, deps.evidence_bucket, _key(data.run, "report.pdf")))
-        deps.bot.upload_file(channel, pdf, filename=f"okta-access-review-{data.run}.pdf",
-                             title=f"Okta access review ({data.run})", thread_ts=ts,
-                             comment=":page_facing_up: The full report. :lock: Contains personal data.")
+    _upload_pdf(deps, data.run, channel, ts, ":page_facing_up: The full report. :lock: Contains personal data.")
     update_state(deps.s3, deps.work_bucket, data.run, lambda s: s.update(approve={"channel": channel, "ts": ts}))
     return True
 
@@ -312,12 +341,67 @@ def remediate(deps: Deps, run: str) -> dict:
     parent = state.get("parent_issue")
     opened = deps.tickets.open_revokes(run, parent, data.items, final)
     revokes = sum(1 for d in final.values() if d["decision"] == REVOKE)
+    rows = all_findings(deps, run)
+    fixes = deps.tickets.open_findings(run, parent, rows, people(deps, run))
     deps.tickets.jira.add_comment(parent, _adf_signoff(att, opened, revokes))
     update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(remediated=True))
-    deps.bot.post_message(deps.channel, msgs.channel_finished(
+    post_checklist(deps, run)
+    fix_count = sum(1 for _, r in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
+                    if r.get("kind") == "finding")
+    post_to_channel(deps, run, msgs.channel_finished(
         run, data.manifest, check_counts(deps, run), att, len(final) - revokes, revokes,
-        _ticket(deps, parent), deps.tickets.revoke_days))
-    return {"run": run, "revoke_tickets": revokes, "opened_now": opened}
+        _ticket(deps, parent), deps.tickets.revoke_days, fix_count), broadcast=True)
+    return {"run": run, "revoke_tickets": revokes, "opened_now": opened + fixes, "fix_tickets": fix_count}
+
+
+def all_findings(deps: Deps, run: str) -> list[dict]:
+    text = store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode()
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def checklist_entries(deps: Deps, run: str) -> list[dict]:
+    """Every ticket that must be done before the tracking ticket closes, and
+    whether the daily check has verified it yet."""
+    verified = {}
+    for name, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "verifications"):
+        if name.endswith("-verified.json"):
+            verified[rec["label"]] = rec.get("checked_at", "")[:10]
+    return [
+        {"ticket": _ticket(deps, rec["issue"]), "todo": rec.get("todo") or rec.get("kind", "ticket"),
+         "due": rec.get("due"), "verified": verified.get(rec["label"]), "label": rec["label"]}
+        for _, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
+        if rec.get("kind") in ("leaver", "revoke", "finding")
+    ]
+
+
+def post_checklist(deps: Deps, run: str) -> None:
+    """The action items, in the approval message's thread and on the tracking ticket."""
+    from .jira import adf
+
+    state, _ = load_state(deps.s3, deps.work_bucket, run)
+    entries = checklist_entries(deps, run)
+    message = msgs.checklist_message(run, _ticket(deps, state.get("parent_issue")), entries)
+    approve_msg = state.get("approve") or {}
+    if approve_msg.get("ts"):
+        ts = deps.bot.post_message(approve_msg["channel"], {**message, "thread_ts": approve_msg["ts"]})
+        update_state(deps.s3, deps.work_bucket, run,
+                     lambda s: s.update(checklist={"channel": approve_msg["channel"], "ts": ts}))
+    if state.get("parent_issue") and deps.tickets is not None:
+        deps.tickets.jira.add_comment(state["parent_issue"], adf(
+            "To close this ticket, each of these must be done and verified in Okta:",
+            *[[(f"{e['ticket'][0]}: ", "strong"), (f"{e['todo']} (due {e.get('due')})", None)] for e in entries],
+            "Resolve each sub-ticket once its change is made; the daily check verifies it and this ticket "
+            "closes automatically when all are verified.",
+        ))
+
+
+def refresh_checklist(deps: Deps, run: str) -> None:
+    """Tick off verified items in the approval thread's checklist."""
+    state, _ = load_state(deps.s3, deps.work_bucket, run)
+    checklist = state.get("checklist") or {}
+    if checklist.get("ts"):
+        deps.bot.update_message(checklist["channel"], checklist["ts"], msgs.checklist_message(
+            run, _ticket(deps, state.get("parent_issue")), checklist_entries(deps, run)))
 
 
 def check_counts(deps: Deps, run: str) -> list[tuple[str, str, str, int]]:
