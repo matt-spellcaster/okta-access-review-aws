@@ -173,7 +173,9 @@ def _collect_activity(
     for client_id, after in sorted(owned.items()):
         activity(client_id, by_client[client_id].label, after)
 
-    return events, horizon
+    # A refused log read has no window: returning the horizon anyway would let a
+    # caller read 'no events' as 'nothing happened' rather than 'nothing was read'.
+    return events, (horizon if logs_api.allowed else None)
 
 
 def _collect_app_usage(

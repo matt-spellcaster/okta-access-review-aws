@@ -17,6 +17,10 @@ SIGN_IN_STATUSES = {"ACTIVE", "RECOVERY", "PASSWORD_EXPIRED", "LOCKED_OUT"}
 DISABLED_STATUSES = {"SUSPENDED", "DEPROVISIONED"}
 # Built-in admin roles that can view but not change anything.
 READ_ONLY_ROLES = {"read-only administrator", "report administrator"}
+# App and OAuth client statuses. Okta words these differently from user
+# statuses, and anything outside both sets is unknown, never assumed disabled.
+APP_LIVE_STATUSES = {"ACTIVE"}
+APP_DISABLED_STATUSES = {"INACTIVE"}
 
 # System Log event types, grouped by what each one tells a review.
 # Someone signed in, or used a session.
