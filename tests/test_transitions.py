@@ -117,6 +117,57 @@ def test_no_graph_is_not_the_same_as_nobody_left(demo):
     assert summary([]) == {"total": 0, "unfinished": 0, "clean": 0, "complete": True}
 
 
+def _snapshot_without(demo, mutate):
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    mutate(raw)
+    snapshot = Snapshot.from_dict(raw)
+    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    graph = IdentityGraph.compose(
+        project_snapshot(snapshot, demo.config.service_accounts), project_github(github)
+    )
+    ctx = ReviewContext(snapshot, demo.roster, demo.config, AS_OF, graph=graph)
+    findings, _ = run_checks(ctx)
+    return build_transitions(ctx, findings, [])
+
+
+def test_a_departure_whose_okta_account_was_deleted_still_gets_a_bundle(demo):
+    """The loop used to walk Okta accounts, which answers "which departures
+    does Okta still know about" -- not the question. Delete the account and the
+    person vanished from the numerator and the denominator at once, while their
+    active write-capable GitHub principal sat in the graph."""
+    ts = _snapshot_without(
+        demo, lambda raw: raw.update(users=[u for u in raw["users"]
+                                            if not u["login"].startswith("victor")]))
+    got = {t.identity: t for t in ts}
+    assert set(got) == {"marcus.lee@acme.example", "sofia.ramos@acme.example",
+                        "victor.nguyen@acme.example"}
+    victor = got["victor.nguyen@acme.example"]
+    assert victor.okta_login == "", "there is no Okta account to name"
+    # The roster address still joins him to GitHub, so the residue is reported.
+    assert [p["label"] for p in victor.outside_okta] == ["victor-nguyen"]
+    # And the bundle says why it may be short, rather than reading as complete.
+    assert not victor.complete
+    assert any("no account" in g for g in victor.gaps), victor.gaps
+    assert summary(ts)["total"] == 3 and summary(ts)["complete"] is False
+
+
+def test_a_departure_with_no_profile_email_is_recorded_not_dropped(demo):
+    """identity_key is empty, so nothing can be joined to them across sources.
+    Skipping them silently made the counts assert that a departure was checked
+    when it never was."""
+    def strip_email(raw):
+        for user in raw["users"]:
+            if user["login"].startswith("victor"):
+                user["profile"].pop("email", None)
+
+    ts = _snapshot_without(demo, strip_email)
+    victor = next(t for t in ts if t.identity == "victor.nguyen@acme.example")
+    assert victor.okta_login.startswith("victor"), "the account exists, it just cannot be joined"
+    assert not victor.complete
+    assert any("no email in its profile" in g for g in victor.gaps), victor.gaps
+    assert summary(ts)["total"] == 3
+
+
 def test_findings_are_gathered_worst_first_across_sources(demo):
     """An Okta finding is not more important than a GitHub one because Okta was
     read first, and whoever opens the bundle reads the top."""

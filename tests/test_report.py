@@ -342,6 +342,26 @@ def test_the_departure_bundles_are_hashed_into_the_manifest(tmp_path):
     }
 
 
+def test_a_rerun_does_not_inherit_the_previous_run_evidence(tmp_path):
+    """The worst failure this file can have. Re-running into the same folder
+    without --github used to leave the earlier run's github_snapshot.json and
+    transitions.json behind, and the new manifest hashed them -- so a signed
+    manifest asserted a GitHub read and a departure bundle for a review whose
+    own `sources` list was empty, and `attest` called it a full match."""
+    args = DEMO_ARGS + ["--out", str(tmp_path)]
+    assert main(args + ["--github", str(FIXTURES / "demo_github.json")]) == 0
+    d = run_dir(tmp_path)
+    assert (d / "transitions.json").exists() and (d / "github_snapshot.json").exists()
+
+    assert main(args) == 0  # same folder, no --github this time
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert manifest["sources"] == [] and "AR-17" in manifest["skipped_checks"]
+    assert not (d / "transitions.json").exists(), "a bundle from the previous run survived"
+    assert not (d / "github_snapshot.json").exists()
+    assert "transitions.json" not in manifest["files"]
+    assert "github_snapshot.json" not in manifest["files"]
+
+
 def test_an_okta_only_review_writes_no_departure_bundle(tmp_path):
     """Without a second source every leaver would read as a finished departure,
     which is the claim the file exists to stop anyone making."""

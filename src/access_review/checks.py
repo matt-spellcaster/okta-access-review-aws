@@ -676,8 +676,12 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
             detail += f" holding {' and '.join(carries)}." if carries else "."
             out.append(check.finding(
                 graph_subject(principal), detail,
+                # An elevated role is write access to the organization itself.
+                # Grading on credentials alone ranked a departed organization
+                # owner below a departed ordinary member holding one token,
+                # because the owner's own token happened to be read-only.
                 # Unknown write access is not the milder case: see _write_access.
-                severity="critical" if _write_access(credentials, known) is not False else "high",
+                severity="critical" if roles or _write_access(credentials, known) is not False else "high",
             ))
     return out
 
@@ -798,8 +802,10 @@ CHECKS: list[Check] = [
         "AR-17", "Someone who left still has access outside Okta", "critical",
         # A.5.18 (access rights, incl. removal on termination), not A.5.11
         # (return of assets): this evidences access that outlived a departure,
-        # not equipment nobody handed back. Matches AR-01/AR-12/AR-13.
-        ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
+        # not equipment nobody handed back. Matches AR-01/AR-12/AR-13. A.8.2
+        # (privileged access rights) because the check now reports the elevated
+        # roles a departure leaves behind, which is what AR-10 and AR-11 map to.
+        ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
         "Remove the access and revoke the credentials in that system. Deactivating the Okta "
         "account did not reach them, which is why they are still here.",
         _leaver_access_outside_okta, needs_graph=True, needs_roster=True,

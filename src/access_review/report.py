@@ -316,6 +316,17 @@ def write_report(
     (run_dir / "snapshot.json").write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n")
     for name, text in extra_files.items():
         (run_dir / name).write_text(text)
+    # An optional evidence file this run did not produce must not survive into
+    # its manifest. Re-running into the same folder without --github otherwise
+    # leaves the previous run's github_snapshot.json and transitions.json in
+    # place, and the hashing below signs them as part of a review that never
+    # read that source -- which `attest` then reports as a full match. Reserved
+    # files are this function's own output and are rewritten above; anything
+    # else in the folder came from extra_files, this run's or an earlier one's.
+    for stale in run_dir.iterdir():
+        if stale.is_file() and not stale.is_symlink() \
+                and stale.name not in RESERVED_FILES and stale.name not in extra_files:
+            stale.unlink()
 
     manifest = {
         "tool": f"okta-access-review {__version__}",

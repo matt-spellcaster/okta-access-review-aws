@@ -96,7 +96,9 @@ class Transition:
             "identity": self.identity,
             "name": self.name,
             "okta_login": self.okta_login,
-            "effective": self.effective.isoformat() if self.effective else "",
+            # None, not "": every other optional value in this document is
+            # JSON null (format_time, in the principal rows beside it).
+            "effective": self.effective.isoformat() if self.effective else None,
             "roster_status": self.roster_status,
             "manager": self.manager,
             "complete": self.complete,
@@ -200,12 +202,20 @@ def build_transitions(ctx: ReviewContext, findings, gaps: list[str]) -> list[Tra
     # not depend on the order the API happened to return users in -- evidence
     # that changes between two reads of the same estate is not evidence.
     seen: dict[str, Transition] = {}
+    covered: set[str] = set()  # roster records an Okta account already speaks for
+    unjoinable: dict[str, object] = {}  # roster email -> an account with no profile email
     for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
         entry: RosterEntry | None = ctx.roster_entry(user)
         if entry is None or not entry.is_gone(ctx.as_of):
             continue
         identity = identity_key(user)
-        if not identity or identity in seen:
+        if not identity:
+            # Nothing can be joined to them across sources. Deferred to the
+            # roster pass below, which records why rather than dropping them.
+            unjoinable.setdefault(entry.email, user)
+            continue
+        covered.add(entry.email)
+        if identity in seen:
             continue
         seen[identity] = Transition(
             kind=TransitionKind.LEAVER,
@@ -218,6 +228,35 @@ def build_transitions(ctx: ReviewContext, findings, gaps: list[str]) -> list[Tra
             principals=_held(ctx, identity),
             findings=_findings_for(findings, user.login, graph_by_identity, identity),
             gaps=list(gaps),
+        )
+
+    # Everyone else the roster says has gone. The loop above walks Okta
+    # accounts, so it answers "which departures does Okta still know about" --
+    # which is not the question. A leaver whose Okta account was deleted
+    # outright, or whose profile carries no email, would otherwise be absent
+    # from the numerator and the denominator alike, and `summary` would report
+    # the remaining bundles as a complete account of the quarter's departures.
+    for email, entry in sorted(ctx.roster.items()):
+        if not entry.is_gone(ctx.as_of) or email in covered or email in seen:
+            continue
+        account = unjoinable.get(email)
+        login = getattr(account, "login", "")
+        why = (f"Okta account {login} has no email in its profile, so nothing in another source can "
+               f"be joined to them." if account is not None else
+               "HR records this departure, but the Okta user read returned no account for them.")
+        seen[email] = Transition(
+            kind=TransitionKind.LEAVER,
+            identity=email,
+            name=entry.name,
+            okta_login=login,
+            effective=entry.end_date,
+            roster_status=entry.status,
+            manager=entry.manager,
+            principals=_held(ctx, email),
+            findings=_findings_for(findings, login, graph_by_identity, email) if login else [],
+            # Their own gap, not just the review's: this bundle is a lower bound
+            # on what one named person still holds, and saying so is the point.
+            gaps=[*gaps, f"{why} What they still hold elsewhere cannot be listed here."],
         )
     return [seen[k] for k in sorted(seen)]
 

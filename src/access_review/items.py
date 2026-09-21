@@ -39,6 +39,19 @@ HR_RECORD = "hr_record"
 HR_REASON = ("No HR record. Raise it with HR: add them to the roster, list them as a service account in the "
              "config, or have the account deactivated. This is handled outside the review, and no ticket is "
              "opened for it.")
+# A person whose only problem is in another source. Review items are built from
+# Okta access, so someone whose Okta offboarding actually completed has no items
+# at all -- and their cross-source finding, which is exactly what this tool
+# exists to surface, would reach no decision screen. The better the Okta
+# hygiene, the more certain the finding is to be invisible. This item exists so
+# that person still appears.
+CROSS_SOURCE = "cross_source"
+CROSS_SOURCE_TARGET = "Access outside Okta"
+CROSS_SOURCE_REASON = ("They hold no access in Okta, but another source still does. This review cannot change "
+                       "access outside Okta: acknowledge it here, and the finding's own ticket tracks the fix.")
+# Kinds settled by acknowledging rather than by keep/revoke: the review records
+# that the reviewer saw them, and the work happens elsewhere.
+ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
 # Reviewer roles. Every new item goes to the CISO; "admin" only appears in item
 # files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
@@ -67,7 +80,7 @@ class ItemsError(ValueError):
 @dataclass(frozen=True)
 class ReviewItem:
     key: str  # stable across runs for the same access, so decisions and tickets line up
-    kind: str  # "app", "admin_role", "admin_group" or "hr_record"
+    kind: str  # "app", "admin_role", "admin_group", "hr_record" or "cross_source"
     user_id: str
     user: str  # Okta login
     target_id: str
@@ -229,6 +242,8 @@ def role_concern(kind: str, target: str) -> list[str]:
 
 def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     """findings are this review's findings (run_checks); they become each item's concerns."""
+    graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
+
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str,
              app: App | None = None) -> ReviewItem:
         facts = person_facts(ctx, user)
@@ -242,7 +257,6 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
                            + concerns_for(findings, user, kind, app, graph_by_identity)),
         )
 
-    graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
     no_hr_record = {f.subject.lower() for f in findings if f.check_id == "AR-03"}
     items: list[ReviewItem] = []
@@ -263,6 +277,17 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
                 ))
         if user.login.lower() in no_hr_record:
             items.append(item(HR_RECORD, user, "hr-record", "HR record", "none", DECIDE, HR_REASON))
+
+    # Anyone carrying a cross-source finding who got no item above. Appended
+    # after the loop rather than inside it because whether a person has any
+    # other item is only known once their apps, roles and groups have been
+    # walked, and a DEPROVISIONED user skips most of that.
+    with_items = {i.user_id for i in items}
+    for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
+        if user.id in with_items or not graph_by_identity.get(identity_key(user)):
+            continue
+        items.append(item(CROSS_SOURCE, user, "cross-source", CROSS_SOURCE_TARGET, "none",
+                          DECIDE, CROSS_SOURCE_REASON))
 
     keys = [i.key for i in items]
     if len(keys) != len(set(keys)):

@@ -54,7 +54,7 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   `test_cross_source_findings_carry_the_planted_severities`** (severity is the judgement in these
   checks; asserting subjects alone lets a constant pass). A `needs_graph` check reads `ctx.graph`
   rather than `ctx.snapshot` and is skipped when no graph was built.
-- A graph finding's subject is `{source}/{principal.id}` (`checks._subject`), never the label.
+- A graph finding's subject is `{source}/{principal.id}` (`checks.graph_subject`), never the label.
   Ticket identity is `(check_id, subject)` hashed into a permanent Jira label, and a label is a
   display name: a GitHub login can be renamed and two Okta service clients can share an app label,
   which would collapse two unremediated problems onto one ticket. The readable name goes in the
@@ -110,9 +110,24 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 - A departure bundle (`transitions.py`) is per identity, never per account, and takes the review's
   gaps from `ReviewRun.gaps` rather than deciding completeness itself. `build_transitions` returns
   None when there was no graph or no roster: "nobody left" and "nothing looked" are different
-  answers, and an empty list reports every departure clean. Bundles carry personal data, so they go
-  in the run folder, the PDF and JSM; `transitions.summary` is the counts-only shape for Slack and
-  Step Functions. Walk users in login order -- evidence that changes with API paging is not evidence.
+  answers, and an empty list reports every departure clean. The denominator is the **roster**, not
+  the Okta user list: a leaver whose account was deleted, or whose profile has no email, still gets
+  a bundle carrying its own gap, because walking accounts answers "which departures does Okta still
+  know about" and drops the rest from numerator and denominator at once. Bundles carry personal
+  data, so today they stay in the run folder and the evidence bucket; `transitions.summary` is the
+  counts-only shape for Slack and Step Functions. Walk users in login order -- evidence that changes
+  with API paging is not evidence.
+- Review items are built from Okta access, so someone whose Okta offboarding completed has none --
+  and their cross-source finding would reach no decision screen, which is the one case the check
+  exists for. `items.CROSS_SOURCE` is the person-level item that catches them. It settles by
+  acknowledging (`ACKNOWLEDGE_ONLY`, like `HR_RECORD`): this review cannot change another source,
+  and the finding's own ticket tracks the fix.
+- A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
+  emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
+  because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.
+  `checks._elevated_roles` reads every ROLE grant and AR-17 grades critical on it, so an ordinary
+  member appearing there makes every departure critical. A role the adapter does not recognise is
+  treated as elevated. Roles the snapshot never read are a gap (`roles_complete`), not an absence.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
   change a hashed file, and never send anything. History must never count a review it couldn't
   verify against its manifest; when unsure, count lower. `reopened` ("Back again") asserts a

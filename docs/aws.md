@@ -43,7 +43,7 @@ Slack → function URL → uar-interact   checks the signature, then hands the c
 | Path | What |
 |---|---|
 | `report.pdf`, `findings.csv`, `access_matrix.csv`, `snapshot.json`, `roster.csv`, `review_items.json`, `manifest.json` | The review, with every file hashed in the manifest |
-| `transitions.json` | One bundle per departure, when the review read a source beyond Okta. Hashed like the rest, so a bundle attached to a ticket can be shown to be the one the review produced |
+| `transitions.json` | One bundle per departure, when the review read a source beyond Okta. Hashed like the rest, so it can be shown to be the one the review produced. **Not produced by the AWS pipeline yet:** `handlers.collect` passes no GitHub snapshot, so cross-source checks are skipped there and this file appears only in CLI runs given `--github` |
 | `decisions/<time>-<id>.json` | One record per click: who (Slack user ID), what, why, and the manifest hash |
 | `signoff/decisions.json`, `signoff/attestation.json` | The final decision per item, and the CISO's sign-off, bound to both hashes |
 | `tickets/<label>.json` | Each JSM ticket opened |

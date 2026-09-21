@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from . import store
-from .items import REVOKE, ReviewItem
+from .items import ACKNOWLEDGE_ONLY, REVOKE, ReviewItem
 from .jira import JiraClient, adf
 from .okta import admin_url
 
@@ -244,6 +244,11 @@ def _sentence(text: str) -> str:
 
 
 def what_to_do(item: ReviewItem) -> str:
+    if item.kind in ACKNOWLEDGE_ONLY:
+        # Never reached today (these settle by acknowledging, so they are never
+        # decided REVOKE), but the fallthrough below would otherwise tell someone
+        # to remove them from an admin group that does not exist.
+        return f"review {item.user}'s access outside Okta; this review cannot change it."
     if item.kind == "app" and item.via == "direct":
         return f"unassign {item.user} from the app {item.target}."
     if item.kind == "app":

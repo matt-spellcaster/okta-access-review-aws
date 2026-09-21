@@ -3,6 +3,7 @@
   "collected_at": "2026-09-15T14:00:00Z",
   "sso_enabled": true,
   "credentials_complete": true,
+  "roles_complete": true,
   "gaps": [],
   "members": [
     {

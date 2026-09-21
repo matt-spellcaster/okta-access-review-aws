@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 
-from .items import DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
+from .items import ACKNOWLEDGE_ONLY, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
 
 # Two blocks per item and Slack allows 50 per message, with room for a header.
 CHUNK = 20
 LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
-KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group", HR_RECORD: "HR record"}
+KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
+        HR_RECORD: "HR record", CROSS_SOURCE: "Outside Okta"}
 FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 MAX_TEXT = 2900  # Slack's section limit is 3000
 # Sections on the sign-off message; beyond this, the list points to the report.
@@ -70,6 +71,8 @@ def describe(item: ReviewItem) -> str:
     who = f"*{_esc(item.name)}* ({_esc(item.user)})" if item.name else f"*{_esc(item.user)}*"
     if item.kind == HR_RECORD:
         return f"{who} · *No HR record* (flag for HR; no ticket)"
+    if item.kind == CROSS_SOURCE:
+        return f"{who} · *Access outside Okta* (nothing left in Okta; see the concerns below)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
@@ -81,8 +84,8 @@ def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
     lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or ["• Nothing flagged."]
     if ticket:
         lines.append(f"• :ticket: Leaver ticket {ticket_link(ticket)}")
-    if item.kind == HR_RECORD:
-        lines.append(f"*Acknowledge to confirm you will raise this with HR.* {_esc(item.reason)}")
+    if item.kind in ACKNOWLEDGE_ONLY:
+        lines.append(f"*Acknowledge that you have seen this.* {_esc(item.reason)}")
     else:
         lines.append(f"*Proposed: {LABEL[item.proposed]}.* {_esc(item.reason)}")
     return lines
@@ -96,12 +99,12 @@ def item_blocks(run: str, item: ReviewItem, chunk: int, decided: dict | None,
     if decided:
         why = f" · _{_esc(decided['reason'])}_" if decided.get("reason") else ""
         mark = ":white_check_mark:" if decided["decision"] == KEEP else ":no_entry:"
-        label = "Acknowledged" if item.kind == HR_RECORD else LABEL[decided["decision"]]
+        label = "Acknowledged" if item.kind in ACKNOWLEDGE_ONLY else LABEL[decided["decision"]]
         return [section, {"type": "context", "elements": [{
             "type": "mrkdwn",
             "text": _clip(f"{mark} *{label}* by <@{decided['decided_by']}>{why}"),
         }]}]
-    if item.kind == HR_RECORD:
+    if item.kind in ACKNOWLEDGE_ONLY:
         # One button: acknowledging is recorded as keep, and nothing else is accepted for this item.
         return [section, {"type": "actions", "block_id": f"a:{item.key}", "elements": [{
             "type": "button", "action_id": f"decide:{KEEP}", "style": "primary",
@@ -177,6 +180,9 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
             continue
         if item.kind == HR_RECORD:
             grouped[FLAGGED].append(f"• {describe(item)} — acknowledged, to be raised with HR")
+            continue
+        if item.kind == CROSS_SOURCE:
+            grouped[FLAGGED].append(f"• {describe(item)} — acknowledged; tracked by its own ticket")
             continue
         lines = [f"• {describe(item)}"]
         for fact in item.facts:

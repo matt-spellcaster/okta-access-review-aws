@@ -94,7 +94,11 @@ def run_review(
     # place that states it.
     gaps = all_gaps(snapshot, graph)
     transitions = build_transitions(ctx, findings, gaps)
-    if transitions:
+    if transitions is not None:
+        # Not `if transitions:` -- an empty list means the analysis ran and
+        # nobody had left, which is the denominator that makes the bundles that
+        # do exist mean something. Writing nothing would make that run folder
+        # indistinguishable from one that never looked.
         extra[TRANSITIONS_FILE] = transitions_json(transitions, as_of)
     run_dir = write_report(out_dir, snapshot, findings, skipped, config, as_of,
                            roster_path=roster_path, history=history, extra_files=extra or None, graph=graph)

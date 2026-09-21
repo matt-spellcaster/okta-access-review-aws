@@ -92,6 +92,19 @@ SSH_CREDENTIAL = "SSH key"
 # Enterprise Managed Users, which is a different endpoint on a plan this tool
 # cannot assume. Anything else the API starts returning reads as UNKNOWN, which
 # is what a status nobody can interpret should be.
+# Org roles that carry administrative power, and what GitHub's own interface
+# calls them. `admin` is the API's word for what the UI and the docs call an
+# organization owner: "Organization owners have complete administrative access
+# to your organization."
+# Deliberately not elevated: `member` (ordinary), `direct_member` (the
+# invitations read's word for an ordinary invitee), and `billing_manager`, who
+# per GitHub's docs cannot "create or access repositories in your
+# organizations". Roles outside this vocabulary are recorded as they came, and
+# treated as elevated: a role this adapter has never heard of is not evidence
+# that it is harmless.
+ROLE_LABELS = {"admin": "organization owner", "owner": "organization owner"}
+ORDINARY_ROLES = frozenset({"member", "direct_member", "billing_manager"})
+
 MEMBER_STATUSES = {"active": Status.ACTIVE, "pending": Status.UNKNOWN}
 
 
@@ -196,7 +209,7 @@ class Member:
     id: str
     login: str
     state: str = "active"  # active | pending (see MEMBER_STATUSES)
-    role: str = "member"  # member | admin | billing_manager
+    role: str = "member"  # see ROLE_LABELS; normalised to lower case in from_dict
     saml_identity: SamlIdentity | None = None
     verified_emails: list[str] = field(default_factory=list)
     # GitHub's account creation date, NOT the org join date -- GitHub exposes
@@ -209,8 +222,12 @@ class Member:
         return cls(
             id=d["id"],
             login=d["login"],
-            state=d.get("state", "active"),
-            role=d.get("role", "member"),
+            state=(d.get("state") or "active").strip().lower(),
+            # Case-folded: the REST reads spell these lower case, GraphQL's
+            # OrganizationMemberRole enum spells them ADMIN and MEMBER, and a
+            # case-sensitive comparison against "member" makes every ordinary
+            # member of a GraphQL-sourced org look like an elevated one.
+            role=(d.get("role") or "member").strip().lower(),
             saml_identity=SamlIdentity.from_dict(d.get("samlIdentity")),
             verified_emails=[e.strip().lower() for e in (d.get("verifiedEmails") or [])],
             account_created=parse_time(d.get("accountCreatedAt")),
@@ -348,6 +365,12 @@ class GitHubSnapshot:
     # credential's absence is not evidence that it is not there. The analogue
     # of Snapshot.app_usage_complete. Defaults False: see from_dict.
     credentials_complete: bool = False
+    # False when the organization-roles reads did not run. The member `role`
+    # field carries only the base role: security managers and custom
+    # organization roles come from GET /orgs/{org}/organization-roles and its
+    # /users sub-resource, so without them an elevated role is unknown rather
+    # than absent. Defaults False: see from_dict.
+    roles_complete: bool = False
     gaps: list[str] = field(default_factory=list)
 
     @classmethod
@@ -364,6 +387,7 @@ class GitHubSnapshot:
             # finished. A snapshot claims completeness explicitly or not at all.
             sso_enabled=d.get("sso_enabled", False),
             credentials_complete=d.get("credentials_complete", False),
+            roles_complete=d.get("roles_complete", False),
             gaps=list(d.get("gaps", [])),
         )
 
@@ -373,6 +397,7 @@ class GitHubSnapshot:
             "collected_at": format_time(self.collected_at),
             "sso_enabled": self.sso_enabled,
             "credentials_complete": self.credentials_complete,
+            "roles_complete": self.roles_complete,
             "gaps": self.gaps,
             "members": [x.to_dict() for x in self.members],
             "teams": [x.to_dict() for x in self.teams],
@@ -436,6 +461,12 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
             f"credentials are unknown rather than absent, and a credential with no record of use is "
             f"not known to be dormant."
         )
+    if not snapshot.roles_complete:
+        gaps.append(
+            f"Organization roles for the {snapshot.org} org were not read, so a member holds no "
+            f"elevated role as far as this review can tell rather than being known not to. Security "
+            f"managers and custom organization roles are a separate read from the member list."
+        )
     read_complete = snapshot.sso_enabled and snapshot.credentials_complete and not snapshot.gaps
 
     by_login = {m.login: m for m in snapshot.members}
@@ -489,8 +520,12 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
                 f"identity, so which person holds this account is not evidenced."
             )
         grants.append(Grant(source, member.id, GrantKind.ORG, snapshot.org, snapshot.org))
-        if member.role != "member":
-            grants.append(Grant(source, member.id, GrantKind.ROLE, member.role, member.role))
+        # Only above ordinary membership: `checks._elevated_roles` reads every
+        # ROLE grant and AR-17 grades on it, so an ordinary member appearing
+        # here would make every departure a critical finding.
+        if member.role not in ORDINARY_ROLES:
+            grants.append(Grant(source, member.id, GrantKind.ROLE, member.role,
+                                ROLE_LABELS.get(member.role, member.role)))
 
     # Access granted to an id or login the member read never returned would
     # otherwise be access held by nobody: invisible to unlinked(), uncounted by
