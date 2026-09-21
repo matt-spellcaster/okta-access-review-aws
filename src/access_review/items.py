@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
 from .checks import (
+    GRAPH_CHECKS,
     SEVERITIES,
     Finding,
     ReviewContext,
@@ -27,7 +28,7 @@ from .checks import (
     graph_findings_by_identity,
     records_sign_ins,
 )
-from .identity import Link, LinkMethod, identity_key
+from .identity import OKTA, Link, LinkMethod, identity_key
 from .models import App, User
 
 KEEP, REVOKE, DECIDE = "keep", "revoke", "decide"
@@ -56,8 +57,12 @@ ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
 # files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
 ITEMS_FILE = "review_items.json"
-FORMAT = 2  # 2 added name, facts and concerns; format 1 files (earlier runs) still load
-READABLE_FORMATS = (1, 2)
+FORMAT = 3  # 2 added name, facts and concerns; 3 split outside_okta out of concerns
+READABLE_FORMATS = (1, 2, 3)
+# The phrase `outside_okta_concerns` writes into every line it produces. Named
+# because `load_items` reads it back to split a format 2 file, and a marker the
+# writer and the reader spell separately is a marker that drifts.
+LINK_MARKER = "; tied to them by "
 # Findings about a person that matter for every piece of their access. AR-11
 # (admin user) only matters on admin items, AR-14 on the one unused app, and
 # AR-10 is about API clients, not people.
@@ -94,11 +99,26 @@ class ReviewItem:
     name: str = ""
     facts: tuple[str, ...] = ()
     concerns: tuple[str, ...] = ()
+    # Concerns about access in another source, kept apart from `concerns`
+    # because deciding this item cannot settle any of them. Everything in
+    # `concerns` is either about this access or about the person in Okta, so a
+    # revoke ticket can carry it and the daily Okta re-check can close it.
+    # These cannot be closed that way, and a ticket listing them alongside the
+    # rest asserts that removing an Okta assignment dealt with a credential
+    # Okta has never been able to see.
+    outside_okta: tuple[str, ...] = ()
+    # Why `outside_okta` may be short, empty when nothing is missing. An empty
+    # list has three causes -- no other source was read, one was read and this
+    # person could not be joined to it, or one was read completely and found
+    # nothing -- and only the last is evidence a departure finished. Without
+    # this the card renders "Nothing flagged" and the ticket says nothing, which
+    # is the review asserting a clean bill of health it never checked.
+    outside_okta_gap: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> ReviewItem:
         fields = {k: d[k] for k in cls.__dataclass_fields__ if k in d}
-        for k in ("facts", "concerns"):
+        for k in ("facts", "concerns", "outside_okta"):
             fields[k] = tuple(fields.get(k, ()))
         item = cls(**fields)
         if item.proposed not in PROPOSALS or item.reviewer not in (ADMIN, CISO):
@@ -191,16 +211,13 @@ def _worst_first(concerns: list[tuple[str, str]]) -> list[str]:
     return [text for _, text in sorted(concerns, key=lambda c: SEVERITIES.index(c[0]))]
 
 
-def concerns_for(findings, user: User, kind: str, app: App | None,
-                 graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None = None) -> list[str]:
-    """Why this access could be an issue: the findings about this person, the
-    findings about this access specifically, and the findings about what they
-    hold in another source entirely.
+def concerns_for(findings, user: User, kind: str, app: App | None) -> list[str]:
+    """Why this access could be an issue, from what Okta and HR say: the
+    findings about this person and the findings about this access specifically.
 
-    That last group is the point of the cross-source checks. A reviewer
-    approving someone's Okta access while they still hold a write-capable
-    credential somewhere Okta deactivation never reaches is approving half a
-    picture, and this is the only screen where the decision is actually made.
+    Only findings a decision here can act on. What the person holds in another
+    source goes to `outside_okta_concerns`, which the reviewer sees just as
+    plainly and a ticket treats differently.
     """
     login = user.login.lower()
     out: list[tuple[str, str]] = []
@@ -212,12 +229,55 @@ def concerns_for(findings, user: User, kind: str, app: App | None,
             out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-14" and app is not None and subject == f"{login} / {app.label.lower()}":
             out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
-    identity = identity_key(user)
-    if identity and graph_by_identity:
-        for f, link in graph_by_identity.get(identity, ()):
-            basis = LINK_BASIS.get(link.method, str(link.method))
-            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title}; tied to them by {basis})"))
     return _worst_first(out)
+
+
+def outside_okta_gap(graph) -> str:
+    """Why what someone holds outside Okta may be unknown, or "" when it is not.
+
+    Emptiness is only evidence when the read that would have said so ran. This
+    is the sentence that says which of the three it is, so a card showing no
+    cross-source concern is not read as a clean bill of health.
+    """
+    if graph is None:
+        return ("No source other than Okta was read in this review, so what they hold elsewhere "
+                "is not known.")
+    others = [m for m in graph.sources if m.source != OKTA]
+    if not others:
+        return ("No source other than Okta was read in this review, so what they hold elsewhere "
+                "is not known.")
+    short = sorted(m.source for m in others if not m.complete)
+    if short:
+        return (f"The {', '.join(short)} read did not complete, so what they hold there may be "
+                f"missing from this list.")
+    return ""
+
+
+def outside_okta_concerns(
+    user: User, graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None
+) -> list[str]:
+    """What this person holds in another source entirely.
+
+    The point of the cross-source checks. A reviewer approving someone's Okta
+    access while they still hold a write-capable credential somewhere Okta
+    deactivation never reaches is approving half a picture, and this is the only
+    screen where the decision is actually made -- so it belongs on every one of
+    their items.
+
+    It is a separate list because appearing on every item also means appearing
+    in every revoke ticket built from one, and those close when the daily check
+    re-reads Okta. Okta cannot show whether a GitHub owner role is gone, so a
+    ticket that listed this with the rest and then closed on an Okta re-check
+    would be signing off a fix nothing verified.
+    """
+    identity = identity_key(user)
+    if not identity or not graph_by_identity:
+        return []
+    return _worst_first([
+        (f.severity, f"{f.detail} ({f.check_id} {f.title}{LINK_MARKER}"
+                     f"{LINK_BASIS.get(link.method, str(link.method))})")
+        for f, link in graph_by_identity.get(identity, ())
+    ])
 
 
 # What an admin role lets someone do, said plainly, for the reviewer.
@@ -243,6 +303,7 @@ def role_concern(kind: str, target: str) -> list[str]:
 def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     """findings are this review's findings (run_checks); they become each item's concerns."""
     graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
+    gap = outside_okta_gap(ctx.graph)
 
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str,
              app: App | None = None) -> ReviewItem:
@@ -253,8 +314,9 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
             target_id, target, via, proposed, reason, CISO,
             name=user.name, facts=tuple(facts),
-            concerns=tuple(role_concern(kind, target)
-                           + concerns_for(findings, user, kind, app, graph_by_identity)),
+            concerns=tuple(role_concern(kind, target) + concerns_for(findings, user, kind, app)),
+            outside_okta=tuple(outside_okta_concerns(user, graph_by_identity)),
+            outside_okta_gap=gap,
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
@@ -295,19 +357,56 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     return items
 
 
+def outside_okta_by_login(items: list[ReviewItem]) -> dict[str, tuple[tuple[str, ...], str]]:
+    """Per Okta login: what they hold in another source, and why that may be short.
+
+    For the ticket builders, which are given findings and logins rather than
+    items. Keyed on the lowercased login because that is what a leaver finding's
+    subject is.
+    """
+    out: dict[str, tuple[tuple[str, ...], str]] = {}
+    for i in items:
+        held, gap = out.get(i.user.lower(), ((), i.outside_okta_gap))
+        out[i.user.lower()] = (tuple(dict.fromkeys([*held, *i.outside_okta])), gap)
+    return out
+
+
 def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
     return json.dumps(
         {"format": FORMAT, "review_date": as_of.isoformat(), "app_unused_days": unused_days,
-         "items": [{**asdict(i), "facts": list(i.facts), "concerns": list(i.concerns)} for i in items]},
+         "items": [asdict(i) for i in items]},
         indent=2,
     ) + "\n"
 
 
+def _held_outside_okta(concern: str) -> bool:
+    """Was this concern written by `outside_okta_concerns`?
+
+    Two signals the writer put there and nothing in a person's own data can
+    produce: the link-basis phrase, and a check id that reads the graph. Both
+    are required, so the split cannot land on an Okta concern.
+    """
+    return LINK_MARKER in concern and any(f"({c} " in concern for c in GRAPH_CHECKS)
+
+
 def load_items(text: str) -> list[ReviewItem]:
     data = json.loads(text)
-    if data.get("format") not in READABLE_FORMATS:
-        raise ItemsError(f"unsupported {ITEMS_FILE} format {data.get('format')!r}")
-    return [ReviewItem.from_dict(d) for d in data["items"]]
+    format_ = data.get("format")
+    if format_ not in READABLE_FORMATS:
+        raise ItemsError(f"unsupported {ITEMS_FILE} format {format_!r}")
+    rows = data["items"]
+    if format_ < 3:
+        # A review opened before the split and remediated after it. Its concerns
+        # still hold the cross-source ones, and `tickets.open_revokes` copies
+        # that list as the work an Okta re-check will confirm -- so without this
+        # the very defect format 3 exists to fix survives for every in-flight
+        # review. Split on load; the file itself is never rewritten, because it
+        # is create-only in S3 and hashed into a signed manifest.
+        rows = [{**d,
+                 "concerns": [c for c in d.get("concerns", ()) if not _held_outside_okta(c)],
+                 "outside_okta": [c for c in d.get("concerns", ()) if _held_outside_okta(c)]}
+                for d in rows]
+    return [ReviewItem.from_dict(d) for d in rows]
 
 
 def summary(items: list[ReviewItem]) -> dict[str, int]:

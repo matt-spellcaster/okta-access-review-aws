@@ -4,11 +4,21 @@ from pathlib import Path
 
 import pytest
 
-from access_review.checks import CHECKS, GRAPH_CHECKS, SEVERITIES, Config, ReviewContext, run_checks
+from access_review.checks import (
+    CHECKS,
+    GRAPH_CHECKS,
+    SEVERITIES,
+    Config,
+    Finding,
+    ReviewContext,
+    run_checks,
+)
 from access_review.identity import (
     GitHubSnapshot,
     IdentityGraph,
+    Link,
     LinkMethod,
+    identity_key,
     project_github,
     project_snapshot,
 )
@@ -20,13 +30,15 @@ from access_review.items import (
     KEEP,
     LINK_BASIS,
     REVOKE,
+    LINK_MARKER,
     ItemsError,
     build_items,
     items_json,
     load_items,
+    outside_okta_concerns,
     summary,
 )
-from access_review.models import Snapshot
+from access_review.models import Snapshot, User
 from access_review.roster import load_roster
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -161,14 +173,85 @@ def test_item_files_from_earlier_runs_still_load(demo):
     data = json.loads(items_json(build_items(demo), AS_OF, 90))
     data["format"] = 1
     for d in data["items"]:
-        for k in ("name", "facts", "concerns"):
+        for k in ("name", "facts", "concerns", "outside_okta"):
             d.pop(k)
     old = load_items(json.dumps(data))
-    assert old and old[0].facts == () and old[0].name == ""
+    assert old and old[0].facts == () and old[0].name == "" and old[0].outside_okta == ()
+
+
+def _as_format_2(items):
+    """The same items as a review opened before the split would have written them."""
+    data = json.loads(items_json(items, AS_OF, 90))
+    data["format"] = 2
+    for d in data["items"]:
+        d["concerns"] = d["concerns"] + d.pop("outside_okta")
+        d.pop("outside_okta_gap", None)
+    return json.dumps(data)
+
+
+def test_a_format_2_file_is_split_on_load(demo_graph):
+    """A review opened before the split and remediated after it. Its items file
+    is on S3, create-only and hashed into a signed manifest, so it still has the
+    cross-source concern inside `.concerns` -- the list a revoke ticket copies as
+    the work an Okta re-check will confirm. Loading it as written would keep the
+    defect alive for every in-flight review."""
+    findings, _ = run_checks(demo_graph)
+    built = build_items(demo_graph, findings)
+    loaded = load_items(_as_format_2(built))
+    assert [(i.key, i.outside_okta) for i in loaded] == [(i.key, i.outside_okta) for i in built]
+    assert any(i.outside_okta for i in loaded), "nothing was carried across"
+    assert not any("AR-17" in c for i in loaded for c in i.concerns)
+    # The Okta concerns stay put: the split needs two signals the writer put
+    # there, so it cannot land on a finding about this person's Okta access.
+    assert [i.concerns for i in loaded] == [i.concerns for i in built]
+
+
+def test_the_split_on_load_needs_both_signals(demo_graph):
+    """Neither half alone. A person's own data can contain the words "tied to
+    them by", and an Okta concern names a check id -- either on its own would
+    move an Okta finding out of the list its ticket is meant to settle."""
+    from access_review.items import _held_outside_okta
+
+    assert _held_outside_okta(f"holds owner (AR-17 Access outside Okta{LINK_MARKER}an assertion)")
+    assert not _held_outside_okta("HR shows terminated (AR-01 Terminated in HR)")
+    assert not _held_outside_okta(f"note{LINK_MARKER}an assertion")
+    assert not _held_outside_okta("their bio says tied to them by nothing (AR-01 Terminated)")
+
+
+def test_a_gap_says_which_kind_of_empty_this_is(demo_graph):
+    """Three things produce an empty outside_okta: no other source was read, one
+    was read and this person could not be joined to it, or one was read
+    completely and found nothing. Only the last is evidence a departure
+    finished, and the card and the ticket both go silent on all three."""
+    from access_review.items import outside_okta_gap
+
+    okta_only = ReviewContext(demo_graph.snapshot, demo_graph.roster, demo_graph.config, AS_OF)
+    assert "not known" in outside_okta_gap(None)
+    assert all("not known" in i.outside_okta_gap for i in build_items(okta_only, ()))
+    # The demo's GitHub read has gaps, so the reviewer is told the list may be short.
+    findings, _ = run_checks(demo_graph)
+    assert all("did not complete" in i.outside_okta_gap
+               for i in build_items(demo_graph, findings))
+
+
+def test_what_the_reviewer_saw_survives_the_round_trip(demo_graph):
+    """The items file is evidence of what was on the screen."""
+    findings, _ = run_checks(demo_graph)
+    built = build_items(demo_graph, findings)
+    again = load_items(items_json(built, AS_OF, 90))
+    assert [(i.concerns, i.outside_okta) for i in again] == [(i.concerns, i.outside_okta) for i in built]
+    assert any(i.outside_okta for i in again)
 
 
 def graph_concerns(item):
-    return [c for c in item.concerns if "tied to them by" in c]
+    """Every concern on the item that came from the graph, whichever list it is in.
+
+    Not just `outside_okta`: the point of the callers below is that a graph
+    finding must reach a person only through an evidenced link, and routing one
+    into `.concerns` by login similarity is exactly the regression they guard.
+    Looking in one list would let that pass.
+    """
+    return [c for c in (*item.concerns, *item.outside_okta) if "tied to them by" in c]
 
 
 def test_a_cross_source_finding_reaches_every_item_for_that_person(demo_graph):
@@ -181,6 +264,9 @@ def test_a_cross_source_finding_reaches_every_item_for_that_person(demo_graph):
     assert mine, "marcus.lee has no review items"
     for item in mine:
         assert any("AR-17" in c for c in graph_concerns(item)), item.target
+        # And on no item does it sit in `concerns`, which is the list a revoke
+        # ticket copies as the work that ticket's Okta re-check will confirm.
+        assert not any("AR-17" in c for c in item.concerns), item.target
     # It names the GitHub account, which is not his Okta login, so the reviewer
     # can go and look at the right thing.
     assert any("marcus-lee" in c for c in graph_concerns(mine[0]))
@@ -205,7 +291,8 @@ def test_a_finding_about_an_unlinked_principal_reaches_nobody(demo_graph):
     make -- and would mark the credential as somebody's problem when the whole
     finding is that it is nobody's."""
     findings, _ = run_checks(demo_graph)
-    concerns = [c for i in build_items(demo_graph, findings) for c in i.concerns]
+    concerns = [c for i in build_items(demo_graph, findings)
+                for c in (*i.concerns, *i.outside_okta)]
     assert not any("AR-15" in c or "AR-16" in c for c in concerns)
     # It is still a finding, still in the report, still ticketed.
     assert any(f.check_id == "AR-15" for f in findings)
@@ -244,14 +331,41 @@ def test_the_worst_concern_comes_first(demo_graph):
 
     checked = 0
     for item in build_items(demo_graph, findings):
-        ranks = [r for c in item.concerns if (r := severity_of(c)) is not None]
-        assert ranks == sorted(ranks), item.concerns
-        checked += len(ranks)
+        for group in (item.concerns, item.outside_okta):
+            ranks = [r for c in group if (r := severity_of(c)) is not None]
+            assert ranks == sorted(ranks), group
+            checked += len(ranks)
     assert checked, "no concern resolved to a finding, so this proves nothing"
-    # A case where the order actually differs: sofia's critical AR-17 has to
-    # outrank her medium AR-07, and they arrive in the opposite order.
+    # A case where the order actually differs: sofia's critical AR-17 outranks
+    # her medium AR-07. They are in separate lists now, and the card puts the
+    # outside-Okta one first, so the critical one is still what she reads first.
     sofia = next(i for i in build_items(demo_graph, findings) if i.user.startswith("sofia"))
-    assert "AR-17" in sofia.concerns[0], sofia.concerns
+    assert "AR-17" in sofia.outside_okta[0], sofia.outside_okta
+
+
+def test_the_worst_thing_held_outside_okta_comes_first():
+    """The card puts this block above everything else, so its first line is the
+    first thing the reviewer reads.
+
+    A unit test with two findings, because no fixture can prove this: every
+    identity in the demo holds exactly one cross-source finding, so the
+    fixture-level ordering assertions run on one-element lists and cannot fail.
+    Deleting the sort from `outside_okta_concerns` passed all 463 tests.
+    """
+    user = User(id="u1", login="marcus.lee@acme.example", status="ACTIVE",
+                profile={"email": "marcus.lee@acme.example"})
+    key = identity_key(user)
+    link = Link(("github:acme-eng", "U_kg1"), LinkMethod.SSO_IDENTITY, key, "SAML assertion")
+
+    def finding(check_id, severity, detail):
+        return Finding(check_id, "Access outside Okta", severity, [],
+                       "github:acme-eng/U_kg1", detail, "remove it")
+
+    milder = finding("AR-16", "medium", "holds a read-only token")
+    worst = finding("AR-17", "critical", "holds the organization owner role")
+    # Worst second, so returning them in graph order would fail.
+    got = outside_okta_concerns(user, {key: [(milder, link), (worst, link)]})
+    assert [c.split(" (")[0] for c in got] == [worst.detail, milder.detail]
 
 
 def _without_oktas_access(demo_graph, login_prefix):
@@ -289,7 +403,7 @@ def test_a_finding_still_reaches_someone_whose_okta_offboarding_worked(demo_grap
     items = [i for i in build_items(ctx, findings) if i.user.startswith("victor")]
     assert items, "a critical cross-source finding reached no review item"
     assert [i.kind for i in items] == [CROSS_SOURCE]
-    assert any("AR-17" in c for c in items[0].concerns)
+    assert any("AR-17" in c for c in items[0].outside_okta)
     # It settles by acknowledging: this review cannot change GitHub, and the
     # finding's own ticket tracks the fix.
     assert items[0].proposed == DECIDE and CROSS_SOURCE in ACKNOWLEDGE_ONLY

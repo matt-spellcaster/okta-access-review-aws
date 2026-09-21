@@ -51,8 +51,9 @@ the full report PDF in the thread.
 
 ![Slack channel: "Okta access review is open" with counts and the tracking ticket, and the report PDF in the thread](docs/images/slack-review-open.png)
 
-**2. The CISO decides each item** in a DM. Each card shows the facts, then why it could be an issue,
-then the proposal and the buttons. **Confirm N proposed** accepts every proposal at once.
+**2. The CISO decides each item** in a DM. Each card shows the facts, anything the person holds in
+another source that this decision cannot change, then why it could be an issue, then the proposal and
+the buttons. **Confirm N proposed** accepts every proposal at once.
 
 ![Slack DM: summary with Confirm 4 proposed, then item cards with Facts, Why it could be an issue, and Keep/Revoke buttons](docs/images/slack-review-cards.png)
 

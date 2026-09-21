@@ -40,7 +40,16 @@ from .decisions import (
     outstanding,
     progress,
 )
-from .items import CISO, HR_RECORD, ITEMS_FILE, REVOKE, ReviewItem, load_items, summary
+from .items import (
+    CISO,
+    HR_RECORD,
+    ITEMS_FILE,
+    REVOKE,
+    ReviewItem,
+    load_items,
+    outside_okta_by_login,
+    summary,
+)
 from .state import CLOSED, OPEN, SIGNED_OFF, create_state, load_state, update_state
 
 # Findings that mean someone who has left can still get in: a ticket is opened
@@ -205,7 +214,11 @@ def open_review(deps: Deps, run: str, task_token: str) -> dict:
                                               due_at)
             update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(parent_issue=parent))
         # Looked up by label before being created, so a retry opens no second ticket.
-        urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run), people(deps, run))
+        # outside_okta_by_login so the leaver ticket says which part of "every way
+        # in" it does not cover: it closes on a fresh Okta read, and Okta cannot
+        # see a role in another source.
+        urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run), people(deps, run),
+                                          outside_okta_by_login(data.item_list))
 
     if data.item_list and not state.get("dms"):
         dms = {CISO: _post_dm(deps, data, {}, due, parent)}

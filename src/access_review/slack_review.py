@@ -25,6 +25,9 @@ LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
 KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
         HR_RECORD: "HR record", CROSS_SOURCE: "Outside Okta"}
 FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
+# One wording for the thing this review cannot change, used by the card heading,
+# the item line and the sign-off list, so a reword cannot land in only some of them.
+OUTSIDE = "Access outside Okta"
 MAX_TEXT = 2900  # Slack's section limit is 3000
 # Sections on the sign-off message; beyond this, the list points to the report.
 MAX_LIST_SECTIONS = 40
@@ -72,16 +75,31 @@ def describe(item: ReviewItem) -> str:
     if item.kind == HR_RECORD:
         return f"{who} · *No HR record* (flag for HR; no ticket)"
     if item.kind == CROSS_SOURCE:
-        return f"{who} · *Access outside Okta* (nothing left in Okta; see the concerns below)"
+        return f"{who} · *{OUTSIDE}* (nothing left in Okta itself)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
 def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
-    """The facts, then why it could be an issue, then the proposal."""
+    """The facts, then why it could be an issue, then the proposal.
+
+    Access outside Okta gets its own block above the rest. Not buried below it:
+    it is the part of the picture no other screen in this review reaches, and
+    it is the part deciding this item cannot change.
+    """
     lines = [describe(item), "*Facts*"]
     lines += [f"• {_esc(f)}" for f in item.facts] or ["• (not recorded for this review)"]
+    if item.outside_okta or item.outside_okta_gap:
+        lines.append(f"*{OUTSIDE}* — deciding this item does not change it; "
+                     "each of these gets its own ticket")
+        lines += [f"• :warning: {_esc(c)}" for c in item.outside_okta]
+        if item.outside_okta_gap:
+            # Why the block may be short, or empty. Shown even with nothing in
+            # it: an absent block reads as "they hold nothing elsewhere", which
+            # for a review that never read another source is a claim nobody made.
+            lines.append(f"• :grey_question: {_esc(item.outside_okta_gap)}")
     lines.append("*Why it could be an issue*")
-    lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or ["• Nothing flagged."]
+    lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or \
+        [f"• Nothing {'else ' if item.outside_okta else ''}flagged."]
     if ticket:
         lines.append(f"• :ticket: Leaver ticket {ticket_link(ticket)}")
     if item.kind in ACKNOWLEDGE_ONLY:
@@ -182,12 +200,19 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
             grouped[FLAGGED].append(f"• {describe(item)} — acknowledged, to be raised with HR")
             continue
         if item.kind == CROSS_SOURCE:
-            grouped[FLAGGED].append(f"• {describe(item)} — acknowledged; tracked by its own ticket")
+            # With its findings listed. This item exists only to report what is
+            # held elsewhere, so a one-line entry would have the CISO signing
+            # off the one thing the screen never showed them.
+            grouped[FLAGGED].append("\n".join(
+                [f"• {describe(item)} — acknowledged; tracked by its own ticket"]
+                + [f"      :warning: {_esc(c)}" for c in item.outside_okta]))
             continue
         lines = [f"• {describe(item)}"]
         for fact in item.facts:
             if fact.startswith(("Okta:", "Access:")):
                 lines.append(f"      {_esc(fact)}")
+        for concern in item.outside_okta:
+            lines.append(f"      :warning: outside Okta, not changed by this decision: {_esc(concern)}")
         for concern in item.concerns:
             lines.append(f"      :warning: {_esc(concern)}")
         why = []
