@@ -34,7 +34,7 @@ from ..models import (
     Snapshot,
     User,
 )
-from .model import (
+from .graph import (
     Credential,
     CredentialKind,
     Grant,

@@ -2,185 +2,299 @@
   "org": "acme-eng",
   "collected_at": "2026-09-15T14:00:00Z",
   "sso_enabled": true,
+  "credentials_complete": true,
   "gaps": [],
   "members": [
     {
-      "id": "U_kgDOpriya",
+      "id": "U_kgDOBq1aXw",
       "login": "priya-shah",
-      "name": "Priya Shah",
-      "samlIdentity": "priya.shah@acme.example",
-      "verifiedEmail": "priya.shah@acme.example",
+      "state": "active",
       "role": "admin",
-      "twoFactorEnabled": true,
-      "createdAt": "2023-05-02T09:00:00Z",
-      "lastActive": "2026-09-14T16:20:00Z"
+      "samlIdentity": {
+        "nameId": "priya.shah@acme.example",
+        "username": "priya.shah@acme.example",
+        "emails": [
+          "priya.shah@acme.example"
+        ]
+      },
+      "verifiedEmails": [
+        "priya.shah@acme.example"
+      ],
+      "accountCreatedAt": "2019-03-14T09:00:00Z"
     },
     {
-      "id": "U_kgDOmarcus",
+      "id": "U_kgDOBq1bYx",
       "login": "marcus-lee",
-      "name": "Marcus Lee",
-      "samlIdentity": "marcus.lee@acme.example",
-      "verifiedEmail": "marcus.lee@acme.example",
+      "state": "active",
       "role": "admin",
-      "twoFactorEnabled": true,
-      "createdAt": "2023-05-10T09:00:00Z",
-      "lastActive": "2026-08-28T17:40:00Z"
+      "samlIdentity": {
+        "nameId": "marcus.lee@acme.example",
+        "username": "marcus.lee@acme.example",
+        "emails": [
+          "marcus.lee@acme.example"
+        ]
+      },
+      "verifiedEmails": [
+        "marcus.lee@acme.example"
+      ],
+      "accountCreatedAt": "2018-07-22T09:00:00Z"
     },
     {
-      "id": "U_kgDOvictor",
+      "id": "U_kgDOBq1cZy",
       "login": "victor-nguyen",
-      "name": "Victor Nguyen",
-      "samlIdentity": "victor.nguyen@acme.example",
-      "verifiedEmail": "victor.nguyen@acme.example",
+      "state": "active",
       "role": "member",
-      "twoFactorEnabled": true,
-      "createdAt": "2024-02-19T09:00:00Z",
-      "lastActive": "2026-09-10T03:12:00Z"
+      "samlIdentity": {
+        "nameId": "a4f1c9e2-7b33-4d51-9e08-2c6f1b7a4d90",
+        "username": "victor.nguyen@acme.example",
+        "emails": [
+          "victor.nguyen@acme.example"
+        ]
+      },
+      "verifiedEmails": [
+        "victor.nguyen@acme.example"
+      ],
+      "accountCreatedAt": "2017-11-05T09:00:00Z"
     },
     {
-      "id": "U_kgDOsofia",
+      "id": "U_kgDOBq1daz",
       "login": "sofia-ramos",
-      "name": "Sofia Ramos",
-      "samlIdentity": "sofia.ramos@acme.example",
-      "verifiedEmail": "sofia.ramos@acme.example",
+      "state": "active",
       "role": "member",
-      "twoFactorEnabled": true,
-      "createdAt": "2025-11-03T09:00:00Z",
-      "lastActive": "2026-06-28T11:05:00Z"
+      "samlIdentity": {
+        "nameId": "  Sofia.Ramos@ACME.example ",
+        "username": "  Sofia.Ramos@ACME.example ",
+        "emails": []
+      },
+      "verifiedEmails": [],
+      "accountCreatedAt": "2021-01-30T09:00:00Z"
     },
     {
-      "id": "U_kgDOleechen",
+      "id": "U_kgDOBq1eb0",
       "login": "lee-chen",
-      "name": "Lee Chen",
-      "samlIdentity": "lee.chen@acme.example",
-      "verifiedEmail": "lee.chen@acme.example",
+      "state": "active",
       "role": "member",
-      "twoFactorEnabled": true,
-      "createdAt": "2024-08-14T09:00:00Z",
-      "lastActive": "2026-09-12T09:30:00Z"
+      "samlIdentity": {
+        "nameId": "lee.chen@acme.example",
+        "username": "lee.chen@acme.example",
+        "emails": [
+          "lee.chen@acme.example"
+        ]
+      },
+      "verifiedEmails": [
+        "lee.chen@acme.example"
+      ],
+      "accountCreatedAt": "2020-06-11T09:00:00Z"
     },
     {
-      "id": "U_kgDOhannah",
+      "id": "U_kgDOBq1fc1",
       "login": "hannah-ortiz",
-      "name": "Hannah Ortiz",
-      "samlIdentity": "",
-      "verifiedEmail": "hannah.ortiz@acme.example",
+      "state": "active",
       "role": "member",
-      "twoFactorEnabled": true,
-      "createdAt": "2024-01-08T09:00:00Z",
-      "lastActive": "2026-09-11T14:02:00Z"
+      "samlIdentity": null,
+      "verifiedEmails": [
+        "hannah.ortiz@acme.example"
+      ],
+      "accountCreatedAt": "2019-09-02T09:00:00Z"
     },
     {
-      "id": "U_kgDOdev42",
+      "id": "U_kgDOBq1gd2",
+      "login": "omar-haddad",
+      "state": "active",
+      "role": "member",
+      "samlIdentity": null,
+      "verifiedEmails": [
+        "omar.haddad@acme.example",
+        "o.haddad@acme.example"
+      ],
+      "accountCreatedAt": "2022-04-18T09:00:00Z"
+    },
+    {
+      "id": "U_kgDOBq1he3",
+      "login": "grace-park",
+      "state": "pending",
+      "role": "member",
+      "samlIdentity": null,
+      "verifiedEmails": [],
+      "accountCreatedAt": "2016-02-29T09:00:00Z"
+    },
+    {
+      "id": "U_kgDOBq1if4",
+      "login": "nina-patel",
+      "state": "suspended",
+      "role": "member",
+      "samlIdentity": {
+        "nameId": "b7d2e4a1-9c55-4f18-8a3b-5e0d9f2c6b71",
+        "username": "b7d2e4a1-9c55-4f18-8a3b-5e0d9f2c6b71",
+        "emails": []
+      },
+      "verifiedEmails": [],
+      "accountCreatedAt": "2021-08-16T09:00:00Z"
+    },
+    {
+      "id": "U_kgDOBq1jg5",
       "login": "dev-contractor-42",
-      "name": "",
-      "samlIdentity": "",
-      "verifiedEmail": "",
+      "state": "active",
       "role": "member",
-      "twoFactorEnabled": false,
-      "createdAt": "2025-03-21T09:00:00Z",
-      "lastActive": "2026-09-13T22:47:00Z"
+      "samlIdentity": null,
+      "verifiedEmails": [],
+      "accountCreatedAt": "2015-05-20T09:00:00Z"
     },
     {
-      "id": "U_kgDOcibot",
+      "id": "U_kgDOBq1kh6",
       "login": "acme-ci-bot",
-      "name": "Acme CI",
-      "samlIdentity": "",
-      "verifiedEmail": "",
+      "state": "active",
       "role": "admin",
-      "twoFactorEnabled": false,
-      "createdAt": "2023-09-01T09:00:00Z",
-      "lastActive": "2026-09-15T02:00:00Z"
+      "samlIdentity": null,
+      "verifiedEmails": [],
+      "accountCreatedAt": "2023-09-01T09:00:00Z"
     }
   ],
   "teams": [
     {
-      "id": "T_eng",
+      "id": "T_kwDOBq1aXs4Ab1cd",
+      "slug": "engineering",
       "name": "Engineering",
-      "members": ["U_kgDOpriya", "U_kgDOmarcus", "U_kgDOvictor", "U_kgDOsofia", "U_kgDOleechen"]
+      "members": [
+        "U_kgDOBq1aXw",
+        "U_kgDOBq1bYx",
+        "U_kgDOBq1cZy",
+        "U_kgDOBq1daz",
+        "U_kgDOBq1eb0"
+      ]
     },
     {
-      "id": "T_ops",
+      "id": "T_kwDOBq1aXs4Ab2ef",
+      "slug": "operations",
       "name": "Operations",
-      "members": ["U_kgDOhannah", "U_kgDOcibot"]
+      "members": [
+        "U_kgDOBq1fc1",
+        "U_kgDOBq1gd2",
+        "U_kgDOBq1kh6"
+      ]
     },
     {
-      "id": "T_contract",
-      "name": "Contractors",
-      "members": ["U_kgDOdev42"]
+      "id": "T_kwDOBq1aXs4Ab3gh",
+      "slug": "release",
+      "name": "Release",
+      "members": [
+        "U_kgDOBq1jg5",
+        "U_kgDOBq1zzz"
+      ]
     }
   ],
-  "tokens": [
+  "credentials": [
     {
-      "id": "PAT_victor_ci",
-      "name": "victor-laptop-deploy",
-      "ownerId": "U_kgDOvictor",
-      "scopes": ["repo", "workflow"],
-      "createdAt": "2025-06-02T09:00:00Z",
-      "lastUsed": "2026-09-10T03:12:00Z",
+      "credentialId": 161195,
+      "login": "victor-nguyen",
+      "credentialType": "personal access token",
+      "tokenLastEight": "71c3fc9c",
+      "scopes": [
+        "repo",
+        "workflow"
+      ],
+      "authorizedAt": "2025-06-02T09:00:00Z",
+      "accessedAt": "2026-09-10T03:12:00Z",
       "expiresAt": null
     },
     {
-      "id": "PAT_dev42",
-      "name": "contractor-automation",
-      "ownerId": "U_kgDOdev42",
-      "scopes": ["repo"],
-      "createdAt": "2025-04-11T09:00:00Z",
-      "lastUsed": "2026-09-13T22:47:00Z",
+      "credentialId": 161196,
+      "login": "victor-nguyen",
+      "credentialType": "SSH key",
+      "tokenLastEight": "",
+      "scopes": [],
+      "authorizedAt": "2024-03-01T09:00:00Z",
+      "accessedAt": "2026-07-14T18:00:00Z",
       "expiresAt": null
     },
     {
-      "id": "PAT_cibot",
-      "name": "org-automation",
-      "ownerId": "U_kgDOcibot",
-      "scopes": ["admin:org", "repo"],
-      "createdAt": "2023-09-01T09:00:00Z",
-      "lastUsed": "2026-09-15T02:00:00Z",
+      "credentialId": 161197,
+      "login": "sofia-ramos",
+      "credentialType": "SSH key",
+      "tokenLastEight": "",
+      "scopes": [],
+      "authorizedAt": "2025-11-10T09:00:00Z",
+      "accessedAt": "2026-06-28T11:05:00Z",
       "expiresAt": null
     },
     {
-      "id": "PAT_lee_readonly",
-      "name": "lee-dashboard",
-      "ownerId": "U_kgDOleechen",
-      "scopes": ["read:org", "read:user"],
-      "createdAt": "2026-01-19T09:00:00Z",
-      "lastUsed": "2026-09-12T09:30:00Z",
+      "credentialId": 161198,
+      "login": "acme-ci-bot",
+      "credentialType": "personal access token",
+      "tokenLastEight": "0af3b210",
+      "scopes": [
+        "admin:org",
+        "repo"
+      ],
+      "authorizedAt": "2023-09-01T09:00:00Z",
+      "accessedAt": "2026-09-15T02:00:00Z",
+      "expiresAt": null
+    },
+    {
+      "credentialId": 161199,
+      "login": "marcus-lee",
+      "credentialType": "personal access token",
+      "tokenLastEight": "5d9e1a4b",
+      "scopes": [
+        "read:org",
+        "read:user"
+      ],
+      "authorizedAt": "2026-01-19T09:00:00Z",
+      "accessedAt": "2026-08-28T17:40:00Z",
       "expiresAt": "2027-01-19T09:00:00Z"
     },
     {
-      "id": "PAT_ghost",
-      "name": "legacy-release-bot",
-      "ownerId": "U_kgDOgone",
-      "scopes": ["repo"],
-      "createdAt": "2024-03-04T09:00:00Z",
-      "lastUsed": "2026-08-02T05:00:00Z",
+      "credentialId": 161200,
+      "login": "sam-departed",
+      "credentialType": "personal access token",
+      "tokenLastEight": "cc70ee11",
+      "scopes": [
+        "repo"
+      ],
+      "authorizedAt": "2024-03-04T09:00:00Z",
+      "accessedAt": "2026-08-02T05:00:00Z",
       "expiresAt": null
     }
   ],
-  "sshKeys": [
+  "fineGrainedTokens": [
     {
-      "id": "KEY_victor",
-      "title": "victor-macbook",
-      "ownerId": "U_kgDOvictor",
-      "readOnly": false,
-      "createdAt": "2024-03-01T09:00:00Z",
-      "lastUsed": "2026-07-14T18:00:00Z"
+      "id": 88201,
+      "ownerLogin": "lee-chen",
+      "repositorySelection": "subset",
+      "permissions": {
+        "repository": {
+          "contents": "read",
+          "metadata": "read"
+        },
+        "organization": {}
+      },
+      "accessGrantedAt": "2026-02-14T09:00:00Z",
+      "lastUsedAt": "2026-09-12T09:30:00Z",
+      "expiresAt": "2027-02-14T09:00:00Z"
     },
     {
-      "id": "KEY_sofia",
-      "title": "sofia-workstation",
-      "ownerId": "U_kgDOsofia",
-      "readOnly": false,
-      "createdAt": "2025-11-10T09:00:00Z",
-      "lastUsed": "2026-06-28T11:05:00Z"
+      "id": 88202,
+      "ownerLogin": "dev-contractor-42",
+      "repositorySelection": "all",
+      "permissions": {
+        "repository": {
+          "contents": "write",
+          "pull_requests": "write"
+        },
+        "organization": {}
+      },
+      "accessGrantedAt": "2025-04-11T09:00:00Z",
+      "lastUsedAt": "2026-09-13T22:47:00Z",
+      "expiresAt": null
     },
     {
-      "id": "KEY_deploy_readonly",
-      "title": "docs-site-deploy",
-      "ownerId": "U_kgDOcibot",
-      "readOnly": true,
-      "createdAt": "2024-07-07T09:00:00Z",
-      "lastUsed": "2026-09-15T02:00:00Z"
+      "id": 88203,
+      "ownerLogin": "omar-haddad",
+      "repositorySelection": "subset",
+      "permissions": {},
+      "accessGrantedAt": "2026-05-06T09:00:00Z",
+      "lastUsedAt": null,
+      "expiresAt": null
     }
   ]
 }
