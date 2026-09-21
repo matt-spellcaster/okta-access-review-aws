@@ -9,6 +9,8 @@ from access_review.identity import (
     OKTA,
     Credential,
     CredentialKind,
+    Grant,
+    GrantKind,
     IdentityGraph,
     Link,
     LinkMethod,
@@ -272,16 +274,25 @@ def test_grants_record_group_app_and_role_access(graph):
     assert ("role", "Super Administrator", "direct") in priya
 
 
-def test_identical_grants_are_not_emitted_twice():
-    # Two groups both granting the same app is two provenances. The same group
-    # counted twice is not.
+def test_every_way_a_user_reaches_an_app_is_its_own_grant():
     user = person("u1", "a@acme.example")
     groups = [Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u1"})]
     app = App(id="a1", label="GitHub", status="ACTIVE", users={"u1"}, groups={"g1"})
     grants = project_snapshot(snapshot(users=[user], groups=groups, apps=[app])).grants_for((OKTA, "u1"))
-    vias = sorted(g.via for g in grants if g.kind.value == "app")
-    assert vias == ["direct", "group:Eng"]
-    assert len(grants) == len(set((g.kind, g.target, g.via) for g in grants))
+    assert sorted(g.via for g in grants if g.kind.value == "app") == ["direct", "group:Eng"]
+
+
+def test_two_distinct_groups_with_the_same_name_keep_both_access_paths():
+    # Okta group names are not unique. Collapsing on the name would delete a
+    # live path to the app and under-report who can reach it.
+    groups = [
+        Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u1"}),
+        Group(id="g2", name="Eng", type="OKTA_GROUP", members={"u1"}),
+    ]
+    app = App(id="a1", label="GitHub", status="ACTIVE", groups={"g1", "g2"})
+    grants = project_snapshot(snapshot(users=[person("u1", "a@acme.example")], groups=groups, apps=[app]))
+    rows = [(g.kind.value, g.target, g.via) for g in grants.grants_for((OKTA, "u1"))]
+    assert rows.count(("app", "a1", "group:Eng")) == 2
 
 
 def test_access_held_by_an_account_the_user_read_missed_is_not_invisible():
@@ -290,7 +301,8 @@ def test_access_held_by_an_account_the_user_read_missed_is_not_invisible():
     groups = [Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u_missing"})]
     graph = project_snapshot(snapshot(groups=groups))
     ghost = graph.principal((OKTA, "u_missing"))
-    assert (ghost.kind, ghost.status) is not None and ghost.kind is PrincipalKind.UNKNOWN
+    assert (ghost.kind, ghost.status) == (PrincipalKind.UNKNOWN, Status.UNKNOWN)
+    assert ghost.source_status == ""  # the projection does not invent a status word
     assert ghost in graph.unlinked()
     assert graph.coverage().unlinked == 1
     assert any("not returned by the user read" in g for g in graph.source(OKTA).gaps)
@@ -490,3 +502,79 @@ def test_coverage_serialises_counts_only(graph):
     blob = graph.coverage().to_dict()
     assert set(blob) == {"total", "by_method", "unlinked", "contested", "incomplete_sources", "reliable"}
     assert "@" not in json.dumps(blob)
+
+
+def test_a_creator_with_no_profile_email_does_not_key_an_identity_on_their_login():
+    event = ActivityEvent(
+        published=datetime(2026, 5, 4, tzinfo=timezone.utc),
+        event_type="app.oauth2.client.lifecycle.create",
+        actor_id="u9",
+        targets=[{"id": "0oaBOT"}],
+    )
+    creator = User(id="u9", login="admin.login", status="ACTIVE", profile={})
+    graph = project_snapshot(snapshot(users=[creator], apps=[service_client()], events=[event]))
+    assert graph.link_for((OKTA, "a99")) is None
+    assert graph.principals_of("admin.login") == []
+
+
+def test_the_identity_key_is_normalised_so_other_sources_can_join_on_it():
+    user = User(id="u1", login="marcus.lee", status="ACTIVE", profile={"email": "  Marcus.Lee@Acme.Example "})
+    graph = project_snapshot(snapshot(users=[user]))
+    assert graph.link_for((OKTA, "u1")).identity == "marcus.lee@acme.example"
+    assert graph.principal((OKTA, "u1")).email == "marcus.lee@acme.example"
+    assert [p.id for p in graph.principals_of("marcus.lee@acme.example")] == ["u1"]
+
+
+def test_principal_email_never_falls_back_to_the_login():
+    # User.email falls back to the login; a field named email that holds a
+    # login is the join bug this layer exists to avoid.
+    user = User(id="u1", login="no-email-login", status="ACTIVE", profile={})
+    assert project_snapshot(snapshot(users=[user])).principal((OKTA, "u1")).email == ""
+
+
+def test_evidenced_write_access_survives_an_incomplete_read():
+    app = service_client(granted_scopes=["okta.users.manage"])
+    incomplete = snapshot(apps=[app], gaps=["Okta API tokens could not be read"])
+    [client] = project_snapshot(incomplete).credentials
+    assert client.write_access is True
+
+
+def test_the_lookup_lists_cannot_be_used_to_mutate_the_graph(graph):
+    key = (OKTA, "u09")
+    before = len(graph.grants_for(key))
+    graph.grants_for(key).append(Grant(OKTA, "u09", GrantKind.APP, "fake", "Fake"))
+    assert len(graph.grants_for(key)) == before
+    graph.credentials_for((OKTA, "u02")).clear()
+    assert [c.label for c in graph.credentials_for((OKTA, "u02"))] == ["ci-deploy"]
+
+
+def test_a_contested_link_to_a_principal_that_is_not_here_cannot_bend_the_count():
+    # contested was counted off the raw link set while every other number was
+    # filtered to principals actually in the graph.
+    ghost = ("okta", "GHOST")
+    graph = IdentityGraph(
+        sources=[SourceMeta(source=OKTA)],
+        principals=[Principal(source=OKTA, id="u1", label="real", kind=PrincipalKind.HUMAN)],
+        links=[
+            Link(ghost, LinkMethod.VERIFIED_EMAIL, "a@x.example", "one"),
+            Link(ghost, LinkMethod.VERIFIED_EMAIL, "b@x.example", "two"),
+        ],
+    )
+    coverage = graph.coverage()
+    assert coverage.contested == len(graph.contested()) == 0
+    assert (coverage.total, coverage.unlinked) == (1, 1)
+
+
+def test_every_record_serialises_its_own_fields(graph):
+    # from_dict is gone, so nothing round-trips these any more.
+    blob = graph.to_dict()
+    link = next(x for x in blob["links"] if x["principal"] == "a05")
+    assert set(link) == {"source", "principal", "method", "identity", "evidence"}
+    assert link["evidence"].startswith("app.oauth2.credentials.lifecycle.create by")
+    github = next(g for g in blob["grants"] if g["principal"] == "u01" and g["target"] == "a01")
+    assert github["via"] == "group:Engineering"
+    terraform = next(c for c in blob["credentials"] if c["label"] == "Terraform Automation")
+    assert (terraform["write_access"], terraform["kind"]) == (True, "oauth_client")
+    assert set(blob["sources"][0]) == {
+        "source", "org", "collected_at", "gaps", "activity_since", "activity_complete",
+    }

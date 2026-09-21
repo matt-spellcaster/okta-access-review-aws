@@ -364,14 +364,14 @@ class IdentityGraph:
         grants_by: dict[PrincipalKey, list[Grant]] = {}
         for grant in self.grants:
             grants_by.setdefault(grant.principal_key, []).append(grant)
-        put(self, "_grants", grants_by)
+        put(self, "_grants", {k: tuple(v) for k, v in grants_by.items()})
 
         creds_by: dict[PrincipalKey, list[Credential]] = {}
         for credential in self.credentials:
             key = credential.holder_key
             if key:
                 creds_by.setdefault(key, []).append(credential)
-        put(self, "_credentials", creds_by)
+        put(self, "_credentials", {k: tuple(v) for k, v in creds_by.items()})
 
         by_identity: dict[str, list[PrincipalKey]] = {}
         for key, link in best.items():
@@ -439,10 +439,12 @@ class IdentityGraph:
         return self._principals.get(key) if key else None
 
     def credentials_for(self, key: PrincipalKey) -> list[Credential]:
-        return self._credentials.get(key, [])
+        # A new list each call: handing back the index would let a caller append
+        # to it and change what a frozen graph reports.
+        return list(self._credentials.get(key, ()))
 
     def grants_for(self, key: PrincipalKey) -> list[Grant]:
-        return self._grants.get(key, [])
+        return list(self._grants.get(key, ()))
 
     def principals_of(self, identity: str) -> list[Principal]:
         """Everything this person holds, across sources -- including principals
@@ -486,7 +488,7 @@ class IdentityGraph:
             total=len(self._principals),
             by_method=counts,
             unlinked=len(self.unlinked()),
-            contested=len(self._contested),
+            contested=len(self.contested()),
             incomplete_sources=self.incomplete_sources(),
         )
 

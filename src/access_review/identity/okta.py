@@ -143,16 +143,6 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
     links: list[Link] = []
     gaps = list(snapshot.gaps)
 
-    seen_grants: set[tuple[str, str, str, str]] = set()
-
-    def add_grant(grant: Grant) -> None:
-        # A user can reach an app directly and through two groups; those are
-        # three real provenances. An identical row twice is not.
-        key = (grant.principal, str(grant.kind), grant.target, grant.via)
-        if key not in seen_grants:
-            seen_grants.add(key)
-            grants.append(grant)
-
     for user in snapshot.users:
         service = user.login.lower() in declared
         key = (OKTA, user.id)
@@ -164,7 +154,10 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
                 kind=PrincipalKind.SERVICE if service else PrincipalKind.HUMAN,
                 status=_status(user.status),
                 source_status=user.status,
-                email=user.email,
+                # The profile attribute only, for the same reason the link key is:
+                # User.email falls back to the login, and a field named email that
+                # holds a login is the join bug waiting to happen again.
+                email=(user.profile.get("email") or "").strip().lower(),
                 created=user.created,
                 last_used=user.last_login,
             )
@@ -179,7 +172,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
             if profile_email:
                 links.append(Link(key, LinkMethod.SSO_IDENTITY, profile_email, f"Okta user {user.login}"))
         for role in user.admin_roles or []:
-            add_grant(Grant(OKTA, user.id, GrantKind.ROLE, role, role))
+            grants.append(Grant(OKTA, user.id, GrantKind.ROLE, role, role))
 
     # Access can be granted to an id the user read never returned -- a capped
     # page, a filtered query. Left as a bare grant it would be access held by
@@ -195,12 +188,12 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
 
     for group in snapshot.groups:
         for member in sorted(group.members):
-            add_grant(Grant(OKTA, note(member), GrantKind.GROUP, group.id, group.name))
+            grants.append(Grant(OKTA, note(member), GrantKind.GROUP, group.id, group.name))
 
     members_of = {g.id: (g.name, sorted(g.members)) for g in snapshot.groups}
     for app in snapshot.apps:
         for user_id in sorted(app.users):
-            add_grant(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label))
+            grants.append(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label))
         for group_id in sorted(app.groups):
             name, members = members_of.get(group_id, ("", []))
             if not name:
@@ -210,7 +203,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
                 )
                 continue
             for user_id in members:
-                add_grant(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label, f"group:{name}"))
+                grants.append(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label, f"group:{name}"))
 
     for user_id in sorted(unknown_ids):
         principals.append(
@@ -266,7 +259,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
             )
         )
         for role in app.admin_roles:
-            add_grant(Grant(OKTA, app.id, GrantKind.ROLE, role, role))
+            grants.append(Grant(OKTA, app.id, GrantKind.ROLE, role, role))
         found = creators.get(app.client_id)
         if found:
             event, creator = found

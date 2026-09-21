@@ -317,6 +317,19 @@ def test_activity_is_read_only_for_leavers(keypair):
     assert activity["since"] == "2026-08-01T23:59:59.999999Z"
 
 
+def test_a_refused_log_read_reports_no_activity_window(keypair):
+    """A 403 on the System Log means nothing was read, not that nothing happened.
+    Reporting the horizon anyway lets a caller read silence as absence."""
+    forbidden = FakeResponse({"errorSummary": "forbidden"}, status=403)
+    session = _leaver_org({"/api/v1/logs": forbidden})
+
+    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15))
+
+    assert snap.events == []
+    assert snap.activity_since is None
+    assert any("System Log" in g for g in snap.gaps)
+
+
 def test_no_roster_means_no_activity_queries(keypair):
     session = _leaver_org()
 
