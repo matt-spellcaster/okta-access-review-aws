@@ -48,7 +48,14 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 - After changing the PDF layout or demo fixtures, run `uv run python scripts/render_samples.py`
   and look at `docs/images/*.png` before committing. README images use fixture data, or real
   screenshots with every name, email, org URL and ID blacked out, including inside PDF previews.
-- Keep the snapshot format (`models.py`) the same for live and fixture data; checks only see `Snapshot`.
+- Keep the snapshot format (`models.py`) the same for live and fixture data; the existing checks only
+  see `Snapshot`. `Snapshot` is the Okta source adapter's output and never grows to fit another
+  source: `identity/` composes above it, and cross-source checks read an `IdentityGraph` built by
+  projecting each source into it.
+- In `identity/`, a principal is tied to a person by an evidenced `LinkMethod` or not at all -- never
+  by name or email similarity, because a false link marks a credential as accounted for when nobody
+  is. Completeness is per source (`SourceMeta`): a read that failed is "incomplete", never "nothing
+  found".
 - Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
   "decide" instead.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never

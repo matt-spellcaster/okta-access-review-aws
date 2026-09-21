@@ -15,6 +15,8 @@ LIVE_STATUSES = {"STAGED", "PROVISIONED", "ACTIVE", "RECOVERY", "PASSWORD_EXPIRE
 SIGN_IN_STATUSES = {"ACTIVE", "RECOVERY", "PASSWORD_EXPIRED", "LOCKED_OUT"}
 # Statuses where sign-in is blocked but the account and its access remain.
 DISABLED_STATUSES = {"SUSPENDED", "DEPROVISIONED"}
+# Built-in admin roles that can view but not change anything.
+READ_ONLY_ROLES = {"read-only administrator", "report administrator"}
 
 # System Log event types, grouped by what each one tells a review.
 # Someone signed in, or used a session.
