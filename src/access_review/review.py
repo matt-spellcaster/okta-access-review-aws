@@ -18,6 +18,7 @@ from .items import ITEMS_FILE, ReviewItem, build_items, items_json
 from .models import Snapshot
 from .report import ReportError, all_gaps, run_dir_name, write_report
 from .roster import RosterEntry
+from .transitions import TRANSITIONS_FILE, Transition, build_transitions, transitions_json
 
 # The evidence for a graph source, written into the run folder so the manifest
 # hashes it. Not a RESERVED_FILES name: it goes through extra_files like
@@ -39,6 +40,10 @@ class ReviewRun:
     # completeness: Slack, email, the CLI and the Step Functions output all read
     # this rather than snapshot.gaps, which speaks for Okta alone.
     gaps: list[str] = field(default_factory=list)
+    # One per person the roster says has gone. None -- like `items` -- when the
+    # review had no graph or no roster and never ran the analysis, which is a
+    # different answer from a review that ran it and found nobody had left.
+    transitions: list[Transition] | None = None
 
     @property
     def complete(self) -> bool:
@@ -84,9 +89,20 @@ def run_review(
     items = build_items(ctx, findings) if require_items else None
     if items is not None:
         extra[ITEMS_FILE] = items_json(items, as_of, config.app_unused_days)
+    # Computed once and handed to the bundles rather than recomputed there: the
+    # answer about completeness has one owner, and a bundle is now a seventh
+    # place that states it.
+    gaps = all_gaps(snapshot, graph)
+    transitions = build_transitions(ctx, findings, gaps)
+    if transitions is not None:
+        # Not `if transitions:` -- an empty list means the analysis ran and
+        # nobody had left, which is the denominator that makes the bundles that
+        # do exist mean something. Writing nothing would make that run folder
+        # indistinguishable from one that never looked.
+        extra[TRANSITIONS_FILE] = transitions_json(transitions, as_of)
     run_dir = write_report(out_dir, snapshot, findings, skipped, config, as_of,
                            roster_path=roster_path, history=history, extra_files=extra or None, graph=graph)
-    return ReviewRun(run_dir, findings, skipped, items, all_gaps(snapshot, graph))
+    return ReviewRun(run_dir, findings, skipped, items, gaps, transitions)
 
 
 def _load_github(path: Path) -> GitHubSnapshot:

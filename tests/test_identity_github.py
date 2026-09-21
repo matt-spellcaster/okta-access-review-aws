@@ -287,9 +287,45 @@ def test_a_credential_can_outlive_the_account_that_made_it(graph):
 
 def test_org_membership_teams_and_roles_are_all_grants(graph):
     priya = {(g.kind.value, g.target_label) for g in graph.grants_for((GITHUB, "U_kgDOBq1aXw"))}
-    assert priya == {("org", "acme-eng"), ("role", "admin"), ("team", "Engineering")}
+    assert priya == {("org", "acme-eng"), ("role", "organization owner"), ("team", "Engineering")}
     lee = {(g.kind.value, g.target_label) for g in graph.grants_for((GITHUB, "U_kgDOBq1eb0"))}
     assert lee == {("org", "acme-eng"), ("team", "Engineering")}
+    # The label is GitHub's own word for the role, for whoever reads the
+    # finding; the target stays the API's value, because that is what is stable.
+    role = next(g for g in graph.grants_for((GITHUB, "U_kgDOBq1aXw")) if g.kind.value == "role")
+    assert role.target == "admin"
+
+
+def test_only_a_role_above_ordinary_membership_is_a_grant():
+    """`_elevated_roles` reads every ROLE grant and AR-17 grades on it, so an
+    ordinary member here would make every departure critical. GraphQL spells
+    the enum ADMIN/MEMBER, the invitations read says direct_member, and a
+    billing manager cannot reach a repository at all."""
+    def roles(role):
+        graph = project_github(GitHubSnapshot.from_dict({
+            "org": "acme-eng", "collected_at": "2026-09-15T14:00:00Z",
+            "members": [{"id": "U_1", "login": "someone", "role": role}],
+        }))
+        return [g.target for g in graph.grants if g.kind.value == "role"]
+
+    assert roles("MEMBER") == [] and roles("member") == []
+    assert roles("direct_member") == [] and roles("billing_manager") == []
+    assert roles("ADMIN") == ["admin"] and roles("admin") == ["admin"]
+    # A role this adapter has never heard of is not evidence that it is safe.
+    assert roles("security_manager") == ["security_manager"]
+
+
+def test_unread_organization_roles_are_a_gap_not_an_absence():
+    """The member role field carries only the base role. Security managers and
+    custom organization roles are a separate read, so without it nobody holds
+    an elevated role as far as the review can tell."""
+    snapshot = GitHubSnapshot.from_dict({
+        "org": "acme-eng", "collected_at": "2026-09-15T14:00:00Z",
+        "sso_enabled": True, "credentials_complete": True, "members": [],
+    })
+    assert snapshot.roles_complete is False
+    graph = project_github(snapshot)
+    assert any("Organization roles" in g for g in graph.sources[0].gaps)
 
 
 def test_team_access_held_by_an_account_the_member_read_missed_is_not_invisible(graph):
@@ -386,6 +422,24 @@ def test_the_projection_is_deterministic(github_snapshot):
     first = [g.to_dict() for g in project_github(github_snapshot).grants]
     second = [g.to_dict() for g in project_github(github_snapshot).grants]
     assert first == second
+
+
+def test_a_null_role_does_not_reach_a_finding_as_None():
+    """GraphQL declares OrganizationMemberEdge.role nullable, and
+    `d.get("role", "member")` only defaults on an absent key, so a present null
+    became a ROLE grant whose target is None. AR-17 joins role names into its
+    detail, so the first leaver holding one crashed the check with a TypeError
+    rather than reporting them."""
+    member = Member.from_dict({"id": "U_1", "login": "someone", "role": None, "state": None})
+    assert member.role == "member" and member.state == "active"
+    graph = project_github(GitHubSnapshot.from_dict({
+        "org": "acme-eng", "collected_at": "2026-09-15T14:00:00Z",
+        "members": [{"id": "U_1", "login": "someone", "role": None, "state": None}],
+    }))
+    targets = [g.target for g in graph.grants]
+    assert None not in targets, targets
+    # and the join AR-17 performs cannot raise on them
+    assert ", ".join(str(x) for x in targets) is not None
 
 
 def test_documented_nullable_arrays_do_not_crash_the_reader():

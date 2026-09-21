@@ -326,6 +326,51 @@ def test_the_github_snapshot_is_hashed_into_the_manifest(tmp_path):
     assert json.loads(body)["org"] == "acme-eng"
 
 
+def test_the_departure_bundles_are_hashed_into_the_manifest(tmp_path):
+    """A bundle can be lifted out and attached to a JSM ticket, so it has to be
+    in the signed set: an evidence file nothing hashes cannot be shown to be the
+    one the review produced."""
+    assert main(DEMO_ARGS + ["--github", str(FIXTURES / "demo_github.json"),
+                             "--out", str(tmp_path)]) == 0
+    d = run_dir(tmp_path)
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert "transitions.json" in manifest["files"]
+    body = (d / "transitions.json").read_bytes()
+    assert hashlib.sha256(body).hexdigest() == manifest["files"]["transitions.json"]
+    assert {t["okta_login"] for t in json.loads(body)["transitions"]} == {
+        "marcus.lee@acme.example", "sofia.ramos@acme.example", "victor.nguyen@acme.example",
+    }
+
+
+def test_a_rerun_does_not_inherit_the_previous_run_evidence(tmp_path):
+    """The worst failure this file can have. Re-running into the same folder
+    without --github used to leave the earlier run's github_snapshot.json and
+    transitions.json behind, and the new manifest hashed them -- so a signed
+    manifest asserted a GitHub read and a departure bundle for a review whose
+    own `sources` list was empty, and `attest` called it a full match."""
+    args = DEMO_ARGS + ["--out", str(tmp_path)]
+    assert main(args + ["--github", str(FIXTURES / "demo_github.json")]) == 0
+    d = run_dir(tmp_path)
+    assert (d / "transitions.json").exists() and (d / "github_snapshot.json").exists()
+
+    assert main(args) == 0  # same folder, no --github this time
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert manifest["sources"] == [] and "AR-17" in manifest["skipped_checks"]
+    assert not (d / "transitions.json").exists(), "a bundle from the previous run survived"
+    assert not (d / "github_snapshot.json").exists()
+    assert "transitions.json" not in manifest["files"]
+    assert "github_snapshot.json" not in manifest["files"]
+
+
+def test_an_okta_only_review_writes_no_departure_bundle(tmp_path):
+    """Without a second source every leaver would read as a finished departure,
+    which is the claim the file exists to stop anyone making."""
+    assert main(DEMO_ARGS + ["--out", str(tmp_path)]) == 0
+    d = run_dir(tmp_path)
+    assert not (d / "transitions.json").exists()
+    assert "transitions.json" not in json.loads((d / "manifest.json").read_text())["files"]
+
+
 def test_a_source_read_weeks_from_the_others_is_reported_as_a_gap(tmp_path):
     """One review date covering reads a fortnight apart is not one point in
     time, and nothing downstream could otherwise tell."""

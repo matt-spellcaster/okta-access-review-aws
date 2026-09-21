@@ -20,6 +20,8 @@ from .okta import OktaClient, OktaError
 from .report import ReportError
 from .review import run_review
 from .roster import RosterError, load_roster
+from .transitions import TRANSITIONS_FILE
+from .transitions import summary as transitions_summary
 
 REQUIRED_ENV = ["OKTA_ORG_URL", "OKTA_CLIENT_ID", "OKTA_KEY_ID", "OKTA_PRIVATE_KEY"]
 DEFAULT_SCOPES = (
@@ -124,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         repeat = f"  [{label(f)}]" if f.reviews_open > 1 or f.reopened else ""
         print(f"{f.severity:<8} {f.check_id}  {f.subject:<32} {f.detail}{repeat}")
     print(f"\n{len(findings)} findings. Report: {run_dir / 'report.md'}")
+    if review.transitions is not None:
+        # Counts only: the names are in transitions.json, in the run folder.
+        counts = transitions_summary(review.transitions)
+        print(f"Departures: {counts['total']} checked, {counts['unfinished']} still holding access "
+              f"outside Okta. See {TRANSITIONS_FILE}.")
     if skipped:
         print(f"Skipped (needs data this run did not have): {', '.join(skipped)}")
     if review.gaps:

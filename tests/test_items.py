@@ -4,11 +4,21 @@ from pathlib import Path
 
 import pytest
 
-from access_review.checks import Config, ReviewContext, run_checks
+from access_review.checks import CHECKS, GRAPH_CHECKS, SEVERITIES, Config, ReviewContext, run_checks
+from access_review.identity import (
+    GitHubSnapshot,
+    IdentityGraph,
+    LinkMethod,
+    project_github,
+    project_snapshot,
+)
 from access_review.items import (
     CISO,
+    ACKNOWLEDGE_ONLY,
+    CROSS_SOURCE,
     DECIDE,
     KEEP,
+    LINK_BASIS,
     REVOKE,
     ItemsError,
     build_items,
@@ -29,6 +39,17 @@ def demo():
     config = Config.load(FIXTURES / "demo_config.json")
     roster = load_roster(FIXTURES / "demo_roster.csv", config.timezone())
     return ReviewContext(snapshot, roster, config, AS_OF)
+
+
+@pytest.fixture
+def demo_graph(demo):
+    """The same review with GitHub composed in, which is what the cross-source
+    checks read and what the reviewer's screen has to show."""
+    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    graph = IdentityGraph.compose(
+        project_snapshot(demo.snapshot, demo.config.service_accounts), project_github(github)
+    )
+    return ReviewContext(demo.snapshot, demo.roster, demo.config, AS_OF, graph=graph)
 
 
 def proposals(ctx):
@@ -144,3 +165,155 @@ def test_item_files_from_earlier_runs_still_load(demo):
             d.pop(k)
     old = load_items(json.dumps(data))
     assert old and old[0].facts == () and old[0].name == ""
+
+
+def graph_concerns(item):
+    return [c for c in item.concerns if "tied to them by" in c]
+
+
+def test_a_cross_source_finding_reaches_every_item_for_that_person(demo_graph):
+    """The whole point of the cross-source checks. AR-17 says marcus.lee still
+    holds GitHub access weeks after leaving; the CISO decides his Okta access on
+    this screen, so it has to appear there and not only in the PDF."""
+    findings, _ = run_checks(demo_graph)
+    items = build_items(demo_graph, findings)
+    mine = [i for i in items if i.user.startswith("marcus.lee")]
+    assert mine, "marcus.lee has no review items"
+    for item in mine:
+        assert any("AR-17" in c for c in graph_concerns(item)), item.target
+    # It names the GitHub account, which is not his Okta login, so the reviewer
+    # can go and look at the right thing.
+    assert any("marcus-lee" in c for c in graph_concerns(mine[0]))
+    # And the elevated role, which no credential list would have shown.
+    assert any("organization owner role" in c for c in graph_concerns(mine[0]))
+
+
+def test_the_concern_says_how_the_account_was_tied_to_the_person(demo_graph):
+    """LinkMethod is a ladder of named evidence rather than a score so that a
+    human can weigh it. The reviewer is the human, so the screen says which
+    rung this rests on."""
+    findings, _ = run_checks(demo_graph)
+    items = build_items(demo_graph, findings)
+    victor = next(i for i in items if i.user.startswith("victor.nguyen"))
+    assert any("tied to them by the identity provider's own assertion" in c
+               for c in graph_concerns(victor))
+
+
+def test_a_finding_about_an_unlinked_principal_reaches_nobody(demo_graph):
+    """AR-15 is the finding that nobody is accountable for a credential. Putting
+    it on somebody's item would assert the attribution the graph refused to
+    make -- and would mark the credential as somebody's problem when the whole
+    finding is that it is nobody's."""
+    findings, _ = run_checks(demo_graph)
+    concerns = [c for i in build_items(demo_graph, findings) for c in i.concerns]
+    assert not any("AR-15" in c or "AR-16" in c for c in concerns)
+    # It is still a finding, still in the report, still ticketed.
+    assert any(f.check_id == "AR-15" for f in findings)
+
+
+def test_nothing_is_matched_on_a_login_or_a_label(demo_graph):
+    """github.com/marcus-lee and Okta's marcus.lee resolve to one person only
+    because a SAML assertion says so. Strip the link and the finding must stop
+    reaching him, rather than falling back to the names looking alike."""
+    findings, _ = run_checks(demo_graph)
+    graph = demo_graph.graph
+    stripped = IdentityGraph(
+        sources=graph.sources, principals=graph.principals, credentials=graph.credentials,
+        grants=graph.grants, links=tuple(x for x in graph.links if x.principal[0] == "okta"),
+    )
+    ctx = ReviewContext(demo_graph.snapshot, demo_graph.roster, demo_graph.config, AS_OF, graph=stripped)
+    items = build_items(ctx, findings)
+    assert not any(graph_concerns(i) for i in items)
+
+
+def test_the_worst_concern_comes_first(demo_graph):
+    """The reviewer reads the top of the list, so a critical finding never sits
+    below a medium one.
+
+    Walks the concerns in the order the item presents them and looks each one's
+    severity up, rather than walking the findings: findings arrive already
+    sorted by severity, so iterating them outer made the assertion hold no
+    matter what order the concerns were in.
+    """
+    findings, _ = run_checks(demo_graph)
+
+    def severity_of(concern: str) -> int | None:
+        hits = [f for f in findings if f.detail and f.detail in concern
+                and f.check_id in concern]
+        return min((SEVERITIES.index(f.severity) for f in hits), default=None)
+
+    checked = 0
+    for item in build_items(demo_graph, findings):
+        ranks = [r for c in item.concerns if (r := severity_of(c)) is not None]
+        assert ranks == sorted(ranks), item.concerns
+        checked += len(ranks)
+    assert checked, "no concern resolved to a finding, so this proves nothing"
+    # A case where the order actually differs: sofia's critical AR-17 has to
+    # outrank her medium AR-07, and they arrive in the opposite order.
+    sofia = next(i for i in build_items(demo_graph, findings) if i.user.startswith("sofia"))
+    assert "AR-17" in sofia.concerns[0], sofia.concerns
+
+
+def _without_oktas_access(demo_graph, login_prefix):
+    """The demo, with one person's Okta apps, groups and roles all removed:
+    their offboarding worked."""
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    uid = next(u["id"] for u in raw["users"] if u["login"].startswith(login_prefix))
+    for app in raw.get("apps", []):
+        app.get("assigned", {}).pop(uid, None)
+        if "users" in app:
+            app["users"] = [u for u in app["users"] if u != uid]
+    for group in raw.get("groups", []):
+        group["members"] = [m for m in group.get("members", []) if m != uid]
+    for user in raw["users"]:
+        if user["id"] == uid:
+            user["admin_roles"] = []
+    snapshot = Snapshot.from_dict(raw)
+    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    graph = IdentityGraph.compose(
+        project_snapshot(snapshot, demo_graph.config.service_accounts), project_github(github)
+    )
+    return ReviewContext(snapshot, demo_graph.roster, demo_graph.config, AS_OF, graph=graph)
+
+
+def test_a_finding_still_reaches_someone_whose_okta_offboarding_worked(demo_graph):
+    """The case this whole feature exists for, and the one it used to miss.
+    Items are built from Okta access, so a leaver whose Okta offboarding
+    actually completed had no items at all and their critical GitHub finding
+    reached no decision screen. The better the Okta hygiene, the more certain
+    the cross-source finding was to be invisible."""
+    ctx = _without_oktas_access(demo_graph, "victor")
+    findings, _ = run_checks(ctx)
+    assert any(f.check_id == "AR-17" and f.severity == "critical"
+               and "victor" in f.detail for f in findings)
+    items = [i for i in build_items(ctx, findings) if i.user.startswith("victor")]
+    assert items, "a critical cross-source finding reached no review item"
+    assert [i.kind for i in items] == [CROSS_SOURCE]
+    assert any("AR-17" in c for c in items[0].concerns)
+    # It settles by acknowledging: this review cannot change GitHub, and the
+    # finding's own ticket tracks the fix.
+    assert items[0].proposed == DECIDE and CROSS_SOURCE in ACKNOWLEDGE_ONLY
+
+
+def test_nobody_with_okta_access_gets_a_cross_source_item(demo_graph):
+    """It is the fallback for people the screen would otherwise miss, not a
+    second copy of every cross-source concern."""
+    findings, _ = run_checks(demo_graph)
+    items = build_items(demo_graph, findings)
+    assert not [i for i in items if i.kind == CROSS_SOURCE], \
+        "everyone in the demo still holds Okta access, so none is needed"
+
+
+def test_every_link_method_can_be_said_in_words():
+    """LINK_BASIS turns a rung of the ladder into a sentence the reviewer reads.
+    A new LinkMethod with no entry falls back to the raw enum value, which puts
+    `tied to them by creator` on the screen instead of what it means."""
+    assert set(LINK_BASIS) == set(LinkMethod)
+
+
+def test_every_graph_check_reaches_the_decision_screen(demo_graph):
+    """GRAPH_CHECKS is derived from the registry, not listed. A graph check
+    added to CHECKS and forgotten here would be a finding the report prints and
+    the screen that settles it never shows -- which is the defect this replaced."""
+    assert set(GRAPH_CHECKS) == {c.id for c in CHECKS if c.needs_graph}
+    assert GRAPH_CHECKS, "no graph checks found, so this guard proves nothing"

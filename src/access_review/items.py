@@ -19,7 +19,15 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
-from .checks import ReviewContext, app_usage_covers, records_sign_ins
+from .checks import (
+    SEVERITIES,
+    Finding,
+    ReviewContext,
+    app_usage_covers,
+    graph_findings_by_identity,
+    records_sign_ins,
+)
+from .identity import Link, LinkMethod, identity_key
 from .models import App, User
 
 KEEP, REVOKE, DECIDE = "keep", "revoke", "decide"
@@ -31,6 +39,19 @@ HR_RECORD = "hr_record"
 HR_REASON = ("No HR record. Raise it with HR: add them to the roster, list them as a service account in the "
              "config, or have the account deactivated. This is handled outside the review, and no ticket is "
              "opened for it.")
+# A person whose only problem is in another source. Review items are built from
+# Okta access, so someone whose Okta offboarding actually completed has no items
+# at all -- and their cross-source finding, which is exactly what this tool
+# exists to surface, would reach no decision screen. The better the Okta
+# hygiene, the more certain the finding is to be invisible. This item exists so
+# that person still appears.
+CROSS_SOURCE = "cross_source"
+CROSS_SOURCE_TARGET = "Access outside Okta"
+CROSS_SOURCE_REASON = ("They hold no access in Okta, but another source still does. This review cannot change "
+                       "access outside Okta: acknowledge it here, and the finding's own ticket tracks the fix.")
+# Kinds settled by acknowledging rather than by keep/revoke: the review records
+# that the reviewer saw them, and the work happens elsewhere.
+ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
 # Reviewer roles. Every new item goes to the CISO; "admin" only appears in item
 # files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
@@ -41,6 +62,15 @@ READABLE_FORMATS = (1, 2)
 # (admin user) only matters on admin items, AR-14 on the one unused app, and
 # AR-10 is about API clients, not people.
 PERSON_CHECKS = ("AR-01", "AR-02", "AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-12", "AR-13")
+# What a link method means, for a reviewer deciding how much weight to give it.
+# The ladder is named evidence rather than a score precisely so this can be
+# said in words at the point where someone acts on it.
+LINK_BASIS = {
+    LinkMethod.SSO_IDENTITY: "the identity provider's own assertion",
+    LinkMethod.VERIFIED_EMAIL: "an email address the source itself states is verified",
+    LinkMethod.DECLARED: "a register entry someone signed up to",
+    LinkMethod.CREATOR: "an audit record of who created it, so accountable rather than necessarily the owner",
+}
 
 
 class ItemsError(ValueError):
@@ -50,7 +80,7 @@ class ItemsError(ValueError):
 @dataclass(frozen=True)
 class ReviewItem:
     key: str  # stable across runs for the same access, so decisions and tickets line up
-    kind: str  # "app", "admin_role", "admin_group" or "hr_record"
+    kind: str  # "app", "admin_role", "admin_group", "hr_record" or "cross_source"
     user_id: str
     user: str  # Okta login
     target_id: str
@@ -150,20 +180,44 @@ def access_fact(ctx: ReviewContext, user: User, kind: str, target: str, via: str
     return line
 
 
-def concerns_for(findings, user: User, kind: str, app: App | None) -> list[str]:
-    """Why this access could be an issue: the findings about this person, and
-    about this access specifically."""
+def _worst_first(concerns: list[tuple[str, str]]) -> list[str]:
+    """Order finding-derived concerns by severity, worst first.
+
+    The reviewer reads the top of the list. A critical finding about access
+    Okta cannot reach is the single most useful thing on the screen and must
+    not sit below three medium notes. Stable within a severity, so the order
+    findings already came in is kept.
+    """
+    return [text for _, text in sorted(concerns, key=lambda c: SEVERITIES.index(c[0]))]
+
+
+def concerns_for(findings, user: User, kind: str, app: App | None,
+                 graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None = None) -> list[str]:
+    """Why this access could be an issue: the findings about this person, the
+    findings about this access specifically, and the findings about what they
+    hold in another source entirely.
+
+    That last group is the point of the cross-source checks. A reviewer
+    approving someone's Okta access while they still hold a write-capable
+    credential somewhere Okta deactivation never reaches is approving half a
+    picture, and this is the only screen where the decision is actually made.
+    """
     login = user.login.lower()
-    out = []
+    out: list[tuple[str, str]] = []
     for f in findings:
         subject = f.subject.lower()
         if f.check_id in PERSON_CHECKS and subject == login:
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-11" and subject == login and kind in ("admin_role", "admin_group"):
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-14" and app is not None and subject == f"{login} / {app.label.lower()}":
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
-    return out
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
+    identity = identity_key(user)
+    if identity and graph_by_identity:
+        for f, link in graph_by_identity.get(identity, ()):
+            basis = LINK_BASIS.get(link.method, str(link.method))
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title}; tied to them by {basis})"))
+    return _worst_first(out)
 
 
 # What an admin role lets someone do, said plainly, for the reviewer.
@@ -188,6 +242,8 @@ def role_concern(kind: str, target: str) -> list[str]:
 
 def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     """findings are this review's findings (run_checks); they become each item's concerns."""
+    graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
+
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str,
              app: App | None = None) -> ReviewItem:
         facts = person_facts(ctx, user)
@@ -197,7 +253,8 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
             target_id, target, via, proposed, reason, CISO,
             name=user.name, facts=tuple(facts),
-            concerns=tuple(role_concern(kind, target) + concerns_for(findings, user, kind, app)),
+            concerns=tuple(role_concern(kind, target)
+                           + concerns_for(findings, user, kind, app, graph_by_identity)),
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
@@ -220,6 +277,17 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
                 ))
         if user.login.lower() in no_hr_record:
             items.append(item(HR_RECORD, user, "hr-record", "HR record", "none", DECIDE, HR_REASON))
+
+    # Anyone carrying a cross-source finding who got no item above. Appended
+    # after the loop rather than inside it because whether a person has any
+    # other item is only known once their apps, roles and groups have been
+    # walked, and a DEPROVISIONED user skips most of that.
+    with_items = {i.user_id for i in items}
+    for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
+        if user.id in with_items or not graph_by_identity.get(identity_key(user)):
+            continue
+        items.append(item(CROSS_SOURCE, user, "cross-source", CROSS_SOURCE_TARGET, "none",
+                          DECIDE, CROSS_SOURCE_REASON))
 
     keys = [i.key for i in items]
     if len(keys) != len(set(keys)):

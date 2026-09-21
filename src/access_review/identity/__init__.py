@@ -20,7 +20,7 @@ from .graph import (
     Status,
 )
 from .github import GitHubSnapshot, project_github, source_name
-from .okta import OKTA, project_snapshot
+from .okta import OKTA, identity_key, project_snapshot
 
 __all__ = [
     "METHOD_ORDER",
@@ -39,6 +39,7 @@ __all__ = [
     "PrincipalKey",
     "PrincipalKind",
     "SourceMeta",
+    "identity_key",
     "source_name",
     "Status",
     "project_github",

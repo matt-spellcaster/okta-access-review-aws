@@ -51,7 +51,7 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-12": {"marcus.lee", "victor.nguyen"},
         "AR-13": {"marcus.lee", "victor.nguyen"},
         "AR-14": {"lee.chen"},
-        # Graph subjects are the source's own id, not the login: see _subject.
+        # Graph subjects are the source's own id, not the login: see graph_subject.
         # The login is in the detail, and GRAPH_LOGINS maps them back here.
         "AR-15": {"github:acme-eng/U_kgDOBq1kh6", "github:acme-eng/U_kgDOBq1jg5",
                   "github:acme-eng/U_kgDOBq1gd2", "okta/a04"},
@@ -87,11 +87,15 @@ def test_cross_source_findings_carry_the_planted_severities(demo):
         for f in findings if f.check_id in ("AR-15", "AR-16", "AR-17")
     }
     assert graded == {
-        # A leaver whose credential can write is critical; marcus-lee's PAT has
-        # read-only scopes only, which is still high.
+        # A leaver whose credential can write is critical.
         ("AR-17", "victor-nguyen"): "critical",
         ("AR-17", "sofia-ramos"): "critical",
-        ("AR-17", "marcus-lee"): "high",
+        # marcus-lee's PAT is read-only, so credentials alone would make this
+        # high. He is still a GitHub organization owner, which can add
+        # collaborators and turn off branch protection, so the role decides it.
+        # This is the only planted case where the role is what carries the
+        # grade: break the `roles or` branch and only this line moves.
+        ("AR-17", "marcus-lee"): "critical",
         # Write-capable and unowned.
         ("AR-16", "sam-departed"): "high",
         ("AR-16", "U_kgDOBq1zzz"): "medium",  # grants, no credential
@@ -316,14 +320,18 @@ def test_cross_source_checks_map_to_the_controls_they_actually_evidence():
     AR-15/AR-16 are identity-management and access-rights failures (A.5.16,
     A.5.18), not authentication-information ones (A.5.17, which covers how
     secrets are generated, issued and handled). AR-17 is access that outlived a
-    departure (A.5.18), not equipment nobody returned (A.5.11).
+    departure (A.5.18), not equipment nobody returned (A.5.11). AR-17 also
+    carries A.8.2 (privileged access rights), because it reports the elevated
+    roles a departure leaves behind and not only credentials -- the control its
+    Okta siblings AR-10 and AR-11 already map privileged access to.
     """
     controls = {c.id: c.controls for c in CHECKS if c.needs_graph}
     assert controls == {
         "AR-15": ["SOC 2 CC6.1", "SOC 2 CC6.2", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
         "AR-16": ["SOC 2 CC6.1", "SOC 2 CC6.2", "SOC 2 CC6.3",
                   "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
-        "AR-17": ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
+        "AR-17": ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18",
+                  "ISO 27001 A.8.2"],
     }
     # A.5.17 and A.5.11 are the two that were wrong; neither belongs on a
     # cross-source check, and nothing else in CHECKS cites them either.

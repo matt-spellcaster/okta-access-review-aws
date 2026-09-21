@@ -150,6 +150,8 @@ Each run writes a folder named after its collection time:
 | `access_matrix.csv` | Every user's access, with blank `decision` and `reviewer` columns to fill in |
 | `findings.csv` | Tracking remediation, with how long each finding has been open |
 | `snapshot.json` | The exact Okta data the checks ran on |
+| `github_snapshot.json` | The GitHub data, when `--github` was given: the cross-source findings rest on it |
+| `transitions.json` | One bundle per departure (with `--github`): everything that person still holds across sources, the evidence linking each account to them, and every finding about them |
 | `roster.csv` | A copy of the HR roster export the review compared against |
 | `manifest.json` | Config, roster name, row count and hash, completeness, the earlier reviews history was read from, and a SHA-256 hash of every file |
 | `attestations.json` | Added by `access-review attest <folder> --decision approved --reviewer NAME`: sign-offs tied to the manifest's hash ([details](docs/configuration.md#sign-off-attest)) |
