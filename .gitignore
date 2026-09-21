@@ -30,3 +30,7 @@ backend.hcl
 
 # Private planning notes: job-hunting context, never public
 .notes/
+
+# Coverage artifacts
+.coverage
+htmlcov/

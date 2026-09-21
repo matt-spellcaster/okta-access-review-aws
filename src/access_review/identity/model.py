@@ -5,17 +5,19 @@ output. This layer composes above it. An `IdentityGraph` holds `Principal`s,
 `Credential`s and `Grant`s from any number of sources, with the `Link`s that
 say which principal belongs to which person, and why.
 
-Two rules shape everything here.
+Two rules shape everything here, and the graph enforces them rather than
+merely documenting them.
 
-Nothing is fuzzy-matched. A link is evidenced or it is absent, and `LinkMethod`
-is a ladder of named methods, not a score. A false link is worse than no link,
-because it marks a credential as accounted for when nobody is accountable for
-it -- the opposite of what this tool is for. The method travels into the
-evidence bundle so an auditor can see why the tool believes what it believes.
+Nothing is fuzzy-matched. A link is evidenced or it is absent, `LinkMethod` is
+a ladder of named methods rather than a score, and two equally-strong links
+naming different people leave the principal *unlinked* instead of picking one.
+A false link is worse than no link, because it marks a credential as accounted
+for when nobody is accountable for it.
 
 Silence is not absence. Completeness is tracked per source (`SourceMeta`), so a
-failed GitHub read reports as "GitHub is incomplete", never as "this person
-holds no GitHub credentials".
+failed read reports as "incomplete", never as "this person holds nothing".
+Counts are derived from the same predicates that produce the lists, so a
+coverage number can never disagree with the principals behind it.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-from ..models import format_time, parse_time
+from ..models import format_time
 
 # A principal is only unique within its source: two sources can both have an
 # "alice", and an AWS key and a GitHub PAT are different things with the same id.
@@ -43,8 +45,7 @@ class Status(StrEnum):
 
     ACTIVE = "active"  # exists, and is or can become usable
     DISABLED = "disabled"  # sign-in blocked, access still attached
-    DELETED = "deleted"  # gone from the source, though its credentials may not be
-    UNKNOWN = "unknown"
+    UNKNOWN = "unknown"  # the source did not say, or said something new
 
 
 class CredentialKind(StrEnum):
@@ -54,8 +55,6 @@ class CredentialKind(StrEnum):
 
     OKTA_API_TOKEN = "okta_api_token"
     GITHUB_PAT = "github_pat"
-    AWS_ACCESS_KEY = "aws_access_key"
-    SSH_KEY = "ssh_key"
     OAUTH_CLIENT = "oauth_client"
 
 
@@ -71,12 +70,12 @@ class LinkMethod(StrEnum):
     """How a principal was tied to a person, strongest first.
 
     An enum rather than a confidence score: each value names evidence someone
-    can check. SSO_IDENTITY is the IdP's own external identity (SAML or SCIM)
-    and is authoritative. VERIFIED_EMAIL is an exact match on an address the
-    source itself states. DECLARED is a register entry a person signed up to.
-    CREATOR comes from an audit log and means accountable, not necessarily
-    owner -- and the creator may themselves have left, which is a worse
-    finding, not an answer.
+    can check. SSO_IDENTITY is the IdP's own identity assertion and is
+    authoritative. VERIFIED_EMAIL is an exact match on an address the source
+    itself states. DECLARED is a register entry a person signed up to. CREATOR
+    comes from an audit log and means accountable, not necessarily owner -- and
+    the creator may themselves have left, which is a worse finding, not an
+    answer.
 
     There is deliberately no method below CREATOR. A principal nothing here
     applies to is unlinked, and unlinked is a finding.
@@ -99,16 +98,6 @@ METHOD_ORDER = (
     LinkMethod.DECLARED,
     LinkMethod.CREATOR,
 )
-_METHOD_WORDS = {
-    LinkMethod.SSO_IDENTITY: "SSO-linked",
-    LinkMethod.VERIFIED_EMAIL: "email-matched",
-    LinkMethod.DECLARED: "declared",
-    LinkMethod.CREATOR: "creator-traced",
-}
-
-
-def _count(n: int, noun: str) -> str:
-    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 @dataclass
@@ -132,20 +121,6 @@ class Principal:
     @property
     def key(self) -> PrincipalKey:
         return (self.source, self.id)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> Principal:
-        return cls(
-            source=d["source"],
-            id=d["id"],
-            label=d.get("label", ""),
-            kind=PrincipalKind(d.get("kind", "unknown")),
-            status=Status(d.get("status", "unknown")),
-            source_status=d.get("source_status", ""),
-            email=d.get("email", ""),
-            created=parse_time(d.get("created")),
-            last_used=parse_time(d.get("last_used")),
-        )
 
     def to_dict(self) -> dict:
         return {
@@ -176,31 +151,14 @@ class Credential:
     created: datetime | None = None
     last_used: datetime | None = None
     expires: datetime | None = None
-    # None means the source did not say. False is a claim, and a claim made
-    # from data that was never read is how a review misses something.
+    # None means the source did not say, or a read that would have said failed.
+    # False is a claim, and a claim made from data nobody read is how a review
+    # misses a credential that can change things.
     write_access: bool | None = None
-
-    @property
-    def key(self) -> PrincipalKey:
-        return (self.source, self.id)
 
     @property
     def holder_key(self) -> PrincipalKey | None:
         return (self.source, self.holder) if self.holder else None
-
-    @classmethod
-    def from_dict(cls, d: dict) -> Credential:
-        return cls(
-            source=d["source"],
-            id=d["id"],
-            kind=CredentialKind(d["kind"]),
-            label=d.get("label", ""),
-            holder=d.get("holder", ""),
-            created=parse_time(d.get("created")),
-            last_used=parse_time(d.get("last_used")),
-            expires=parse_time(d.get("expires")),
-            write_access=d.get("write_access"),
-        )
 
     def to_dict(self) -> dict:
         return {
@@ -232,17 +190,6 @@ class Grant:
     def principal_key(self) -> PrincipalKey:
         return (self.source, self.principal)
 
-    @classmethod
-    def from_dict(cls, d: dict) -> Grant:
-        return cls(
-            source=d["source"],
-            principal=d["principal"],
-            kind=GrantKind(d["kind"]),
-            target=d["target"],
-            target_label=d.get("target_label", ""),
-            via=d.get("via", "direct"),
-        )
-
     def to_dict(self) -> dict:
         return {
             "source": self.source,
@@ -268,15 +215,6 @@ class Link:
     identity: str = ""
     evidence: str = ""
 
-    @classmethod
-    def from_dict(cls, d: dict) -> Link:
-        return cls(
-            principal=(d["source"], d["principal"]),
-            method=LinkMethod(d["method"]),
-            identity=d.get("identity", ""),
-            evidence=d.get("evidence", ""),
-        )
-
     def to_dict(self) -> dict:
         return {
             "source": self.principal[0],
@@ -293,7 +231,6 @@ class Identity:
     principal linked to them with the method that did the linking."""
 
     key: str
-    label: str = ""
     links: list[Link] = field(default_factory=list)
 
     @property
@@ -316,24 +253,13 @@ class SourceMeta:
     # Oldest point this source's activity evidence reaches. None means activity
     # was not collected at all, which is not the same as "nothing happened".
     activity_since: datetime | None = None
-    # False when an activity read was cut short, so a missing record of use
-    # cannot be read as "not used".
+    # False when an activity read did not run or was cut short, so a missing
+    # record of use cannot be read as "not used".
     activity_complete: bool = True
 
     @property
     def complete(self) -> bool:
         return not self.gaps
-
-    @classmethod
-    def from_dict(cls, d: dict) -> SourceMeta:
-        return cls(
-            source=d["source"],
-            org=d.get("org", ""),
-            collected_at=parse_time(d.get("collected_at")),
-            gaps=list(d.get("gaps", [])),
-            activity_since=parse_time(d.get("activity_since")),
-            activity_complete=d.get("activity_complete", True),
-        )
 
     def to_dict(self) -> dict:
         return {
@@ -348,12 +274,18 @@ class SourceMeta:
 
 @dataclass
 class Coverage:
-    """How much of the estate is accounted for, as a number to trend across
-    reviews. The trend going down is the point of the tool."""
+    """How much of the estate is accounted for, as numbers to trend across
+    reviews. The trend going down is the point of the tool.
+
+    Counts only -- no labels, no emails -- so this is the shape that can cross
+    a Step Functions boundary or reach a Slack channel under the data-handling
+    rules in CLAUDE.md.
+    """
 
     total: int
     by_method: dict[str, int]
     unlinked: int
+    contested: int
     incomplete_sources: list[str] = field(default_factory=list)
 
     @property
@@ -362,68 +294,121 @@ class Coverage:
         bound on a partial estate, not a count of what is out there."""
         return not self.incomplete_sources
 
-    def summary(self) -> str:
-        parts = [f"{n} {_METHOD_WORDS[LinkMethod(m)]}" for m, n in self.by_method.items() if n]
-        parts.append(f"{self.unlinked} unlinked")
-        line = f"{_count(self.total, 'principal')}: {', '.join(parts)}"
-        if not self.reliable:
-            line += (
-                f" (incomplete: {', '.join(self.incomplete_sources)}, "
-                f"so these counts cover only what could be read)"
-            )
-        return line
-
     def to_dict(self) -> dict:
         return {
             "total": self.total,
             "by_method": self.by_method,
             "unlinked": self.unlinked,
+            "contested": self.contested,
             "incomplete_sources": self.incomplete_sources,
             "reliable": self.reliable,
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class IdentityGraph:
     """Principals, credentials and grants from one or more sources, with the
     links between principals and people.
 
     Built by projecting each source's own output into it -- `Snapshot` through
-    identity.okta, GitHub and AWS through their own adapters -- and composed
-    with `compose`. Treat it as immutable once built: the lookups are indexed
-    on construction, and `compose` returns a new graph rather than mutating one.
+    identity.okta, GitHub through its own adapter -- and composed with
+    `compose`. Frozen, because every lookup is indexed on construction: a graph
+    that could be appended to after the fact would answer `principal()` with
+    None for a principal it contains, and no test would catch it.
     """
 
-    sources: list[SourceMeta] = field(default_factory=list)
-    principals: list[Principal] = field(default_factory=list)
-    credentials: list[Credential] = field(default_factory=list)
-    grants: list[Grant] = field(default_factory=list)
-    links: list[Link] = field(default_factory=list)
+    sources: tuple[SourceMeta, ...] = ()
+    principals: tuple[Principal, ...] = ()
+    credentials: tuple[Credential, ...] = ()
+    grants: tuple[Grant, ...] = ()
+    links: tuple[Link, ...] = ()
 
     def __post_init__(self) -> None:
-        self._principals: dict[PrincipalKey, Principal] = {p.key: p for p in self.principals}
-        self._best: dict[PrincipalKey, Link] = {}
+        put = object.__setattr__  # frozen dataclass: the only way to fill fields
+        for name in ("sources", "principals", "credentials", "grants", "links"):
+            put(self, name, tuple(getattr(self, name)))
+
+        by_key: dict[PrincipalKey, Principal] = {}
+        for principal in self.principals:
+            if principal.key in by_key:
+                raise ValueError(
+                    f"principal {principal.id!r} appears twice in source {principal.source!r}; "
+                    f"a duplicate would be counted once and looked up once, so every number "
+                    f"derived from it would be wrong"
+                )
+            by_key[principal.key] = principal
+        put(self, "_principals", by_key)
+
+        # Strongest link wins. Two equally strong links naming different people
+        # do NOT resolve to whichever adapter appended first -- the principal is
+        # contested, which means unlinked, which means a finding.
+        best: dict[PrincipalKey, Link] = {}
+        contested: set[PrincipalKey] = set()
         for link in self.links:
-            best = self._best.get(link.principal)
-            if best is None or link.method.rank < best.method.rank:
-                self._best[link.principal] = link
+            current = best.get(link.principal)
+            if current is None:
+                best[link.principal] = link
+            elif link.method.rank < current.method.rank:
+                best[link.principal] = link
+                contested.discard(link.principal)
+            elif link.method.rank == current.method.rank and link.identity != current.identity:
+                contested.add(link.principal)
+        for key in contested:
+            best.pop(key, None)
+        put(self, "_best", best)
+        put(self, "_contested", frozenset(contested))
+
+        # Indexed on construction: a check that walks principals and asks each
+        # one for its grants is otherwise O(principals x grants), which is
+        # invisible at 11 users and minutes of CPU at 5000.
+        grants_by: dict[PrincipalKey, list[Grant]] = {}
+        for grant in self.grants:
+            grants_by.setdefault(grant.principal_key, []).append(grant)
+        put(self, "_grants", grants_by)
+
+        creds_by: dict[PrincipalKey, list[Credential]] = {}
+        for credential in self.credentials:
+            key = credential.holder_key
+            if key:
+                creds_by.setdefault(key, []).append(credential)
+        put(self, "_credentials", creds_by)
+
+        by_identity: dict[str, list[PrincipalKey]] = {}
+        for key, link in best.items():
+            if link.identity:
+                by_identity.setdefault(link.identity, []).append(key)
+        put(self, "_by_identity", by_identity)
 
     @classmethod
     def compose(cls, *graphs: IdentityGraph) -> IdentityGraph:
-        """Combine per-source graphs into one. Sources stay separate: two reads
-        of the same source would make every count wrong, so that is an error."""
+        """Combine per-source graphs into one.
+
+        Sources stay separate: two reads of the same source would make every
+        count wrong, so that is an error. So is a graph whose records name a
+        source it does not declare -- that principal would be invisible to
+        `incomplete_sources` while still inflating the totals.
+        """
         seen: set[str] = set()
         for graph in graphs:
-            for meta in graph.sources:
-                if meta.source in seen:
-                    raise ValueError(f"source {meta.source!r} appears in more than one graph")
-                seen.add(meta.source)
+            declared = {m.source for m in graph.sources}
+            if len(declared) != len(graph.sources):
+                raise ValueError("a graph declares the same source twice")
+            clash = seen & declared
+            if clash:
+                raise ValueError(f"source {sorted(clash)[0]!r} appears in more than one graph")
+            seen |= declared
+            for principal in graph.principals:
+                if principal.source not in declared:
+                    raise ValueError(
+                        f"principal {principal.id!r} names source {principal.source!r}, "
+                        f"which its graph does not declare"
+                    )
         return cls(
-            sources=[m for g in graphs for m in g.sources],
-            principals=[p for g in graphs for p in g.principals],
-            credentials=[c for g in graphs for c in g.credentials],
-            grants=[x for g in graphs for x in g.grants],
-            links=[x for g in graphs for x in g.links],
+            sources=tuple(m for g in graphs for m in g.sources),
+            principals=tuple(p for g in graphs for p in g.principals),
+            credentials=tuple(c for g in graphs for c in g.credentials),
+            grants=tuple(x for g in graphs for x in g.grants),
+            links=tuple(x for g in graphs for x in g.links),
         )
 
     def principal(self, key: PrincipalKey) -> Principal | None:
@@ -433,19 +418,19 @@ class IdentityGraph:
         return next((m for m in self.sources if m.source == name), None)
 
     def link_for(self, key: PrincipalKey) -> Link | None:
-        """The strongest link for this principal, or None if it is unlinked."""
+        """The strongest link for this principal, or None when it is unlinked
+        or contested."""
         return self._best.get(key)
 
-    def links_for(self, key: PrincipalKey) -> list[Link]:
-        """Every link for this principal, strongest first. More than one is
-        normal and worth showing: SSO says whose account it is, the audit log
-        says who set it up."""
-        return sorted((x for x in self.links if x.principal == key), key=lambda x: x.method.rank)
-
     def unlinked(self) -> list[Principal]:
-        """Principals no evidence ties to anyone. The headline finding, not an
-        edge case."""
+        """Principals no evidence ties to anyone, including those whose
+        attribution is contested. The headline finding, not an edge case."""
         return [p for p in self.principals if p.key not in self._best]
+
+    def contested(self) -> list[Principal]:
+        """Principals two equally strong links disagree about. Worse than
+        unlinked: something claims to know who owns this, twice, differently."""
+        return [p for p in self.principals if p.key in self._contested]
 
     def holder_of(self, credential: Credential) -> Principal | None:
         """The principal holding a credential, or None when the source names a
@@ -454,16 +439,22 @@ class IdentityGraph:
         return self._principals.get(key) if key else None
 
     def credentials_for(self, key: PrincipalKey) -> list[Credential]:
-        return [c for c in self.credentials if c.holder_key == key]
+        return self._credentials.get(key, [])
 
     def grants_for(self, key: PrincipalKey) -> list[Grant]:
-        return [g for g in self.grants if g.principal_key == key]
+        return self._grants.get(key, [])
 
     def principals_of(self, identity: str) -> list[Principal]:
         """Everything this person holds, across sources -- including principals
-        they are only accountable for, such as a bot they set up."""
-        keys = [k for k, link in self._best.items() if link.identity == identity]
-        return [p for k in sorted(keys) if (p := self._principals.get(k))]
+        they are only accountable for, such as a bot they set up.
+
+        An empty identity is nobody, not a person who owns every service
+        account declared without an owner.
+        """
+        if not identity:
+            return []
+        keys = sorted(self._by_identity.get(identity, ()))
+        return [p for k in keys if (p := self._principals.get(k))]
 
     def identities(self) -> list[Identity]:
         """The people this graph knows about, each with their linked principals.
@@ -472,45 +463,42 @@ class IdentityGraph:
         an account whose SSO identity is one person and whose audit-log creator
         is another belongs to the SSO identity.
         """
-        grouped: dict[str, list[Link]] = {}
-        for link in self._best.values():
-            if link.identity:
-                grouped.setdefault(link.identity, []).append(link)
         out = []
-        for key, links in sorted(grouped.items()):
-            links.sort(key=lambda x: (x.method.rank, x.principal))
-            people = (self._principals.get(x.principal) for x in links)
-            label = next(
-                (p.label for p in people if p and p.kind is PrincipalKind.HUMAN and p.email == key), key
+        for key in sorted(self._by_identity):
+            links = sorted(
+                (self._best[k] for k in self._by_identity[key]),
+                key=lambda x: (x.method.rank, x.principal),
             )
-            out.append(Identity(key=key, label=label, links=links))
+            out.append(Identity(key=key, links=links))
         return out
 
     def incomplete_sources(self) -> list[str]:
         return [m.source for m in self.sources if not m.complete]
 
     def coverage(self) -> Coverage:
+        """Counts derived from the same predicates that produce the lists, so
+        the headline number can never disagree with the principals behind it."""
         counts = {str(m): 0 for m in METHOD_ORDER}
-        for link in self._best.values():
-            counts[str(link.method)] += 1
+        for key, link in self._best.items():
+            if key in self._principals:
+                counts[str(link.method)] += 1
         return Coverage(
-            total=len(self.principals),
+            total=len(self._principals),
             by_method=counts,
-            unlinked=len(self.principals) - len(self._best),
+            unlinked=len(self.unlinked()),
+            contested=len(self._contested),
             incomplete_sources=self.incomplete_sources(),
         )
 
-    @classmethod
-    def from_dict(cls, d: dict) -> IdentityGraph:
-        return cls(
-            sources=[SourceMeta.from_dict(x) for x in d.get("sources", [])],
-            principals=[Principal.from_dict(x) for x in d.get("principals", [])],
-            credentials=[Credential.from_dict(x) for x in d.get("credentials", [])],
-            grants=[Grant.from_dict(x) for x in d.get("grants", [])],
-            links=[Link.from_dict(x) for x in d.get("links", [])],
-        )
-
     def to_dict(self) -> dict:
+        """The whole graph, for an evidence bundle.
+
+        This carries personal data -- logins, emails, and the evidence strings
+        that name people. It belongs where the CLAUDE.md rules allow personal
+        data (the PDF, a JSM ticket, the CISO's DM), never in Step Functions
+        input or output and never in a Slack channel post. `Coverage.to_dict`
+        is the counts-only shape for those.
+        """
         return {
             "sources": [x.to_dict() for x in self.sources],
             "principals": [x.to_dict() for x in self.principals],
