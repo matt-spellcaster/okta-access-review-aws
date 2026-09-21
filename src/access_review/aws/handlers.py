@@ -77,6 +77,7 @@ def _deps(tickets: bool = False, sfn: bool = False) -> workflow.Deps:
         s3=_client("s3"), evidence_bucket=s.evidence_bucket, work_bucket=s.work_bucket,
         bot=BotClient(_secret("SLACK_BOT_TOKEN_PARAM")), reviewers=s.reviewers, channel=s.slack_channel,
         tickets=remediation, sfn=_client("stepfunctions") if sfn else None, review_days=s.review_days,
+        revoke_days=s.revoke_ticket_days,
         ticket_url=(lambda key: browse_url(base, key)) if base else (lambda key: None),
         channel_pdf=s.channel_pdf,
     )

@@ -19,9 +19,7 @@ and counts.
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import json
 import tempfile
 from dataclasses import dataclass, field
@@ -31,6 +29,7 @@ from typing import Callable
 
 from . import slack_review as msgs
 from . import store
+from .csvsafe import read_rows
 from .decisions import (
     DecisionError,
     Reviewers,
@@ -64,6 +63,7 @@ class Deps:
     tickets: object | None = None  # tickets.Remediation
     sfn: object | None = None  # boto3 Step Functions client
     review_days: int = 7
+    revoke_days: int = 7  # how long a remediation ticket gets; shown on the sign-off message
     now: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # A Jira ticket's page, or None when there is none to link to (see JiraClient.browse_url).
     ticket_url: Callable[[str], str | None] = field(default=lambda key: None)
@@ -78,6 +78,7 @@ class RunData:
     manifest_sha256: str
     items: dict[str, ReviewItem]
     item_list: list[ReviewItem]
+    app_unused_days: int = 90  # the usage rule this review's proposals followed
 
 
 def _key(run: str, name: str) -> str:
@@ -93,8 +94,10 @@ def load_run(deps: Deps, run: str) -> RunData:
     if hashlib.sha256(items_bytes).hexdigest() != manifest.get("files", {}).get(ITEMS_FILE):
         raise store.StoreError(f"{ITEMS_FILE} for {run} doesn't match its manifest")
     item_list = load_items(items_bytes.decode())
+    unused_days = (manifest.get("config") or {}).get("app_unused_days", 90)
     return RunData(run, manifest, hashlib.sha256(manifest_bytes).hexdigest(),
-                   {i.key: i for i in item_list}, item_list)
+                   {i.key: i for i in item_list}, item_list,
+                   unused_days if type(unused_days) is int else 90)
 
 
 def current_decisions(deps: Deps, data: RunData) -> dict[str, dict]:
@@ -104,8 +107,7 @@ def current_decisions(deps: Deps, data: RunData) -> dict[str, dict]:
 
 def urgent_findings(deps: Deps, run: str) -> list[dict]:
     """Leaver findings from the run's findings.csv (hashed in the manifest)."""
-    text = store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode()
-    return [row for row in csv.DictReader(io.StringIO(text)) if row["check_id"] in URGENT_CHECKS]
+    return [row for row in all_findings(deps, run) if row["check_id"] in URGENT_CHECKS]
 
 
 def _due(deps: Deps) -> datetime:
@@ -159,7 +161,8 @@ def _upload_pdf(deps: Deps, run: str, channel: str, thread_ts: str, comment: str
 def _post_dm(deps: Deps, data: RunData, final: dict, due: str, parent: str | None) -> dict:
     channel = deps.bot.open_dm(deps.reviewers.ciso)
     summary_ts = deps.bot.post_message(channel, msgs.summary_message(
-        data.run, data.item_list, final, due, data.manifest_sha256, _ticket(deps, parent)))
+        data.run, data.item_list, final, due, data.manifest_sha256, _ticket(deps, parent),
+        unused_days=data.app_unused_days))
     tickets = leaver_tickets(deps, data.run)
     parts = msgs.chunks(data.item_list)
     chunk_ts = [
@@ -172,55 +175,73 @@ def _post_dm(deps: Deps, data: RunData, final: dict, due: str, parent: str | Non
 def open_review(deps: Deps, run: str, task_token: str) -> dict:
     """Step Functions calls this with .waitForTaskToken; the execution then
     waits until approve() sends the token back. Safe to call again for the same
-    run: a retry only refreshes the task token."""
-    try:
-        load_state(deps.s3, deps.work_bucket, run)
-    except FileNotFoundError:
-        pass
-    else:
-        update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(task_token=task_token))
-        return {"run": run, "reopened": True}
-
+    run: a retry refreshes the task token and then finishes whichever of the
+    steps below did not complete the first time. Each step checks the state
+    field it fills in, so nothing is opened or posted twice."""
     data = load_run(deps, run)
-    due_at = _due(deps)
+    try:
+        state, _ = load_state(deps.s3, deps.work_bucket, run)
+    except FileNotFoundError:
+        reopened = False
+        due_at = _due(deps)
+        state = {
+            "run": run, "status": OPEN, "opened_at": _iso(deps.now()), "due_at": _iso(due_at),
+            "manifest_sha256": data.manifest_sha256, "task_token": task_token,
+            "dms": {}, "approve": None, "parent_issue": None, "notices": {},
+        }
+        create_state(deps.s3, deps.work_bucket, run, state)
+    else:
+        reopened = True
+        state = update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(task_token=task_token))
+        if state["status"] != OPEN:
+            return {"run": run, "reopened": True, "status": state["status"]}
+        due_at = datetime.fromisoformat(state["due_at"].replace("Z", "+00:00"))
     due = due_at.strftime("%Y-%m-%d")
-    create_state(deps.s3, deps.work_bucket, run, {
-        "run": run, "status": OPEN, "opened_at": _iso(deps.now()), "due_at": _iso(due_at),
-        "manifest_sha256": data.manifest_sha256, "task_token": task_token,
-        "dms": {}, "approve": None, "parent_issue": None, "notices": {},
-    })
 
-    parent, urgent = None, 0
+    parent, urgent = state.get("parent_issue"), 0
     if deps.tickets is not None:
-        counts = summary(data.item_list)
-        parent = deps.tickets.open_parent(run, data.manifest, data.manifest_sha256, counts, due_at)
+        if parent is None:
+            parent = deps.tickets.open_parent(run, data.manifest, data.manifest_sha256, summary(data.item_list),
+                                              due_at)
+            update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(parent_issue=parent))
+        # Looked up by label before being created, so a retry opens no second ticket.
         urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run), people(deps, run))
-        update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(parent_issue=parent))
 
-    dms = {CISO: _post_dm(deps, data, {}, due, parent)} if data.item_list else {}
-    update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(dms=dms))
-    # The review's thread in the channel: everything later about it goes under this post.
-    channel_ts = deps.bot.post_message(deps.channel, msgs.channel_opened(
-        run, summary(data.item_list), due, _ticket(deps, parent), urgent))
-    update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(channel_ts=channel_ts))
-    if deps.channel_pdf:
-        _upload_pdf(deps, run, deps.channel, channel_ts,
-                    ":page_facing_up: The full report. :lock: Contains names and access details.")
+    if data.item_list and not state.get("dms"):
+        dms = {CISO: _post_dm(deps, data, {}, due, parent)}
+        update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(dms=dms))
+    if not state.get("channel_ts"):
+        # The review's thread in the channel: everything later about it goes under this post.
+        channel_ts = deps.bot.post_message(deps.channel, msgs.channel_opened(
+            run, summary(data.item_list), due, _ticket(deps, parent), urgent))
+        update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(channel_ts=channel_ts))
+        if deps.channel_pdf:
+            _upload_pdf(deps, run, deps.channel, channel_ts,
+                        ":page_facing_up: The full report. :lock: Contains names and access details.")
     maybe_ready(deps, data, {})  # a review with nothing to decide goes straight to sign-off
-    return {"run": run, "items": len(data.item_list), "urgent_tickets": urgent}
+    out = {"run": run, "items": len(data.item_list), "urgent_tickets": urgent}
+    return {**out, "reopened": True} if reopened else out
 
 
-def refresh(deps: Deps, data: RunData, state: dict, final: dict) -> None:
-    """Bring the reviewer's DM up to date with the latest decisions."""
+def refresh(deps: Deps, data: RunData, state: dict, final: dict, only_chunk: int | None = None) -> None:
+    """Bring the reviewer's DM up to date with the latest decisions. With
+    only_chunk, just the summary and that one item message: a single click
+    changes one card, and updating every message per click would run into
+    Slack's rate limit on a long review."""
     due = state["due_at"][:10]
     parent = _ticket(deps, state.get("parent_issue"))
     tickets = leaver_tickets(deps, data.run)
     is_open = state["status"] == OPEN
     parts = msgs.chunks(data.item_list)
+    if type(only_chunk) is not int or not 0 <= only_chunk < len(parts):
+        only_chunk = None
     for dm in state["dms"].values():
         deps.bot.update_message(dm["channel"], dm["summary_ts"], msgs.summary_message(
-            data.run, data.item_list, final, due, data.manifest_sha256, parent, open_=is_open))
+            data.run, data.item_list, final, due, data.manifest_sha256, parent, open_=is_open,
+            unused_days=data.app_unused_days))
         for n, (part, ts) in enumerate(zip(parts, dm["chunks"])):
+            if only_chunk is not None and n != only_chunk:
+                continue
             deps.bot.update_message(dm["channel"], ts,
                                     msgs.chunk_message(data.run, n, len(parts), part, final, tickets))
 
@@ -235,7 +256,7 @@ def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
     def claim(s: dict) -> None:
         posted.append(s.get("approve") is None and s["status"] == OPEN)
         if posted[-1]:
-            s["approve"] = {"claimed": True}
+            s["approve"] = {"claimed": _iso(deps.now())}  # watch.hourly reposts if this never gets its ts
 
     update_state(deps.s3, deps.work_bucket, data.run, claim)
     if not posted[-1]:
@@ -244,14 +265,16 @@ def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
     channel = deps.bot.open_dm(deps.reviewers.ciso)
     ts = deps.bot.post_message(channel, msgs.approve_message(
         data.run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
-        _ticket(deps, state.get("parent_issue"))))
+        _ticket(deps, state.get("parent_issue")), revoke_days=deps.revoke_days))
     _upload_pdf(deps, data.run, channel, ts, ":page_facing_up: The full report. :lock: Contains personal data.")
     update_state(deps.s3, deps.work_bucket, data.run, lambda s: s.update(approve={"channel": channel, "ts": ts}))
     return True
 
 
-def record(deps: Deps, run: str, choices: list[tuple[str, str, str]], user: str, source: dict) -> dict:
-    """Validate and store one reviewer action, then bring their messages up to date."""
+def record(deps: Deps, run: str, choices: list[tuple[str, str, str]], user: str, source: dict,
+           chunk: int | None = None) -> dict:
+    """Validate and store one reviewer action, then bring their messages up to
+    date. chunk is the item message the click came from, when it was one click."""
     state, _ = load_state(deps.s3, deps.work_bucket, run)
     if state["status"] != OPEN:
         raise ReviewClosed("this review has already been signed off")
@@ -260,8 +283,12 @@ def record(deps: Deps, run: str, choices: list[tuple[str, str, str]], user: str,
                                      source, deps.now())
     store.put_record(deps.s3, deps.evidence_bucket, run, "decisions", name, rec)
     final = current_decisions(deps, data)
-    refresh(deps, data, state, final)
-    maybe_ready(deps, data, final)
+    # The Approve message has to go out once every item is decided, even if
+    # updating the cards fails (a Slack rate limit, say): nothing else posts it.
+    try:
+        refresh(deps, data, state, final, only_chunk=chunk)
+    finally:
+        maybe_ready(deps, data, final)
     return progress(data.items, final)
 
 
@@ -288,12 +315,20 @@ def approve(deps: Deps, run: str, user: str, source: dict) -> dict:
         run, data.manifest, data.manifest_sha256, data.manifest["files"][ITEMS_FILE], data.items, final,
         user, deps.reviewers, source, now=deps.now(),
     )
+    decisions_key = store.record_key(run, "signoff", "decisions.json")
     try:
-        store.put_create_only(deps.s3, deps.evidence_bucket, store.record_key(run, "signoff", "decisions.json"),
-                              decisions_bytes, "application/json")
+        store.put_create_only(deps.s3, deps.evidence_bucket, decisions_key, decisions_bytes, "application/json")
+    except store.AlreadyExists:
+        # An earlier attempt at this sign-off wrote the decisions and then failed
+        # before the state changed. The same decisions: finish the job below.
+        # Different ones: what was recorded stands, and a person has to look.
+        if store.get_bytes(deps.s3, deps.evidence_bucket, decisions_key) != decisions_bytes:
+            raise DecisionError("a sign-off with different decisions is already recorded for this review; "
+                                "ask an operator to check signoff/decisions.json") from None
+    try:
         store.put_record(deps.s3, deps.evidence_bucket, run, "signoff", "attestation.json", attestation)
     except store.AlreadyExists:
-        raise ReviewClosed("this review has already been signed off") from None
+        attestation = store.get_record(deps.s3, deps.evidence_bucket, run, "signoff", "attestation.json")
 
     output = {
         "run": run, "manifest_sha256": data.manifest_sha256,
@@ -305,7 +340,7 @@ def approve(deps: Deps, run: str, user: str, source: dict) -> dict:
     if (state.get("approve") or {}).get("ts"):
         deps.bot.update_message(state["approve"]["channel"], state["approve"]["ts"], msgs.approve_message(
             run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
-            _ticket(deps, state.get("parent_issue")), signed=attestation))
+            _ticket(deps, state.get("parent_issue")), signed=attestation, revoke_days=deps.revoke_days))
     refresh(deps, data, state, final)
     return output
 
@@ -355,8 +390,7 @@ def remediate(deps: Deps, run: str) -> dict:
 
 
 def all_findings(deps: Deps, run: str) -> list[dict]:
-    text = store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode()
-    return list(csv.DictReader(io.StringIO(text)))
+    return read_rows(store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode())
 
 
 def checklist_entries(deps: Deps, run: str) -> list[dict]:
@@ -406,9 +440,8 @@ def refresh_checklist(deps: Deps, run: str) -> None:
 
 def check_counts(deps: Deps, run: str) -> list[tuple[str, str, str, int]]:
     """(check_id, title, severity, count) from findings.csv: counts only, for the channel."""
-    text = store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "findings.csv")).decode()
     counts: dict[tuple[str, str, str], int] = {}
-    for row in csv.DictReader(io.StringIO(text)):
+    for row in all_findings(deps, run):
         k = (row["check_id"], row["title"], row["severity"])
         counts[k] = counts.get(k, 0) + 1
     return [(c, t, sev, n) for (c, t, sev), n in sorted(counts.items())]

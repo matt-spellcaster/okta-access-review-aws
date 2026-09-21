@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
-from fakes import FakeBot, FakeS3, FakeSfn
+from fakes import FakeBot, FakeClientError, FakeS3, FakeSfn
 from test_watch import FakeJira
 
 from access_review import store, workflow
@@ -17,6 +17,7 @@ from access_review.items import DECIDE, KEEP, REVOKE
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
+from access_review.slack import SlackError
 from access_review.slack_interact import ItemCache, front, verify_signature, worker
 from access_review.state import CLOSED, SIGNED_OFF, load_state
 from access_review.tickets import Remediation
@@ -259,3 +260,95 @@ def test_item_cards_show_facts_then_why(env):
     assert "*Facts*" in dm and "*Why it could be an issue*" in dm
     assert dm.index("*Facts*") < dm.index("*Why it could be an issue*") < dm.index("*Proposed:")
     assert "Lee Chen" in dm and "MFA: none" in dm
+
+
+# --- retries and failures part-way through ---
+
+def test_a_retried_open_finishes_what_the_first_attempt_did_not(env):
+    deps, run, items = env
+    real, failed = deps.bot.post_message, []
+
+    def flaky(channel, payload):
+        if channel == CISO_DM and not failed:
+            failed.append(True)
+            raise RuntimeError("Slack is down")
+        return real(channel, payload)
+
+    deps.bot.post_message = flaky
+    with pytest.raises(RuntimeError):
+        workflow.open_review(deps, run, "token-1")
+    # The tickets were opened, but nothing reached the CISO or the channel.
+    state, _ = load_state(deps.s3, "work", run)
+    assert state["parent_issue"] == "UAR-1" and state["dms"] == {} and "channel_ts" not in state
+    opened = len(deps.tickets.jira.issues)
+
+    out = workflow.open_review(deps, run, "token-2")
+
+    assert out["reopened"] and out["items"] == len(items)
+    state, _ = load_state(deps.s3, "work", run)
+    assert state["task_token"] == "token-2" and set(state["dms"]) == {"ciso"} and state["channel_ts"]
+    assert len(posts_to(deps, deps.channel)) == 1
+    assert len(deps.tickets.jira.issues) == opened  # found by label, not opened again
+
+
+def test_a_signoff_interrupted_after_its_first_write_finishes_on_retry(env):
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    real, failed = deps.s3.put_object, []
+
+    def flaky(**kw):
+        if kw["Key"].endswith("signoff/attestation.json") and not failed:
+            failed.append(True)
+            raise FakeClientError("InternalError")
+        return real(**kw)
+
+    deps.s3.put_object = flaky
+    with pytest.raises(store.StoreError):
+        workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    assert load_state(deps.s3, "work", run)[0]["status"] != SIGNED_OFF and deps.sfn.successes == []
+
+    out = workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})  # the CISO clicks again
+
+    assert out["revoke"] == 7
+    state, _ = load_state(deps.s3, "work", run)
+    assert state["status"] == SIGNED_OFF and state["callback_sent"] and len(deps.sfn.successes) == 1
+
+
+def test_the_approve_button_is_posted_even_if_redrawing_the_cards_fails(env):
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    workflow.confirm(deps, run, R.ciso, {})
+    undecided = [k for k, i in items.items() if i.proposed == DECIDE]
+    for key in undecided[:-1]:
+        workflow.record(deps, run, [(key, KEEP, "")], R.ciso, {})
+
+    def broken(channel, ts, payload):
+        raise SlackError("chat.update: ratelimited")
+
+    deps.bot.update_message = broken
+    with pytest.raises(SlackError):
+        workflow.record(deps, run, [(undecided[-1], KEEP, "")], R.ciso, {})
+    assert any('"action_id": "approve"' in json.dumps(p) for _, p, _ in deps.bot.posts)
+
+
+def test_a_click_redraws_only_its_own_item_message(frontend):
+    deps, run, items, queue, call = frontend
+    key = next(k for k, i in items.items() if i.proposed == KEEP)
+    call(signed(click(run, key, KEEP, R.ciso, chunk=0)))
+    [job] = queue
+    assert job["chunk"] == 0
+    before = len(deps.bot.updates)
+    worker(job, deps)
+    dm = load_state(deps.s3, "work", run)[0]["dms"]["ciso"]
+    assert [ts for _, ts, _ in deps.bot.updates[before:]] == [dm["summary_ts"], dm["chunks"][0]]
+
+
+def test_messages_state_the_configured_windows(env):
+    deps, run, items = env
+    deps.revoke_days = 14
+    workflow.open_review(deps, run, "token-1")
+    assert "no sign-in in 90 days" in " ".join(posts_to(deps, CISO_DM))  # the demo config's app_unused_days
+    decide_everything(deps, run, items)
+    [approve] = [json.dumps(p) for _, p, _ in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
+    assert "due in 14 days" in approve

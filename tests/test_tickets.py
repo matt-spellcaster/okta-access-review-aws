@@ -226,3 +226,18 @@ def test_close_moves_only_its_own_project_to_done():
     assert client(TransitionSession(status="done")).close("UAR-1") is False
     with pytest.raises(JiraError, match="outside project"):
         client(TransitionSession()).close("HR-1")
+
+
+def test_info_findings_get_no_tickets(signed_review):
+    """Info means "could not be checked", not "fix this"."""
+    rem, session, run, s3 = signed_review
+    before = len(session.issues)
+    rows = [
+        {"check_id": "AR-04", "title": "No MFA factor enrolled", "severity": "info",
+         "subject": "a@acme.example", "detail": "MFA enrollment could not be read.", "remediation": "-"},
+        {"check_id": "AR-13", "title": "Activity after the termination date", "severity": "info",
+         "subject": "b@acme.example", "detail": "HR shows terminated with no end date.", "remediation": "-"},
+    ]
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0
+    assert rem.open_urgent(run.run_dir.name, "UAR-99", rows) == 0
+    assert len(session.issues) == before

@@ -121,7 +121,8 @@ def chunk_message(run: str, index: int, count: int, chunk: list[ReviewItem], fin
 
 
 def summary_message(run: str, items: list[ReviewItem], final: dict[str, dict], due: str,
-                    manifest_sha256: str, parent: Ticket | None = None, open_: bool = True) -> dict:
+                    manifest_sha256: str, parent: Ticket | None = None, open_: bool = True,
+                    unused_days: int = 90) -> dict:
     pending = [i for i in items if i.key not in final]
     confirmable = [i for i in pending if i.proposed in (KEEP, REVOKE)]
     by = {p: sum(1 for i in items if i.proposed == p) for p in (KEEP, REVOKE, DECIDE)}
@@ -130,7 +131,8 @@ def summary_message(run: str, items: list[ReviewItem], final: dict[str, dict], d
         f"{by[KEEP]} proposed keep, {by[REVOKE]} proposed revoke, {by[DECIDE]} need your call.",
         f"Due *{due}*. {len(items) - len(pending)} of {len(items)} decided."
         + (f" Tracking ticket {ticket_link(parent)}." if parent else ""),
-        "Revoke is proposed for direct app access with no sign-in in 90 days, and for people HR says have left. "
+        f"Revoke is proposed for direct app access with no sign-in in {unused_days} days, and for people HR "
+        "says have left. "
         "Keeping something proposed for revocation, or overriding a proposal, asks for a reason. "
         "When every item is decided, you get one message listing all of them with the *Approve review* button.",
     ]
@@ -193,14 +195,15 @@ def _sections(title: str, lines: list[str], bold: bool = True) -> list[dict]:
 
 
 def approve_message(run: str, items: list[ReviewItem], final: dict[str, dict], progress: dict,
-                    manifest_sha256: str, parent: Ticket | None = None, signed: dict | None = None) -> dict:
+                    manifest_sha256: str, parent: Ticket | None = None, signed: dict | None = None,
+                    revoke_days: int = 7) -> dict:
     """Everything the CISO is signing off, in one place: each decision, the
     ticket, the manifest hash, and the button (or who signed, once done)."""
     head = [
         f":white_check_mark: *Every item in access review `{run}` has a decision.* Please check them and sign off.",
         f"{progress['total']} items: *{progress['revoke']} revoke*, {progress['keep']} keep."
         + (f" Tracking ticket {ticket_link(parent)}." if parent else ""),
-        "Approving opens one Jira ticket per revoke, due in 7 days.",
+        f"Approving opens one Jira ticket per revoke, due in {revoke_days} days.",
     ]
     blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(head)}}]
     grouped = decision_lines(items, final)

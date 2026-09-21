@@ -36,6 +36,10 @@ LABEL = "access-review"
 # after sign-off. Leaver findings (AR-01/02/12/13) already have leaver tickets,
 # AR-11 and AR-14 are decided as review items.
 FIX_CHECKS = ("AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10")
+# A finding at this severity says something could not be checked (AR-04 when MFA
+# enrollment can't be read, AR-13 when HR gave no end date), not that something
+# is wrong. It stays in the report; nobody gets a ticket to "fix" it.
+INFO = "info"
 
 
 def quarter(review_date: str) -> str:
@@ -113,7 +117,8 @@ class Remediation:
         people = people or {}
         by_subject: dict[str, list[dict]] = defaultdict(list)
         for f in findings:
-            by_subject[f["subject"]].append(f)
+            if f["severity"] != INFO:
+                by_subject[f["subject"]].append(f)
         due = (self.now() + timedelta(hours=self.leaver_hours)).date().isoformat()
         created = 0
         for subject, rows in sorted(by_subject.items()):
@@ -179,7 +184,7 @@ class Remediation:
         due = (self.now() + timedelta(days=self.revoke_days)).date().isoformat()
         created = 0
         for f in sorted(findings, key=lambda r: (r["check_id"], r["subject"].lower())):
-            if f["check_id"] not in FIX_CHECKS:
+            if f["check_id"] not in FIX_CHECKS or f["severity"] == INFO:
                 continue
             subject = f["subject"]
             label = ticket_label("finding", run, f["check_id"], subject.lower())

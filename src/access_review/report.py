@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import __version__
 from .checks import CHECKS, SEVERITIES, Config, Finding
+from .csvsafe import cell
 from .history import History, label
 from .models import SIGN_IN_STATUSES, Snapshot
 from .pdf import Branding, write_pdf
@@ -189,7 +190,7 @@ def _write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({k: cell(v) for k, v in row.items()} for row in rows)
 
 
 def roster_record(roster_path: Path | None) -> dict | None:
