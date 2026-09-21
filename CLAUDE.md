@@ -36,6 +36,11 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   may use `s3:BypassGovernanceRetention`, and no Lambda role is ever granted it.
 - Never commit `env`, key files, `reports/`, Terraform state or `*.tfvars` with real values, or
   anything in `roster/` except its README.
+- `.notes/` is local working material and never leaves this machine: never commit it, never quote
+  or summarise it in a commit message, a PR description, an issue, a code comment or any other
+  tracked file, and never paste it into a hosted tool. Treat it as private context that informs the
+  work without appearing in it. This repo is public, so the same applies to anything derived from
+  those notes: keep tracked content about the tool and its users, not about why it is being built.
 - Never read `env` or print `OKTA_PRIVATE_KEY`, `SMTP_PASSWORD`, `SLACK_WEBHOOK_URL`,
   `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` or `JIRA_API_TOKEN` (webhook URLs and Slack's pre-signed
   upload URLs are credentials too; keep them out of error messages). Never pass an unchecked

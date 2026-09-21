@@ -28,7 +28,7 @@ tfplan
 # Backend settings name the state bucket, which includes the AWS account ID
 backend.hcl
 
-# Private planning notes: job-hunting context, never public
+# Local working notes. Never committed.
 .notes/
 
 # Coverage artifacts

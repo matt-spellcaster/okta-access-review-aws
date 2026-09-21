@@ -51,7 +51,7 @@ def test_unbranded_pdf_is_plain(tmp_path):
 @pytest.mark.parametrize("branding, message", [
     ({"name": "X", "primary": "navy"}, "primary must be a #rrggbb"),
     ({"name": "X", "accent": "#12345"}, "accent must be a #rrggbb"),
-    ({"name": "X", "logo": "vanta"}, "logo must be one of: acme"),
+    ({"name": "X", "logo": "globex"}, "logo must be one of: acme"),
     ({"name": "X", "colour": "#000000"}, "unknown branding keys: colour"),
 ])
 def test_bad_branding_fails_before_running(tmp_path, capsys, branding, message):
