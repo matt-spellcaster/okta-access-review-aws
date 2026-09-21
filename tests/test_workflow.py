@@ -288,6 +288,45 @@ def test_opening_a_review_tells_the_leaver_ticket_what_it_cannot_close(graph_env
     assert "AR-17" in body, "the leaver ticket never names what it cannot close"
 
 
+def test_the_closing_claim_counts_the_two_kinds_of_evidence_apart():
+    """The sentence an auditor reads when a review closes. "Verified in Okta" and
+    "the reviewer said so" are not the same evidence, and a single count cannot
+    say which happened."""
+    def e(verified, accepted):
+        return {"verified": verified, "accepted": accepted}
+
+    both = [e("2026-09-18", False), e("2026-09-18", False), e("2026-09-18", True), e(None, False)]
+    assert workflow.settled_counts(both) == (2, 1), "the unverified one counts as neither"
+    assert workflow.how_settled(2, 1) == (
+        "2 verified against a fresh Okta snapshot, 1 resolved on the reviewer's word "
+        "(a decision, or access in a source this review cannot re-read)")
+    # All one kind: say that kind, and nothing about the other.
+    assert workflow.how_settled(3, 0) == "3 verified against a fresh Okta snapshot"
+    assert "Okta snapshot" not in workflow.how_settled(0, 3)
+    assert workflow.how_settled(0, 3).startswith("3 resolved on the reviewer's word")
+    # A review with nothing to fix must not report zero verifications as a check.
+    assert workflow.how_settled(0, 0) == "there was nothing to fix"
+
+
+def test_the_tracking_ticket_does_not_say_every_line_is_verified_in_okta(env):
+    """post_checklist opened with "each of these must be done and verified in
+    Okta" over a list that includes tickets Okta is never consulted for."""
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    workflow.remediate(deps, run)
+    parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
+    checklist = [b for k, b in deps.tickets.jira.comments if k == parent and "To close" in b][-1]
+    assert "verified in Okta" not in checklist
+    assert "its own ticket resolved" in checklist
+    assert "taken on your word, not re-read in Okta" in checklist
+    entries = workflow.checklist_entries(deps, run)
+    assert {e["verify"] for e in entries} == {"okta", "reviewer"}, "both kinds in this run"
+    # A revoke or leaver ticket asks for a change in Okta, so it is re-read there.
+    assert all(e["verify"] == "okta" for e in entries if "Unassign" in e["todo"])
+
+
 def test_item_cards_show_facts_then_why(env):
     deps, run, _ = env
     workflow.open_review(deps, run, "token-1")

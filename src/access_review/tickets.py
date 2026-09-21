@@ -65,6 +65,20 @@ def verify_mode(check_id: str) -> str:
     return "reviewer" if check_id in REVIEW_CHECKS else "okta"
 
 
+def record_verify_mode(record: dict) -> str:
+    """How the daily check settles one ticket record: "okta" or "reviewer".
+
+    The single answer, because three places word a claim off it: the daily
+    check, the checklist in Slack and the checklist on the tracking ticket. Only
+    a fix ticket can be a judgement call -- a revoke or leaver ticket asks for a
+    change in Okta and is re-read there. Records written before the `verify`
+    field existed go by their check.
+    """
+    if record.get("kind") != "finding":
+        return "okta"
+    return record.get("verify") or verify_mode(record.get("check_id", ""))
+
+
 def quarter(review_date: str) -> str:
     d = date.fromisoformat(review_date)
     return f"{d.year}-Q{(d.month - 1) // 3 + 1}"

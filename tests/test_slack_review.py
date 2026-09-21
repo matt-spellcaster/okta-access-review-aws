@@ -5,7 +5,9 @@ slack_review is covered end to end through tests/test_workflow.py.
 """
 
 from access_review.items import CISO, CROSS_SOURCE, DECIDE, KEEP, REVOKE, ReviewItem
-from access_review.slack_review import card_lines, decision_lines
+import json
+
+from access_review.slack_review import card_lines, checklist_message, decision_lines
 
 OUTSIDE = ("They still hold GitHub organization owner (AR-17 Someone who left still has access "
            "outside Okta; tied to them by the identity provider's own assertion)")
@@ -93,6 +95,54 @@ def test_a_cross_source_item_is_signed_off_with_its_findings_shown():
     grouped = decision_lines([mine], {mine.key: {"decision": KEEP, "reason": ""}})
     line = grouped["flagged"][0]
     assert "acknowledged" in line and "AR-17" in line, line
+
+
+def entry(ticket="UAR-9", todo="Unassign lee.chen from Salesforce", verify="okta",
+          verified=None, accepted=False):
+    return {"ticket": (ticket, f"https://acme.atlassian.net/browse/{ticket}"), "todo": todo,
+            "due": "2026-09-23", "verified": verified, "accepted": accepted,
+            "label": f"uar-key-{ticket}", "verify": verify}
+
+
+def checklist_lines(entries):
+    """The ticket lines only, not the trailing How context block.
+
+    Asserting over the whole message JSON would match the How text, which names
+    the same phrase -- so the per-line marker could vanish and the assertion
+    would still hold.
+    """
+    msg = checklist_message("run-1", ("UAR-1", None), entries)
+    return [ln for b in msg["blocks"] if b["type"] == "section"
+            for ln in b["text"]["text"].split("\n") if "UAR-" in ln]
+
+
+def test_the_checklist_says_which_lines_the_daily_check_will_not_confirm():
+    """Before anything is ticked. A checklist that only distinguishes them after
+    the fact leaves the reader assuming Okta gets consulted for every line, and
+    for a cross-source finding it never can be."""
+    okta = entry("UAR-9")
+    word = entry("UAR-14", "Someone who left still has access outside Okta (AR-17) for github:acme-eng/U_1",
+                 verify="reviewer")
+    lines = checklist_lines([okta, word])
+    marked = [ln for ln in lines if "taken on your word" in ln]
+    assert len(marked) == 1 and "UAR-14" in marked[0], lines
+    # And the Okta line carries no marker, so the mark means something.
+    assert not any("taken on your word" in ln for ln in checklist_lines([okta]))
+
+
+def test_the_checklist_explanation_names_access_in_another_source():
+    """It enumerated the judgement calls (inactive accounts, contractor
+    exceptions, API client scopes) and stopped there, so a GitHub ticket sat
+    ticked among Okta-verified ones with the text implying Okta had confirmed it."""
+    how = json.dumps(checklist_message("run-1", ("UAR-1", None), [entry(verify="reviewer")]))
+    assert "another source" in how and "cannot re-read" in how
+
+
+def test_the_checklist_still_distinguishes_them_after_ticking():
+    done_in_okta = entry("UAR-9", verified="2026-09-18")
+    on_word = entry("UAR-14", verify="reviewer", verified="2026-09-18", accepted=True)
+    text = json.dumps(checklist_message("run-1", ("UAR-1", None), [done_in_okta, on_word]))
+    assert "verified 2026-09-18" in text and "resolved 2026-09-18" in text
 
 
 def test_the_signoff_list_says_which_concerns_the_decision_did_not_settle():

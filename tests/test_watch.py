@@ -14,7 +14,7 @@ from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
 from access_review.state import CLOSED, load_state, update_state
-from access_review.tickets import Remediation
+from access_review.tickets import Remediation, record_verify_mode
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 R = Reviewers(ciso="U0CISO00001")
@@ -213,6 +213,16 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     assert jira.closed == [parent]  # the one ticket the tool moves
     last = json.dumps(deps.bot.posts[-1][1])
     assert "is complete" in last and parent in last
+    # The two kinds of evidence, counted apart. A single "everything was verified
+    # in Okta" covered four tickets (AR-05/06/07/10) that settled on the
+    # reviewer's word, and that sentence is the one an auditor reads.
+    assert "13 verified against a fresh Okta snapshot" in last
+    assert "4 resolved on the reviewer's word" in last
+    assert "verified in Okta" not in last
+    closing = [b for k, b in jira.comments if k == parent][-1]
+    assert "13 verified against a fresh Okta snapshot" in closing
+    assert "4 resolved on the reviewer's word" in closing
+    assert "Everything under this review was verified in Okta" not in closing
 
 
 def test_the_checklist_ticks_off_verified_tickets(world):
@@ -344,6 +354,9 @@ def test_a_judgement_call_ticket_is_taken_as_done_when_resolved(world):
     assert not any("Okta still shows the problem" in dm for dm in dms_to(deps, R.ciso))
     checklist = [p for c, t, p in deps.bot.updates if "To close" in json.dumps(p)][-1]
     assert f"resolved {rec['checked_at'][:10]}" in json.dumps(checklist)
-    # Ticket records from before the "verify" field existed go by their check.
-    assert watch._verify_mode({"kind": "finding", "check_id": "AR-05"}) == "reviewer"
-    assert watch._verify_mode({"kind": "finding", "check_id": "AR-04"}) == "okta"
+    # Ticket records from before the "verify" field existed go by their check,
+    # and only a fix ticket can be a judgement call at all.
+    assert record_verify_mode({"kind": "finding", "check_id": "AR-05"}) == "reviewer"
+    assert record_verify_mode({"kind": "finding", "check_id": "AR-04"}) == "okta"
+    assert record_verify_mode({"kind": "revoke"}) == "okta"
+    assert record_verify_mode({"kind": "leaver", "check_id": "AR-05"}) == "okta"

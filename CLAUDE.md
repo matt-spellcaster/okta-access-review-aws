@@ -157,6 +157,15 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   `checks._elevated_roles` reads every ROLE grant and AR-17 grades critical on it, so an ordinary
   member appearing there makes every departure critical. A role the adapter does not recognise is
   treated as elevated. Roles the snapshot never read are a gap (`roles_complete`), not an absence.
+- A ticket settles one of two ways and nothing says otherwise. `tickets.record_verify_mode` is the
+  single answer -- a revoke or leaver ticket asks for a change in Okta and is re-read there, a fix
+  ticket in `REVIEW_CHECKS` is taken on the reviewer's word -- and the three places that word a claim
+  from it all read it: `watch.daily`'s closing comment and channel note (through
+  `workflow.settled_counts` and `how_settled`, which count the two apart), `workflow.post_checklist`
+  and `slack_review.checklist_message`. A blanket "verified in Okta" over a list that includes either
+  kind is the review asserting a check that never ran, and it is the sentence an auditor reads.
+  `checklist_entries` carries `verify` as well as `accepted`, so a line says which it will be before
+  anyone has ticked it.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
   change a hashed file, and never send anything. History must never count a review it couldn't
   verify against its manifest; when unsure, count lower. `reopened` ("Back again") asserts a

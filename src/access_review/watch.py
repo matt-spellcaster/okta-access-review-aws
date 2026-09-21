@@ -35,14 +35,17 @@ from .decisions import outstanding
 from .jira import adf
 from .models import LIVE_STATUSES, Snapshot
 from .state import CLOSED, OPEN, SIGNED_OFF, claim_once, load_state, runs_with_status, update_state
-from .tickets import verify_mode
+from .tickets import record_verify_mode
 from .workflow import (
     Deps,
+    checklist_entries,
     current_decisions,
+    how_settled,
     load_run,
     maybe_ready,
     post_to_channel,
     refresh_checklist,
+    settled_counts,
     send_callback,
 )
 
@@ -190,11 +193,6 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     return present, {"account_status": user.status, "still_present": present}
 
 
-def _verify_mode(rec: dict) -> str:
-    """Ticket records from before the field existed go by their check."""
-    return rec.get("verify") or verify_mode(rec.get("check_id", ""))
-
-
 def done_labels(jira, labels: list[str]) -> set[str]:
     """Which of these ticket labels are on an issue marked done. Asked by label,
     in batches, so the answer never depends on how many tickets the project has
@@ -230,7 +228,7 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
             if label not in done:
                 continue
             stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if rec["kind"] == "finding" and _verify_mode(rec) == "reviewer":
+            if record_verify_mode(rec) == "reviewer":
                 # A judgement call: resolving the ticket is the answer, and nothing in Okta can confirm it.
                 store.put_record(deps.s3, deps.evidence_bucket, run, "verifications", f"{label}-verified.json", {
                     "issue": rec["issue"], "label": label, "checked_at": stamp, "result": "accepted",
@@ -274,14 +272,23 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
             update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(status=CLOSED))
             parent = state.get("parent_issue")
             closed = False
+            # Not "everything was verified in Okta": a fix ticket in REVIEW_CHECKS
+            # is settled on the reviewer's word, and for a cross-source finding
+            # Okta cannot see the other source at all. The per-ticket comments
+            # above already draw that line; these two closing claims were the
+            # only place that flattened it, and they are the ones an auditor
+            # reads.
+            in_okta, on_word = settled_counts(checklist_entries(deps, run))
+            how = how_settled(in_okta, on_word)
             if parent:
                 jira.add_comment(parent, adf(
-                    f"Everything under this review was verified in Okta by {now.date()}. Closing this ticket."))
+                    f"Every ticket under this review is settled as of {now.date()}: {how}. "
+                    f"Closing this ticket."))
                 closed = jira.close(parent)
             link = msgs.ticket_link((parent, deps.ticket_url(parent))) if parent else ""
             post_to_channel(deps, run, msgs.channel_note(
-                f":white_check_mark: Access review `{run}` is complete: every fix is verified in Okta"
-                + (f" and {link} is closed." if closed else ".")), broadcast=True)
+                f":white_check_mark: Access review `{run}` is complete: {how}"
+                + (f", and {link} is closed." if closed else ".")), broadcast=True)
             result["closed"] = result.get("closed", 0) + 1
     return result
 
