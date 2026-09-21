@@ -12,12 +12,12 @@ OUTSIDE = ("They still hold GitHub organization owner (AR-17 Someone who left st
 CONCERN = "No MFA factor enrolled (AR-04 No MFA)"
 
 
-def item(kind="app", concerns=(), outside_okta=(), proposed=KEEP) -> ReviewItem:
+def item(kind="app", concerns=(), outside_okta=(), proposed=KEEP, gap="") -> ReviewItem:
     return ReviewItem(
         "k1", kind, "u1", "marcus.lee@acme.example", "t1", "Salesforce", "direct",
         proposed, "Signed in 2026-09-01.", CISO, name="Marcus Lee",
         facts=("Okta: ACTIVE", "Access: Salesforce (assigned directly)"),
-        concerns=concerns, outside_okta=outside_okta,
+        concerns=concerns, outside_okta=outside_okta, outside_okta_gap=gap,
     )
 
 
@@ -40,6 +40,23 @@ def test_a_card_with_nothing_outside_okta_has_no_such_block():
     assert "*Why it could be an issue*" in lines
 
 
+def test_a_review_that_read_no_other_source_says_so_on_the_card():
+    """The silence-is-not-absence trap, in the one place the decision is made.
+    With no block at all the reviewer reads "Nothing flagged" and takes it as a
+    clean bill of health, when nothing looked."""
+    gap = "No source other than Okta was read in this review, so what they hold elsewhere is not known."
+    lines = card_lines(item(concerns=(CONCERN,), gap=gap))
+    assert any(ln.startswith("*Access outside Okta*") for ln in lines)
+    assert any(gap in ln for ln in lines)
+    # A read that did not finish is its own answer, not the same as finding nothing.
+    short = "The github:acme-eng read did not complete, so what they hold there may be missing from this list."
+    held = card_lines(item(outside_okta=(OUTSIDE,), gap=short))
+    assert any("AR-17" in ln for ln in held) and any(short in ln for ln in held)
+    # And a complete read that found nothing says nothing, which is the only
+    # case where the absence is evidence.
+    assert not any(ln.startswith("*Access outside Okta*") for ln in card_lines(item()))
+
+
 def test_nothing_flagged_in_okta_does_not_read_as_nothing_flagged():
     """The Okta side being clean is exactly the case the cross-source checks
     exist for. "Nothing flagged." under a critical block above it would be the
@@ -49,6 +66,33 @@ def test_nothing_flagged_in_okta_does_not_read_as_nothing_flagged():
     assert "• Nothing flagged." not in lines
     # And with no graph at all, the plain wording is still what is shown.
     assert "• Nothing flagged." in card_lines(item())
+
+
+def test_a_label_from_another_source_cannot_become_a_slack_mention():
+    """This text is built from a foreign source's own values -- a GitHub login,
+    a role label, a credential hint -- so it is settable by someone who is not
+    in Okta at all. Unescaped, it can address the reviewer or fake a link on the
+    card that settles the item."""
+    hostile = ("github:acme-eng still shows <@U0CISO00001> active "
+               "(AR-17 Access outside Okta; tied to them by an assertion)")
+    lines = card_lines(item(outside_okta=(hostile,)))
+    assert any("&lt;@U0CISO00001&gt;" in ln for ln in lines)
+    assert not any("<@U0CISO00001>" in ln for ln in lines)
+    mine = item(outside_okta=(hostile,), proposed=REVOKE)
+    grouped = decision_lines([mine], {mine.key: {"decision": REVOKE, "reason": ""}})
+    assert "<@U0CISO00001>" not in grouped[REVOKE][0]
+    flagged = item(kind=CROSS_SOURCE, outside_okta=(hostile,), proposed=DECIDE)
+    signed = decision_lines([flagged], {flagged.key: {"decision": KEEP, "reason": ""}})
+    assert "<@U0CISO00001>" not in signed["flagged"][0]
+
+
+def test_a_cross_source_item_is_signed_off_with_its_findings_shown():
+    """The only item kind that exists to report access elsewhere. A one-line
+    entry would have the CISO signing off the one thing the screen never showed."""
+    mine = item(kind=CROSS_SOURCE, outside_okta=(OUTSIDE,), proposed=DECIDE)
+    grouped = decision_lines([mine], {mine.key: {"decision": KEEP, "reason": ""}})
+    line = grouped["flagged"][0]
+    assert "acknowledged" in line and "AR-17" in line, line
 
 
 def test_the_signoff_list_says_which_concerns_the_decision_did_not_settle():

@@ -129,8 +129,28 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   once per revoke ticket by something that never looked. The reviewer still sees both
   (`slack_review.card_lines` puts `outside_okta` first: it is the part no other screen in the review
   reaches and the part the decision cannot change), and the ticket names it under "Not part of this
-  ticket". Anything that can land there must be in `FIX_CHECKS`, or the claim that it has its own
-  ticket is false; `test_every_graph_backed_check_can_actually_open_a_ticket` guards that.
+  ticket". Anything that can land there must be in `FIX_CHECKS` specifically, not merely in
+  `URGENT_CHECKS`, or the claim that it has its own ticket is false: an urgent ticket is one per
+  leaver keyed by Okta login, so a graph finding whose subject is `{source}/{principal.id}` would be
+  folded into a ticket that never names it. `test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket`
+  and `test_everything_named_as_out_of_scope_really_does_get_its_own_ticket` guard both halves.
+- Every ticket that closes on a fresh Okta read says what it does not cover, through the one helper
+  `tickets._scope_to_okta`. That is both the revoke ticket and the **leaver** ticket: `open_urgent`
+  asks for "every way in through Okta" rather than "every way in", because `watch.still_present`
+  settles it with `LEAVER_ACCESS_CHECKS` against an Okta snapshot, and every person AR-17 fires on
+  gets one. A new ticket kind verified against Okta scopes itself the same way or it inherits the
+  overclaim.
+- An empty `outside_okta` is three different answers and `items.outside_okta_gap` says which:
+  no source but Okta was read, a source was read but did not complete, or a complete read found
+  nothing. Only the last makes the absence evidence, so the card block and the ticket paragraph
+  appear on the strength of the **gap alone** -- an absent block reads as "they hold nothing
+  elsewhere", which is the silence-is-absence bug on the screen that settles the item.
+- `load_items` splits a pre-format-3 file rather than trusting its `concerns`: a review opened before
+  the split and remediated after it would otherwise put a cross-source concern back into a revoke
+  ticket that closes on an Okta re-read. The split needs **both** signals the writer left
+  (`items.LINK_MARKER` and a check id in `GRAPH_CHECKS`), so it cannot move an Okta finding. It is
+  in memory only -- the object is create-only in S3 and hashed into a signed manifest, so nothing
+  rewrites the file.
 - A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
   emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
   because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.

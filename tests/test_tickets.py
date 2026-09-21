@@ -9,7 +9,7 @@ from fakes import FakeS3
 from access_review import store, workflow
 from access_review.checks import Config
 from access_review.decisions import Reviewers
-from access_review.items import KEEP, REVOKE
+from access_review.items import KEEP, REVOKE, outside_okta_by_login
 from access_review.jira import JiraClient, JiraConfigError, JiraError, adf, check_base_url
 from access_review.models import Snapshot
 from access_review.review import run_review
@@ -331,13 +331,13 @@ def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_revi
         assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
         # The closing promise still stands, because it now covers only the Okta change.
         assert any("the next daily check confirms it in Okta" in ln for ln in lines)
-    # And the claim that each has its own ticket is what
-    # test_every_graph_backed_check_can_actually_open_a_ticket guards.
 
 
-def test_an_okta_only_revoke_ticket_says_nothing_about_other_sources(signed_review):
-    """No graph, so nothing is held outside Okta as far as this review knows.
-    The scoping paragraph must not appear and imply otherwise."""
+
+def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
+    """No graph, so the review has nothing to say about other sources -- which is
+    not the same as saying there is nothing there. Silence would let the assignee
+    read an Okta-only ticket as the whole picture."""
     rem, session, run, _ = signed_review
     items = {i.key: i for i in run.items}
     rem.open_revokes(run.run_dir.name, "UAR-99", items,
@@ -345,7 +345,70 @@ def test_an_okta_only_revoke_ticket_says_nothing_about_other_sources(signed_revi
                       if i.proposed == REVOKE})
     lines = [ln for f in session.issues.values() for ln in _paragraphs(f["description"])]
     assert lines
-    assert not [ln for ln in lines if ln.startswith(("Not part of this ticket", "Outside Okta"))]
+    assert any(ln.startswith("Not part of this ticket") for ln in lines)
+    assert any(ln.startswith("Not known: ") and "No source other than Okta" in ln for ln in lines)
+    # And nothing is listed as held, because nothing was read.
+    assert not [ln for ln in lines if ln.startswith("Outside Okta: ")]
+
+
+def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_review):
+    """The scoping paragraph tells the assignee the finding is tracked elsewhere.
+    If it is not, the review has moved a real problem off one ticket and onto no
+    ticket, which is worse than the overclaim it replaced. Proved end to end
+    against the run's own items rather than from the check tables, because
+    open_findings also drops anything at INFO severity."""
+    rem, session, run, s3 = graph_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    named = {c.split("(")[-1].split()[0]
+             for i in run.items for c in i.outside_okta}
+    assert named, "no item names anything outside Okta, so this proves nothing"
+    rem.open_findings(run.run_dir.name, "UAR-99", workflow.all_findings(deps, run.run_dir.name))
+    ticketed = {r["check_id"] for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
+                if r["kind"] == "finding"}
+    assert named <= ticketed, f"named as tracked elsewhere but never ticketed: {named - ticketed}"
+
+
+def test_a_leaver_ticket_does_not_promise_to_close_a_way_in_it_cannot_see(graph_review):
+    """The headline ticket for a departure, due in 24 hours, asking to remove
+    "every way in". It closes when `watch.still_present` re-runs
+    LEAVER_ACCESS_CHECKS against a fresh Okta snapshot -- all Okta. Every person
+    AR-17 fires on also gets one of these, so the overclaim the revoke ticket
+    carried was sitting in the more prominent ticket too, for the same people."""
+    rem, session, run, s3 = graph_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    outside = outside_okta_by_login(run.items)
+    assert any(held for held, _ in outside.values()), "nothing held elsewhere to scope"
+    rem.open_urgent(run.run_dir.name, "UAR-99", workflow.urgent_findings(deps, run.run_dir.name),
+                    workflow.people(deps, run.run_dir.name), outside)
+    marcus = next(f for f in session.issues.values()
+                  if f["summary"] == "Remove access for leaver marcus.lee@acme.example")
+    lines = _paragraphs(marcus["description"])
+    assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+    assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
+    # The to-do recorded as evidence says Okta, because Okta is what gets checked.
+    record = next(r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
+                  if r.get("subject") == "marcus.lee@acme.example")
+    assert "every way in through Okta" in record["todo"]
+    assert record["outside_okta"], record
+
+
+def test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket():
+    """`outside_okta` says each finding has its own ticket under the same parent,
+    and only FIX_CHECKS produces one of those. A graph check in URGENT_CHECKS
+    alone would not: urgent tickets are one per leaver keyed by Okta login, while
+    a graph finding's subject is source/principal.id, so the finding would be
+    folded into a ticket that never names it and that closes on an Okta re-read.
+    """
+    from access_review.checks import GRAPH_CHECKS
+    from access_review.tickets import FIX_CHECKS
+
+    assert GRAPH_CHECKS, "expected at least one graph-backed check"
+    assert set(GRAPH_CHECKS) <= set(FIX_CHECKS), (
+        f"{set(GRAPH_CHECKS) - set(FIX_CHECKS)} can reach a review item's outside_okta "
+        f"but would get no fix ticket of its own"
+    )
 
 
 def test_cross_source_checks_settle_by_reviewer_until_their_sources_can_be_reverified():

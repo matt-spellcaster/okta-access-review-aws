@@ -253,6 +253,41 @@ def test_no_report_in_the_channel_unless_turned_on(env):
     assert not [u for u in deps.bot.uploads if u[0] == deps.channel]
 
 
+@pytest.fixture
+def graph_env(tmp_path):
+    """The same environment with GitHub read too, so items carry access Okta
+    cannot see and the leaver tickets have to say what they do not cover."""
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    config = Config.load(FIXTURES / "demo_config.json")
+    roster_path = FIXTURES / "demo_roster.csv"
+    run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config,
+                     date(2026, 9, 15), tmp_path / "out", require_items=True,
+                     github_path=FIXTURES / "demo_github.json")
+    s3 = FakeS3()
+    store.upload_run(s3, "evidence", run.run_dir)
+    jira = FakeJira()
+    jira.today = "2026-09-16"
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=FakeBot(), reviewers=R,
+                         channel="C0REVIEW001", tickets=Remediation(jira, s3, "evidence", "Task", "Sub-task",
+                                                                    now=lambda: NOW),
+                         sfn=FakeSfn(), now=lambda: NOW, ticket_url=lambda key: SITE + key)
+    return deps, run.run_dir.name, {i.key: i for i in run.items}
+
+
+def test_opening_a_review_tells_the_leaver_ticket_what_it_cannot_close(graph_env):
+    """open_review builds the leaver tickets, and only it has the items that know
+    what each person holds elsewhere. Wire that up wrong and the ticket goes back
+    to promising it removes every way in, verified against Okta alone -- which is
+    the whole defect, restored at the call site rather than in the builder."""
+    deps, run, _ = graph_env
+    workflow.open_review(deps, run, "token-1")
+    marcus = next(f for f in deps.tickets.jira.issues.values()
+                  if f["summary"] == "Remove access for leaver marcus.lee@acme.example")
+    body = json.dumps(marcus["description"])
+    assert "Not part of this ticket" in body, body
+    assert "AR-17" in body, "the leaver ticket never names what it cannot close"
+
+
 def test_item_cards_show_facts_then_why(env):
     deps, run, _ = env
     workflow.open_review(deps, run, "token-1")

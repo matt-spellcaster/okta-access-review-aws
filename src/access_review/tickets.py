@@ -134,10 +134,22 @@ class Remediation:
         })
         return key
 
-    def open_urgent(self, run: str, parent: str, findings: list[dict], people: dict[str, str] | None = None) -> int:
+    def open_urgent(self, run: str, parent: str, findings: list[dict],
+                    people: dict[str, str] | None = None,
+                    outside: dict[str, tuple[tuple[str, ...], str]] | None = None) -> int:
         """One ticket per person, listing every leaver finding about them.
-        people maps a lowercased login to their Okta user ID, for the link."""
+
+        people maps a lowercased login to their Okta user ID, for the link.
+        outside maps a lowercased login to (what they hold in another source, why
+        that may be unknown), from `items.outside_okta_by_login`. This ticket is
+        the headline one for a departure and it closes on a fresh Okta read
+        (`watch.still_present` runs LEAVER_ACCESS_CHECKS, all Okta), so without
+        it a ticket asking to remove "every way in" is signed off as done while
+        the leaver's GitHub owner role is untouched -- the same overclaim the
+        revoke ticket carried, for the same people.
+        """
         people = people or {}
+        outside = outside or {}
         by_subject: dict[str, list[dict]] = defaultdict(list)
         for f in findings:
             if f["severity"] != INFO:
@@ -156,11 +168,15 @@ class Remediation:
             link = self._okta_link(people.get(subject.lower()), subject)
             if link:
                 paragraphs.append(link)
+            held, gap = outside.get(subject.lower(), ((), ""))
+            paragraphs += _scope_to_okta(held, gap, "Closing their way in through Okta")
             paragraphs.append("Resolve this ticket once done; the next daily check confirms it in Okta.")
             _, new = self._create(run, label, {"kind": "leaver", "run": run, "subject": subject,
                                                "checks": [r["check_id"] for r in rows], "due": due,
-                                               "todo": f"Remove every way in for leaver {subject} "
-                                                       f"(account, API tokens, API clients they set up)"}, {
+                                               "outside_okta": list(held),
+                                               "todo": f"Remove every way in through Okta for leaver "
+                                                       f"{subject} (account, API tokens, API clients "
+                                                       f"they set up)"}, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
                 "summary": f"Remove access for leaver {subject}",
@@ -246,17 +262,33 @@ class Remediation:
         return created
 
 
-def _outside_okta(item: ReviewItem) -> list:
-    """The paragraphs naming what this person holds elsewhere, or none."""
-    if not item.outside_okta:
+def _scope_to_okta(outside: tuple[str, ...] | list[str], gap: str, what: str) -> list:
+    """The paragraphs saying what this ticket does not cover, or none.
+
+    `what` names the change this ticket asks for. Shared by the revoke ticket and
+    the leaver ticket because both close on a fresh read of Okta alone, and Okta
+    cannot show whether a role in another source is gone.
+
+    A gap with nothing listed still gets the paragraph. Saying nothing would let
+    the assignee read the ticket as the whole picture, when the truth is that
+    nothing looked.
+    """
+    if not outside and not gap:
         return []
-    return [
-        [("Not part of this ticket: ", "strong"),
-         ("they also hold access outside Okta. Making this Okta change does not remove it, and the "
-          "daily check that closes this ticket cannot see it. Each of the findings below has its own "
-          "ticket under the same review ticket; resolve this one on the Okta change alone.", None)],
-        *[f"Outside Okta: {c}" for c in item.outside_okta],
-    ]
+    out: list = [[("Not part of this ticket: ", "strong"),
+                  (f"{what} does not remove access held outside Okta, and the daily check that "
+                   f"closes this ticket cannot see it. Resolve this ticket on the Okta change "
+                   f"alone.", None)]]
+    out += [f"Outside Okta: {c}" for c in outside]
+    if outside:
+        out.append("Each of those is tracked by its own ticket under the same review ticket.")
+    if gap:
+        out.append(f"Not known: {gap}")
+    return out
+
+
+def _outside_okta(item: ReviewItem) -> list:
+    return _scope_to_okta(item.outside_okta, item.outside_okta_gap, "Making this Okta change")
 
 
 def _sentence(text: str) -> str:
