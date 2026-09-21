@@ -248,6 +248,58 @@ def test_info_findings_get_no_tickets(signed_review):
     assert len(session.issues) == before
 
 
+def test_every_graph_backed_check_can_actually_open_a_ticket():
+    """A check in REVIEW_CHECKS but in neither FIX_CHECKS nor URGENT_CHECKS
+    never reaches ticket creation: the finding lands in the report and then
+    vanishes, and its verify_mode is configuration nothing consults."""
+    from access_review.checks import CHECKS
+    from access_review.tickets import FIX_CHECKS
+    from access_review.workflow import URGENT_CHECKS
+
+    graph_checks = [c.id for c in CHECKS if c.needs_graph]
+    assert graph_checks, "expected at least one graph-backed check"
+    for check_id in graph_checks:
+        assert check_id in FIX_CHECKS or check_id in URGENT_CHECKS, (
+            f"{check_id} findings would never reach open_findings or open_urgent"
+        )
+
+
+@pytest.fixture
+def graph_review(tmp_path):
+    """A review that read GitHub too, so AR-15..AR-17 actually have findings."""
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    config = Config.load(FIXTURES / "demo_config.json")
+    roster_path = FIXTURES / "demo_roster.csv"
+    run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config,
+                     date(2026, 9, 15), tmp_path / "out", require_items=True,
+                     github_path=FIXTURES / "demo_github.json")
+    s3 = FakeS3()
+    store.upload_run(s3, "evidence", run.run_dir)
+    session = FakeJiraSession()
+    rem = Remediation(client(session), s3, "evidence", "Task", "Subtask", now=lambda: NOW)
+    return rem, session, run, s3
+
+
+def test_cross_source_findings_get_remediation_tickets(graph_review):
+    rem, session, run, s3 = graph_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    rows = workflow.all_findings(deps, run.run_dir.name)
+    assert {"AR-15", "AR-16", "AR-17"} <= {r["check_id"] for r in rows}
+
+    rem.open_findings(run.run_dir.name, "UAR-99", rows)
+    records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")]
+    opened = {r["check_id"] for r in records if r["kind"] == "finding"}
+    assert {"AR-15", "AR-16", "AR-17"} <= opened
+    # Every one of them takes the reviewer's word: nothing can re-verify a
+    # GitHub finding against a fresh Okta snapshot.
+    assert {r["verify"] for r in records if r["check_id"] in ("AR-15", "AR-16", "AR-17")} == {"reviewer"}
+    # The subject is the source's own id; the readable login is in the body.
+    victor = next(f for f in session.issues.values()
+                  if "github:acme-eng/U_kgDOBq1cZy" in f["summary"])
+    assert "victor-nguyen" in json.dumps(victor["description"])
+
+
 def test_cross_source_checks_settle_by_reviewer_until_their_sources_can_be_reverified():
     """watch.still_present re-verifies a finding against a fresh Okta snapshot
     and gates on snapshot.gaps. It cannot see a graph source's gaps, so a

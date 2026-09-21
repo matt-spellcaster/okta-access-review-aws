@@ -30,6 +30,9 @@ class PriorReview:
     # (check_id, normalized subject) of every finding; None when the findings couldn't be verified.
     keys: set[tuple[str, str]] | None
     problem: str = ""
+    # Checks that review did not run. A check's absence from `keys` means "found
+    # nothing" only for the checks that ran; for these it means "did not look".
+    skipped: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -162,7 +165,8 @@ def load_history(out_dir: Path, current_folder: str, org_url: str, as_of: date, 
     for review_date in dates[-limit:]:
         folder, manifest, manifest_hash = latest[review_date]
         keys, problem = _finding_keys(folder, manifest)
-        history.reviews.append(PriorReview(review_date, folder.name, manifest_hash, keys, problem))
+        history.reviews.append(PriorReview(review_date, folder.name, manifest_hash, keys, problem,
+                                           list(manifest.get("skipped_checks") or [])))
     return history
 
 
@@ -200,5 +204,14 @@ def age_findings(findings: list[Finding], history: History, as_of: date) -> None
         seen = [r.review_date for r in history.reviews if r.keys is not None and key in r.keys]
         f.reviews_open = streak
         f.first_seen = seen[0] if seen else as_of.isoformat()
-        # Only when the last review is known to have been clear of it.
-        f.reopened = bool(seen) and previous.keys is not None and key not in previous.keys
+        # Only when the last review is known to have been clear of it. A review
+        # that skipped the check is not known to have been clear: "Back again"
+        # asserts the problem was fixed and returned, and a skipped check is the
+        # one case where nobody looked. --github is optional, so an omitted
+        # quarter would otherwise make every open graph finding claim that.
+        f.reopened = (
+            bool(seen)
+            and previous.keys is not None
+            and key not in previous.keys
+            and f.check_id not in previous.skipped
+        )

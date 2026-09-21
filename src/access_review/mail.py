@@ -68,14 +68,18 @@ class EmailSettings:
 
 
 def build_message(
-    settings: EmailSettings, snapshot: Snapshot, findings: list[Finding], run_dir: Path
+    settings: EmailSettings, snapshot: Snapshot, findings: list[Finding], run_dir: Path,
+    gaps: list[str] | None = None,
 ) -> EmailMessage:
+    """gaps spans every source the review read; snapshot.gaps speaks for Okta
+    alone. Only the count goes in the body -- the gap strings name accounts."""
     pdf = run_dir / "report.pdf"
     counts = Counter(f.severity for f in findings)
     org = urlparse(snapshot.org_url).hostname or snapshot.org_url
     top = next((s for s in SEVERITIES if counts.get(s)), None)
     headline = f"{counts[top]} {top}" if top else "no findings"
-    status = "INCOMPLETE" if snapshot.gaps else "complete"
+    gaps = list(snapshot.gaps) if gaps is None else gaps
+    status = "INCOMPLETE" if gaps else "complete"
 
     msg = EmailMessage()
     msg["Subject"] = f"Okta access review ({status}): {headline}, {org}"
@@ -96,8 +100,8 @@ def build_message(
     lines += [f"  {'total':<9}{len(findings)}", ""]
     if repeats := repeat_summary(findings):
         lines += [repeats, ""]
-    if snapshot.gaps:
-        lines += [f"This review has {len(snapshot.gaps)} data gap(s). See the report before relying on it.", ""]
+    if gaps:
+        lines += [f"This review has {len(gaps)} data gap(s). See the report before relying on it.", ""]
     lines += [
         "Details, the access list and the sign-off page are in the attached PDF.",
         "The PDF contains personal data. Don't forward it outside the review team.",

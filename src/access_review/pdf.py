@@ -171,12 +171,14 @@ def write_pdf(
     branding: Branding | None = None,
     roster_label: str = "not provided",
     history_note: str = "",
-    graph: object = None,
+    gaps: list[str] | None = None,
+    sources: list | None = None,
 ) -> Path:
-    from .report import all_gaps, other_sources  # late: report imports this module
-
-    sources = other_sources(graph)
-    gaps = all_gaps(snapshot, graph)
+    # Passed in, not derived: write_report computes both once so the PDF's
+    # Status row and the manifest's signed `complete` flag cannot disagree.
+    # Defaults keep a snapshot-only caller honest about Okta's own gaps.
+    gaps = list(snapshot.gaps) if gaps is None else gaps
+    sources = sources or []
     brand = branding or Branding()
     t = _Theme(brand)
     doc = SimpleDocTemplate(
@@ -203,7 +205,7 @@ def write_pdf(
         ["Scope", f"{len(snapshot.users)} users ({live} not deprovisioned), "
                   f"{len(snapshot.groups)} groups, {len(snapshot.apps)} apps"],
         ["HR roster", roster_label],
-        *[[f"Also read", f"{name} ({n} principals)"] for name, n, _ in sources],
+        *[["Also read", f"{s.source} ({s.principals} principals, read {s.collected_at[:10]})"] for s in sources],
         ["Status", "INCOMPLETE, see data gaps" if gaps else "Complete"],
         ["Tool", f"okta-access-review {__version__} (read-only)"],
     ]

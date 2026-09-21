@@ -121,7 +121,9 @@ def collect(event, context):
         "manifest_sha256": manifest_sha,
         "findings": dict(Counter(f.severity for f in review.findings)),
         "items": summary(review.items),
-        "complete": not snapshot.gaps,
+        # The review's own answer, spanning every source it read, so this can
+        # never disagree with the manifest that was just uploaded.
+        "complete": review.complete,
     }
 
 

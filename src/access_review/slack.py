@@ -124,10 +124,16 @@ def _local_time(when) -> str:
     return f"<!date^{int(when.timestamp())}^{{date_short_pretty}} at {{time}}|{fallback}>"
 
 
-def build_payload(snapshot: Snapshot, findings: list[Finding], run_dir: Path, brand: str = "") -> dict:
+def build_payload(snapshot: Snapshot, findings: list[Finding], run_dir: Path, brand: str = "",
+                  gaps: list[str] | None = None) -> dict:
+    """gaps is the review's own gap list, which spans every source it read.
+    `snapshot.gaps` speaks for Okta alone, so defaulting to it would announce
+    "Complete" for a run whose own manifest and PDF say INCOMPLETE. Counts of
+    gaps are channel-safe; the gap strings, which name accounts, are not."""
     counts = Counter(f.severity for f in findings)
     org = urlparse(snapshot.org_url).hostname or snapshot.org_url
-    complete = not snapshot.gaps
+    gaps = list(snapshot.gaps) if gaps is None else gaps
+    complete = not gaps
     top = next((s for s in SEVERITIES if counts.get(s)), None)
     headline = f"{counts[top]} {top}" if top else "no findings"
     pdf_hash = hashlib.sha256((run_dir / "report.pdf").read_bytes()).hexdigest()
@@ -136,7 +142,7 @@ def build_payload(snapshot: Snapshot, findings: list[Finding], run_dir: Path, br
     if complete:
         status = ":white_check_mark: *Complete*"
     else:
-        status = f":warning: *Incomplete*: {len(snapshot.gaps)} data gap(s)"
+        status = f":warning: *Incomplete*: {len(gaps)} data gap(s)"
 
     blocks: list[dict] = [
         {"type": "header", "text": {"type": "plain_text", "text": f":shield: {title}", "emoji": True}},
@@ -152,7 +158,7 @@ def build_payload(snapshot: Snapshot, findings: list[Finding], run_dir: Path, br
     ]
     if not complete:
         blocks.append({"type": "section", "text": _mrkdwn(
-            ":warning: Some Okta data couldn't be read, so this review may miss issues. "
+            ":warning: Some data couldn't be read, so this review may miss issues. "
             "Check *Data gaps* in the report before relying on it."
         )})
 

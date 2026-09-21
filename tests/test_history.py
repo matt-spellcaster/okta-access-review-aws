@@ -272,3 +272,34 @@ def test_unknown_previous_review_is_not_called_reopened():
     f = finding()
     age_findings([f], history, date(2026, 9, 15))
     assert (f.reviews_open, f.first_seen, f.reopened) == (1, "2026-06-15", False)
+
+
+def test_a_review_that_skipped_the_check_is_not_called_reopened():
+    """"Back again" asserts the problem was fixed and came back. A review that
+    skipped the check did not look, and --github is optional, so an omitted
+    quarter would otherwise make every open cross-source finding claim that a
+    critical leaver finding had been remediated."""
+    key = ("AR-17", "github:acme-eng/u1")
+    history = History(reviews=[
+        PriorReview("2026-06-15", "a", "x", {key}),
+        PriorReview("2026-07-15", "b", "y", set(), skipped=["AR-15", "AR-16", "AR-17"]),
+    ])
+    f = Finding("AR-17", "t", "critical", [], "github:acme-eng/u1", "d", "r")
+    age_findings([f], history, date(2026, 9, 15))
+    assert f.reopened is False
+    assert label(f) == "New"  # not "Back again"
+    # A check that *ran* and found nothing is still a genuine reopen.
+    history.reviews[-1].skipped = ["AR-15"]
+    g = Finding("AR-17", "t", "critical", [], "github:acme-eng/u1", "d", "r")
+    age_findings([g], history, date(2026, 9, 15))
+    assert g.reopened is True
+
+
+def test_skipped_checks_are_read_back_from_a_prior_manifest(tmp_path):
+    """load_history has to carry skipped_checks off the manifest, or the guard
+    above can never fire on a real run."""
+    review(tmp_path, "2026-06-15")
+    history = load_history(tmp_path / "out", "20260915T140000Z", ORG, date(2026, 9, 15))
+    [prior] = history.reviews
+    # The Okta-only demo run skips the three graph checks (and AR-14 at this date).
+    assert prior.skipped == ["AR-14", "AR-15", "AR-16", "AR-17"]

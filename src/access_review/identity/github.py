@@ -21,9 +21,26 @@ Each collection maps to a real endpoint:
   only org-level view of members' classic PATs and SSH keys. It requires SAML
   SSO, is keyed by **login** rather than node id, and states no credential
   name and no creation date: `authorizedAt` is when the credential was
-  authorized for SSO, not when it was made.
+  authorized for SSO, not when it was made. The caller must be an organization
+  owner (`read:org` for an OAuth app or a classic PAT).
 - `fineGrainedTokens` -- `GET /orgs/{org}/personal-access-tokens`, which
-  reports `permissions` rather than classic scopes.
+  reports `permissions` rather than classic scopes. **Only GitHub Apps can
+  call this endpoint**, so it needs an installed App's token, not the owner
+  credential the collection above needs.
+- `verifiedEmails` -- GraphQL `User.organizationVerifiedDomainEmails(login:)`,
+  a per-user field, not part of the member read. It returns addresses only for
+  domains the organization has **verified**, so an org with no verified domains
+  gets an empty list for everyone. That is "not readable here", not "no
+  verified email", and a collector must set `credentials_complete`/record a gap
+  rather than let it read as absence.
+- `accountCreatedAt` -- GraphQL `User.createdAt` on the member nodes. The
+  Simple User objects `GET /orgs/{org}/members` returns carry no created_at.
+
+Two collections, two credentials, one plan floor: credential-authorizations
+needs an org owner, personal-access-tokens needs a GitHub App, and both exist
+only on GitHub Enterprise Cloud with SAML SSO. A collector that can do one may
+not be able to do the other, which is what the per-collection completeness
+flags are for.
 
 The join is the point of this module. Where the org is behind SSO, GitHub
 states each member's SAML external identity, and that is an authoritative join
@@ -68,7 +85,14 @@ WRITE_PERMISSIONS = {"write", "admin"}
 PAT_CREDENTIAL = "personal access token"
 SSH_CREDENTIAL = "SSH key"
 
-MEMBER_STATUSES = {"active": Status.ACTIVE, "suspended": Status.DISABLED, "pending": Status.UNKNOWN}
+# GET /orgs/{org}/memberships/{username} documents state as active|pending, and
+# GET /orgs/{org}/members returns no state at all (it lists active members only).
+# Nothing in either read, or in GraphQL's OrganizationMemberEdge, reports a
+# suspended member: suspension is visible only through enterprise SCIM under
+# Enterprise Managed Users, which is a different endpoint on a plan this tool
+# cannot assume. Anything else the API starts returning reads as UNKNOWN, which
+# is what a status nobody can interpret should be.
+MEMBER_STATUSES = {"active": Status.ACTIVE, "pending": Status.UNKNOWN}
 
 
 def source_name(org: str) -> str:
@@ -93,17 +117,52 @@ def _joinable(value: str) -> str:
 
 
 @dataclass
+class SamlEmail:
+    """GitHub's `UserEmailMetadata`: `{ value: String!, primary: Boolean, type:
+    String }`. `primary` is nullable, and it is the only documented way to
+    choose among several addresses -- the connection states no ordering."""
+
+    value: str = ""
+    primary: bool | None = None
+    type: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> SamlEmail:
+        return cls(value=d.get("value", ""), primary=d.get("primary"), type=d.get("type", ""))
+
+    def to_dict(self) -> dict:
+        return {"value": self.value, "primary": self.primary, "type": self.type}
+
+
+@dataclass
 class SamlIdentity:
     """GitHub's `ExternalIdentitySamlAttributes`. Three separate attributes,
-    any of which may be the address and any of which may be a GUID."""
+    any of which may be the address and any of which may be a GUID. `emails` is
+    a list of `UserEmailMetadata`, not of strings."""
 
     name_id: str = ""
     username: str = ""
-    emails: list[str] = field(default_factory=list)
+    emails: list[SamlEmail] = field(default_factory=list)
+
+    def unambiguous_email(self) -> str:
+        """The one address this identity states, or "".
+
+        GraphQL documents no ordering for the emails connection, so `emails[0]`
+        was a guess about which person owns the account -- exactly the false
+        link this layer exists to prevent, and the same coin flip the projection
+        already refuses for two verified emails. Only the address marked primary,
+        or a lone entry, counts as stated.
+        """
+        primary = [e.value for e in self.emails if e.primary]
+        if len(primary) == 1:
+            return primary[0]
+        if not primary and len(self.emails) == 1:
+            return self.emails[0].value
+        return ""
 
     def joinable(self) -> tuple[str, str]:
         """The first attribute that is an address, with the attribute's name."""
-        for attribute, value in (("emails", self.emails[0] if self.emails else ""),
+        for attribute, value in (("emails", self.unambiguous_email()),
                                  ("username", self.username), ("nameId", self.name_id)):
             found = _joinable(value)
             if found:
@@ -117,11 +176,13 @@ class SamlIdentity:
         return cls(
             name_id=d.get("nameId", ""),
             username=d.get("username", ""),
-            emails=list(d.get("emails", [])),
+            # nullable: [UserEmailMetadata!]
+            emails=[SamlEmail.from_dict(e) for e in (d.get("emails") or [])],
         )
 
     def to_dict(self) -> dict:
-        return {"nameId": self.name_id, "username": self.username, "emails": self.emails}
+        return {"nameId": self.name_id, "username": self.username,
+                "emails": [e.to_dict() for e in self.emails]}
 
 
 @dataclass
@@ -134,7 +195,7 @@ class Member:
 
     id: str
     login: str
-    state: str = "active"  # active | pending | suspended
+    state: str = "active"  # active | pending (see MEMBER_STATUSES)
     role: str = "member"  # member | admin | billing_manager
     saml_identity: SamlIdentity | None = None
     verified_emails: list[str] = field(default_factory=list)
@@ -151,7 +212,7 @@ class Member:
             state=d.get("state", "active"),
             role=d.get("role", "member"),
             saml_identity=SamlIdentity.from_dict(d.get("samlIdentity")),
-            verified_emails=[e.strip().lower() for e in d.get("verifiedEmails", [])],
+            verified_emails=[e.strip().lower() for e in (d.get("verifiedEmails") or [])],
             account_created=parse_time(d.get("accountCreatedAt")),
         )
 
@@ -208,7 +269,9 @@ class CredentialAuthorization:
             login=d["login"],
             credential_type=d["credentialType"],
             token_last_eight=d.get("tokenLastEight", ""),
-            scopes=list(d.get("scopes", [])),
+            # `or []`, not a default: the endpoint documents scopes as nullable,
+            # and `d.get("scopes", [])` returns None when the key is present and null.
+            scopes=list(d.get("scopes") or []),
             authorized_at=parse_time(d.get("authorizedAt")),
             accessed_at=parse_time(d.get("accessedAt")),
             expires_at=parse_time(d.get("expiresAt")),
@@ -278,12 +341,13 @@ class GitHubSnapshot:
     credentials: list[CredentialAuthorization] = field(default_factory=list)
     fine_grained_tokens: list[FineGrainedToken] = field(default_factory=list)
     # False when the org is not behind SSO. Then credential-authorizations does
-    # not exist, so no member credential can be seen at all.
-    sso_enabled: bool = True
+    # not exist, so no member credential can be seen at all. Defaults False:
+    # see from_dict.
+    sso_enabled: bool = False
     # False when the credential reads did not run or were cut short, so a
     # credential's absence is not evidence that it is not there. The analogue
-    # of Snapshot.app_usage_complete.
-    credentials_complete: bool = True
+    # of Snapshot.app_usage_complete. Defaults False: see from_dict.
+    credentials_complete: bool = False
     gaps: list[str] = field(default_factory=list)
 
     @classmethod
@@ -295,8 +359,11 @@ class GitHubSnapshot:
             teams=[Team.from_dict(x) for x in d.get("teams", [])],
             credentials=[CredentialAuthorization.from_dict(x) for x in d.get("credentials", [])],
             fine_grained_tokens=[FineGrainedToken.from_dict(x) for x in d.get("fineGrainedTokens", [])],
-            sso_enabled=d.get("sso_enabled", True),
-            credentials_complete=d.get("credentials_complete", True),
+            # False by default, both: a truncated or partly-written collector
+            # file must not assert that SSO was on and the credential reads
+            # finished. A snapshot claims completeness explicitly or not at all.
+            sso_enabled=d.get("sso_enabled", False),
+            credentials_complete=d.get("credentials_complete", False),
             gaps=list(d.get("gaps", [])),
         )
 
@@ -363,6 +430,12 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
     # attribute, an ambiguous verified email) say nothing about whether the
     # scopes were read, and letting them suppress every credential answer
     # org-wide would make the signal dead in any real tenant.
+    if snapshot.sso_enabled and not snapshot.credentials_complete:
+        gaps.append(
+            f"The credential reads for the {snapshot.org} org did not run in full, so a member's "
+            f"credentials are unknown rather than absent, and a credential with no record of use is "
+            f"not known to be dormant."
+        )
     read_complete = snapshot.sso_enabled and snapshot.credentials_complete and not snapshot.gaps
 
     by_login = {m.login: m for m in snapshot.members}
@@ -399,8 +472,9 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
                 ))
             else:
                 gaps.append(
-                    f"{member.login} has a SAML identity whose attributes are all opaque identifiers, "
-                    f"so it cannot be joined to an identity keyed on an email address."
+                    f"{member.login} has a SAML identity with no attribute this review can join on "
+                    f"(every attribute is an opaque identifier, or it states several addresses with "
+                    f"no primary), so it cannot be joined to an identity keyed on an email address."
                 )
         elif len(member.verified_emails) == 1:
             links.append(Link(

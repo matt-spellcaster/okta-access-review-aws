@@ -88,8 +88,31 @@ def test_a_saml_identity_with_no_address_anywhere_cannot_be_joined(graph):
     # nina's NameID and username are both GUIDs. A GUID identifies her
     # perfectly well and is still useless against an email-keyed identity.
     assert graph.link_for((GITHUB, "U_kgDOBq1if4")) is None
-    assert gaps_mentioning(graph, "opaque identifiers")
+    assert gaps_mentioning(graph, "no attribute this review can join on")
     assert graph.principal((GITHUB, "U_kgDOBq1if4")) in graph.unlinked()
+
+
+def test_several_saml_addresses_with_no_primary_are_not_joined_on():
+    """GraphQL documents no ordering for the emails connection, so emails[0]
+    was a guess about which person owns the account -- the same coin flip the
+    projection already refuses for two verified emails."""
+    def identity(emails, **rest):
+        return SamlIdentity.from_dict({"nameId": "guid", "username": "guid", "emails": emails, **rest})
+
+    two_no_primary = [{"value": "a@acme.example"}, {"value": "b@acme.example"}]
+    assert identity(two_no_primary).unambiguous_email() == ""
+    assert identity(two_no_primary).joinable() == ("", "")
+
+    # One marked primary is a stated answer, not a guess.
+    marked = [{"value": "a@acme.example"}, {"value": "b@acme.example", "primary": True}]
+    assert identity(marked).joinable() == ("b@acme.example", "emails")
+
+    # Two marked primary is GitHub contradicting itself: still not a guess to make.
+    both = [{"value": "a@acme.example", "primary": True}, {"value": "b@acme.example", "primary": True}]
+    assert identity(both).unambiguous_email() == ""
+
+    # A lone address needs no primary flag to be unambiguous.
+    assert identity([{"value": "a@acme.example"}]).joinable() == ("a@acme.example", "emails")
 
 
 def test_the_join_key_is_normalised_so_other_sources_can_match_it(graph):
@@ -148,13 +171,28 @@ def test_an_org_without_sso_can_read_neither_identities_nor_credentials():
     "member_id,expected,source_status",
     [
         ("U_kgDOBq1aXw", Status.ACTIVE, "active"),
-        ("U_kgDOBq1if4", Status.DISABLED, "suspended"),
         ("U_kgDOBq1he3", Status.UNKNOWN, "pending"),
     ],
 )
 def test_membership_state_is_mapped_and_the_source_word_kept(graph, member_id, expected, source_status):
     principal = graph.principal((GITHUB, member_id))
     assert (principal.status, principal.source_status) == (expected, source_status)
+
+
+def test_a_state_github_does_not_document_reads_unknown_not_active():
+    """The member reads return active|pending. If GitHub starts returning
+    something else, the account's status is unknown -- never quietly ACTIVE,
+    and never DISABLED, which is the one status that suppresses an AR-17
+    finding for a leaver. "suspended" is pinned here on purpose: it was in the
+    fixture and in MEMBER_STATUSES until the PR #17 review found that no
+    endpoint this adapter reads returns it."""
+    for state in ("deactivated", "suspended"):
+        snapshot = GitHubSnapshot.from_dict({
+            "org": "acme-eng", "collected_at": "2026-09-15T14:00:00Z",
+            "members": [{"id": "U_new", "login": "someone", "state": state}],
+        })
+        [principal] = project_github(snapshot).principals
+        assert (principal.status, principal.source_status) == (Status.UNKNOWN, state)
 
 
 def test_an_unrecognised_membership_state_is_unknown():
@@ -324,6 +362,20 @@ def test_optional_fields_default_to_the_safe_reading():
     assert SamlIdentity.from_dict(None) is None
 
 
+def test_a_snapshot_that_does_not_claim_completeness_is_not_treated_as_complete():
+    """A truncated or partly-written collector file must not assert that SSO
+    was on and the credential reads finished. Defaulting these to True made an
+    unfinished file read as a clean estate -- and flipped _scope_write_access
+    from None ("unknown") to False ("cannot write")."""
+    snapshot = GitHubSnapshot.from_dict({"org": "acme-eng", "collected_at": "2026-09-15T14:00:00Z"})
+    assert snapshot.sso_enabled is False and snapshot.credentials_complete is False
+
+    graph = project_github(snapshot)
+    meta = graph.source(source_name("acme-eng"))
+    assert meta.activity_complete is False and meta.complete is False
+    assert graph.incomplete_sources() == [source_name("acme-eng")]
+
+
 def test_the_snapshot_serialises_back_to_the_fixture_text(github_snapshot):
     # Pins from_dict and to_dict against the fixture file rather than only
     # against each other, so a field either side silently drops is caught.
@@ -334,3 +386,34 @@ def test_the_projection_is_deterministic(github_snapshot):
     first = [g.to_dict() for g in project_github(github_snapshot).grants]
     second = [g.to_dict() for g in project_github(github_snapshot).grants]
     assert first == second
+
+
+def test_documented_nullable_arrays_do_not_crash_the_reader():
+    """The credential-authorizations response documents `scopes` as nullable,
+    and GraphQL's ExternalIdentitySamlAttributes.emails is a nullable list.
+    `d.get("scopes", [])` only defaults on an absent key, so a present null
+    reached list() and raised TypeError."""
+    snapshot = GitHubSnapshot.from_dict({
+        "org": "acme-eng",
+        "collected_at": "2026-09-15T14:00:00Z",
+        # Stated, so the unknown write access below is the null scopes and not
+        # an incomplete read.
+        "sso_enabled": True, "credentials_complete": True,
+        "members": [{
+            "id": "U_null", "login": "someone", "verifiedEmails": None,
+            "samlIdentity": {"nameId": None, "username": "someone", "emails": None},
+        }],
+        "credentials": [{
+            "credentialId": 1, "login": "someone",
+            "credentialType": "personal access token", "scopes": None,
+        }],
+    })
+    graph = project_github(snapshot)
+    [principal] = graph.principals
+    [credential] = graph.credentials_for(principal.key)
+    # No scopes read is not "cannot write": see _scope_write_access. (An SSH key
+    # would be True regardless -- an account key can always push.)
+    assert credential.write_access is None
+    # The nullable identity arrays read as empty, so nothing joins and nothing
+    # is invented: unlinked, not guessed.
+    assert graph.unlinked() == [principal]

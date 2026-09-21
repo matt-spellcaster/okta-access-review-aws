@@ -285,3 +285,37 @@ def test_slack_failure_exits_3(tmp_path, monkeypatch, capsys):
     assert cli.main(DEMO_ARGS + ["--out", str(tmp_path)]) == 3
     err = capsys.readouterr().err
     assert "channel_is_archived" in err and URL not in err
+
+
+def test_slack_never_announces_complete_for_a_run_whose_manifest_says_otherwise(tmp_path):
+    """The channel post, the email and the CLI line all derived completeness
+    from snapshot.gaps, which speaks for Okta alone. A run whose GitHub source
+    failed was announced as Complete while the report, PDF and manifest it
+    links to said INCOMPLETE."""
+    from access_review.mail import EmailSettings, build_message
+    from access_review.report import run_dir_name
+    from access_review.review import run_review
+
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    config = cli.Config.load(FIXTURES / "demo_config.json")
+    roster = cli.load_roster(FIXTURES / "demo_roster.csv", config.timezone())
+    run = run_review(snapshot, roster, FIXTURES / "demo_roster.csv", config,
+                     cli.date(2026, 9, 15), tmp_path, github_path=FIXTURES / "demo_github.json")
+    manifest = json.loads((run.run_dir / "manifest.json").read_text())
+
+    assert snapshot.gaps == []  # Okta alone would call this complete
+    assert manifest["complete"] is False and run.complete is False
+    assert run_dir_name(snapshot) == run.run_dir.name
+
+    payload = slack.build_payload(snapshot, run.findings, run.run_dir, gaps=run.gaps)
+    text = json.dumps(payload)
+    assert "Incomplete" in text and "4 data gap(s)" in text
+    # Counts and completeness only: the gap strings name accounts.
+    assert "omar-haddad" not in text and "acme-ci-bot" not in text
+
+    settings = EmailSettings(host="h", port=25, username="", password="",
+                             sender="a@b.c", recipients=["d@e.f"])
+    msg = build_message(settings, snapshot, run.findings, run.run_dir, gaps=run.gaps)
+    body = msg.get_body(("plain",)).get_content()
+    assert "INCOMPLETE" in msg["Subject"] and "4 data gap(s)" in body
+    assert "omar-haddad" not in body

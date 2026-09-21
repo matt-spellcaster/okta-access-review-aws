@@ -126,14 +126,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n{len(findings)} findings. Report: {run_dir / 'report.md'}")
     if skipped:
         print(f"Skipped (needs data this run did not have): {', '.join(skipped)}")
-    if snapshot.gaps:
-        print(f"INCOMPLETE: {len(snapshot.gaps)} data gap(s); see the report.")
+    if review.gaps:
+        print(f"INCOMPLETE: {len(review.gaps)} data gap(s); see the report.")
 
     # Try every notification even if one fails; the report is already saved.
     notify_failed = False
     if email:
         try:
-            send(email, build_message(email, snapshot, findings, run_dir))
+            send(email, build_message(email, snapshot, findings, run_dir, gaps=review.gaps))
             print(f"Emailed report.pdf to {', '.join(email.recipients)}")
         except (OSError, smtplib.SMTPException) as e:
             print(f"access-review: report saved, but emailing it failed: {e}", file=sys.stderr)
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     if slack_settings:
         brand = config.branding.get("name", "")
         try:
-            payload = slack.build_payload(snapshot, findings, run_dir, brand=brand)
+            payload = slack.build_payload(snapshot, findings, run_dir, brand=brand, gaps=review.gaps)
             title = f"{brand} · Okta access review" if brand else "Okta access review"
             for line in slack.notify(slack_settings, payload, run_dir, title=title):
                 print(line)

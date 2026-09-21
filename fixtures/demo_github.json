@@ -14,7 +14,11 @@
         "nameId": "priya.shah@acme.example",
         "username": "priya.shah@acme.example",
         "emails": [
-          "priya.shah@acme.example"
+          {
+            "value": "priya.shah@acme.example",
+            "primary": true,
+            "type": "work"
+          }
         ]
       },
       "verifiedEmails": [
@@ -31,7 +35,11 @@
         "nameId": "marcus.lee@acme.example",
         "username": "marcus.lee@acme.example",
         "emails": [
-          "marcus.lee@acme.example"
+          {
+            "value": "marcus.lee@acme.example",
+            "primary": true,
+            "type": "work"
+          }
         ]
       },
       "verifiedEmails": [
@@ -48,7 +56,11 @@
         "nameId": "a4f1c9e2-7b33-4d51-9e08-2c6f1b7a4d90",
         "username": "victor.nguyen@acme.example",
         "emails": [
-          "victor.nguyen@acme.example"
+          {
+            "value": "victor.nguyen@acme.example",
+            "primary": true,
+            "type": "work"
+          }
         ]
       },
       "verifiedEmails": [
@@ -78,7 +90,11 @@
         "nameId": "lee.chen@acme.example",
         "username": "lee.chen@acme.example",
         "emails": [
-          "lee.chen@acme.example"
+          {
+            "value": "lee.chen@acme.example",
+            "primary": true,
+            "type": "work"
+          }
         ]
       },
       "verifiedEmails": [
@@ -121,7 +137,7 @@
     {
       "id": "U_kgDOBq1if4",
       "login": "nina-patel",
-      "state": "suspended",
+      "state": "active",
       "role": "member",
       "samlIdentity": {
         "nameId": "b7d2e4a1-9c55-4f18-8a3b-5e0d9f2c6b71",
