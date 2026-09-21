@@ -36,7 +36,10 @@ LABEL = "access-review"
 # after sign-off. Leaver findings (AR-01/02/12/13) already have leaver tickets,
 # AR-11 and AR-14 are decided as review items, and AR-03 (no HR record) is
 # acknowledged by the CISO as a review item and raised with HR: never a ticket.
-FIX_CHECKS = ("AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10")
+# AR-15..AR-17 are here rather than in workflow.URGENT_CHECKS: the urgent path
+# promises "the next daily check confirms it in Okta", which is exactly what no
+# graph-backed finding can offer until its source has a collector.
+FIX_CHECKS = ("AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10", "AR-15", "AR-16", "AR-17")
 # A finding at this severity says something could not be checked (AR-04 when MFA
 # enrollment can't be read, AR-13 when HR gave no end date), not that something
 # is wrong. It stays in the report; nobody gets a ticket to "fix" it.
@@ -48,7 +51,13 @@ INFO = "info"
 # that it is settled, and the daily check ticks it off without looking at
 # Okta. The other fix checks (no MFA, a bare profile, a disabled account's
 # leftover access) are checked against a fresh snapshot.
-REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10")
+# AR-15 and AR-16 are judgement calls in the same way: they ask someone to
+# establish what an account is, and the answer is a register entry, not a
+# change Okta can show. AR-17 is not a judgement call -- it asks for access to
+# be removed in another system -- but nothing can confirm that until that
+# system has a collector, and claiming to have verified it would be worse than
+# taking the reviewer's word. See the guard in tests/test_tickets.py.
+REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17")
 
 
 def verify_mode(check_id: str) -> str:

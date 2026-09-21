@@ -7,7 +7,7 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 ## Commands
 
 - Tests: `uv run pytest -q`
-- Demo (no Okta needed): `uv run access-review --snapshot fixtures/demo_snapshot.json --roster fixtures/demo_roster.csv --config fixtures/demo_config.json --as-of 2026-09-15`
+- Demo (no Okta needed): `uv run access-review --snapshot fixtures/demo_snapshot.json --roster fixtures/demo_roster.csv --config fixtures/demo_config.json --github fixtures/demo_github.json --as-of 2026-09-15`
 - Live, local: `./run.sh --roster roster/dev-org-roster.csv --config roster/dev-org-config.json` (needs `env` and 1Password)
 - Verify a run folder: `uv run access-review attest reports/<folder>`
 - Whole AWS workflow in memory (no AWS/Slack/Jira): `uv run python scripts/e2e_local.py`
@@ -36,6 +36,11 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   may use `s3:BypassGovernanceRetention`, and no Lambda role is ever granted it.
 - Never commit `env`, key files, `reports/`, Terraform state or `*.tfvars` with real values, or
   anything in `roster/` except its README.
+- `.notes/` is local working material and never leaves this machine: never commit it, never quote
+  or summarise it in a commit message, a PR description, an issue, a code comment or any other
+  tracked file, and never paste it into a hosted tool. Treat it as private context that informs the
+  work without appearing in it. This repo is public, so the same applies to anything derived from
+  those notes: keep tracked content about the tool and its users, not about why it is being built.
 - Never read `env` or print `OKTA_PRIVATE_KEY`, `SMTP_PASSWORD`, `SLACK_WEBHOOK_URL`,
   `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` or `JIRA_API_TOKEN` (webhook URLs and Slack's pre-signed
   upload URLs are credentials too; keep them out of error messages). Never pass an unchecked
@@ -43,8 +48,34 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 - Tests never call real AWS, Slack, Jira or SMTP. `tests/conftest.py` clears those settings; inject
   fakes through `session=` / `client=` parameters like the existing tests do.
 - A new check needs: an entry in `CHECKS` (`checks.py`) with SOC 2 and ISO 27001 control IDs, a planted
-  case in `fixtures/demo_snapshot.json`, and an updated expectation in
-  `test_demo_findings_are_exactly_the_planted_ones`.
+  case in the fixture for the source it reads (`fixtures/demo_snapshot.json`, or
+  `fixtures/demo_github.json` for a `needs_graph` check), an updated expectation in
+  `test_demo_findings_are_exactly_the_planted_ones` **and in
+  `test_cross_source_findings_carry_the_planted_severities`** (severity is the judgement in these
+  checks; asserting subjects alone lets a constant pass). A `needs_graph` check reads `ctx.graph`
+  rather than `ctx.snapshot` and is skipped when no graph was built.
+- A graph finding's subject is `{source}/{principal.id}` (`checks._subject`), never the label.
+  Ticket identity is `(check_id, subject)` hashed into a permanent Jira label, and a label is a
+  display name: a GitHub login can be renamed and two Okta service clients can share an app label,
+  which would collapse two unremediated problems onto one ticket. The readable name goes in the
+  detail, which is what the ticket body and the PDF show.
+- A `needs_graph` check settles by reviewer (`REVIEW_CHECKS` in `tickets.py`) until `watch.still_present`
+  can see that source's gaps. It re-verifies against a fresh Okta snapshot only, so a graph finding
+  would otherwise be ticked off because the other source's read failed. It must also be in
+  `FIX_CHECKS` or `workflow.URGENT_CHECKS`, or no ticket is ever opened and its `verify_mode` is
+  configuration nothing consults. `tests/test_tickets.py` guards both.
+- `report.all_gaps` is the single answer about completeness and it reads **every** `SourceMeta` in
+  the graph, Okta included, because a projection records gaps the snapshot never had. Slack, email,
+  the CLI and the Step Functions output take it from `ReviewRun.gaps`/`.complete`, never from
+  `snapshot.gaps`, which speaks for Okta alone. `report.other_sources` is display only.
+- Emptiness is only evidence when the read that would have said so ran. A check reading credentials
+  asks `_credential_evidence_complete` first (`SourceMeta.activity_complete`, not `.complete` --
+  identity gaps say nothing about whether the scopes were read), and `_write_access` returns None,
+  not False, when they were not. Unknown is never ranked as the milder case.
+- A graph source's own snapshot is written into the run folder through `extra_files` so the manifest
+  hashes it (`review.GITHUB_SNAPSHOT_FILE`). Findings whose evidence is outside the bundle cannot be
+  re-verified by `attest`. `review._note_skew` records a gap when two sources were read more than
+  `SOURCE_SKEW_DAYS` apart, after composing so it does not also clear `activity_complete`.
 - After changing the PDF layout or demo fixtures, run `uv run python scripts/render_samples.py`
   and look at `docs/images/*.png` before committing. README images use fixture data, or real
   screenshots with every name, email, org URL and ID blacked out, including inside PDF previews.
@@ -71,7 +102,9 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   "decide" instead.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
   change a hashed file, and never send anything. History must never count a review it couldn't
-  verify against its manifest; when unsure, count lower.
+  verify against its manifest; when unsure, count lower. `reopened` ("Back again") asserts a
+  problem was fixed and returned, so it is never set across a review that *skipped* the check --
+  `PriorReview.skipped` comes off that review's `skipped_checks`.
 - `findings.csv` columns are fixed by `FINDING_COLUMNS` (`report.py`). A new `Finding` field changes
   them only if you add it there and update `test_findings_csv_header_is_explicit`.
 - Never write anything at the top level of `--out`; tests and `render_samples.py` expect one folder per run.

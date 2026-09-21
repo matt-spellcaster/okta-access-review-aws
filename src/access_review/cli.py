@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--snapshot", type=Path, help="review a saved snapshot JSON instead of calling Okta")
     p.add_argument("--roster", type=Path, help="HR roster CSV (enables AR-01..AR-03)")
     p.add_argument("--config", type=Path, help="review config JSON")
+    p.add_argument("--github", type=Path, help="GitHub snapshot JSON (enables AR-15..AR-17)")
     p.add_argument("--out", type=Path, default=Path("reports"), help="output directory (default: reports)")
     p.add_argument(
         "--as-of", type=date.fromisoformat, help="review date, YYYY-MM-DD (default: UTC date the data was collected)"
@@ -112,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     # Default to the (UTC) collection date so the review date matches the data.
     as_of = args.as_of or snapshot.collected_at.date()
     try:
-        review = run_review(snapshot, roster, args.roster, config, as_of, args.out)
+        review = run_review(snapshot, roster, args.roster, config, as_of, args.out,
+                            github_path=args.github)
     except (ReportError, ItemsError) as e:
         print(f"access-review: {e}", file=sys.stderr)
         return 1
@@ -123,15 +125,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{f.severity:<8} {f.check_id}  {f.subject:<32} {f.detail}{repeat}")
     print(f"\n{len(findings)} findings. Report: {run_dir / 'report.md'}")
     if skipped:
-        print(f"Skipped (no roster, or no complete app sign-in data): {', '.join(skipped)}")
-    if snapshot.gaps:
-        print(f"INCOMPLETE: {len(snapshot.gaps)} data gap(s); see the report.")
+        print(f"Skipped (needs data this run did not have): {', '.join(skipped)}")
+    if review.gaps:
+        print(f"INCOMPLETE: {len(review.gaps)} data gap(s); see the report.")
 
     # Try every notification even if one fails; the report is already saved.
     notify_failed = False
     if email:
         try:
-            send(email, build_message(email, snapshot, findings, run_dir))
+            send(email, build_message(email, snapshot, findings, run_dir, gaps=review.gaps))
             print(f"Emailed report.pdf to {', '.join(email.recipients)}")
         except (OSError, smtplib.SMTPException) as e:
             print(f"access-review: report saved, but emailing it failed: {e}", file=sys.stderr)
@@ -139,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     if slack_settings:
         brand = config.branding.get("name", "")
         try:
-            payload = slack.build_payload(snapshot, findings, run_dir, brand=brand)
+            payload = slack.build_payload(snapshot, findings, run_dir, brand=brand, gaps=review.gaps)
             title = f"{brand} · Okta access review" if brand else "Okta access review"
             for line in slack.notify(slack_settings, payload, run_dir, title=title):
                 print(line)

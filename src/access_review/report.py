@@ -11,12 +11,14 @@ from collections import Counter
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+from typing import NamedTuple
 
 from . import __version__
 from .checks import CHECKS, SEVERITIES, Config, Finding
 from .csvsafe import cell
 from .history import History, label
-from .models import SIGN_IN_STATUSES, Snapshot
+from .identity import OKTA, IdentityGraph
+from .models import SIGN_IN_STATUSES, Snapshot, format_time
 from .pdf import Branding, write_pdf
 
 MATRIX_COLUMNS = [
@@ -82,8 +84,57 @@ HISTORY_NOTE = (
 )
 
 
+
+class SourceReport(NamedTuple):
+    """One source beyond Okta, as the report, PDF and manifest name it."""
+
+    source: str
+    principals: int
+    collected_at: str  # "" when the source did not say when it was read
+    gaps: list[str]
+
+
+def other_sources(graph: IdentityGraph | None) -> list[SourceReport]:
+    """Sources beyond Okta, for the "Also read" line and the manifest block.
+
+    Display only. `all_gaps` is what decides completeness and it reads every
+    source including Okta, because a gaps list that skipped one would let the
+    PDF say "Complete" while a whole source failed -- the one claim an evidence
+    artifact must never make wrongly.
+    """
+    if graph is None:
+        return []
+    counts = Counter(p.source for p in graph.principals)
+    return [
+        SourceReport(m.source, counts.get(m.source, 0), format_time(m.collected_at), m.gaps)
+        for m in graph.sources if m.source != OKTA
+    ]
+
+
+def all_gaps(snapshot: Snapshot, graph: IdentityGraph | None) -> list[str]:
+    """Every gap from every source the review read, named with its source.
+
+    With a graph this reads the graph's own per-source metadata rather than
+    `snapshot.gaps`, because the Okta projection records gaps the snapshot
+    never had: a group member no user read returned, an app assigned to a group
+    that is not in the snapshot. Reading `snapshot.gaps` dropped those, so a
+    review could be signed off "complete" while `graph.incomplete_sources()`
+    said otherwise. One source of truth, and it is the graph.
+    """
+    if graph is None:
+        return list(snapshot.gaps)
+    return [f"{m.source}: {gap}" for m in graph.sources for gap in m.gaps]
+
+
 def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[str], as_of: date,
-                    roster: str = "not provided", history: History | None = None) -> str:
+                    graph: IdentityGraph | None = None,
+                    roster: str = "not provided", history: History | None = None,
+                    gaps: list[str] | None = None,
+                    sources: list[SourceReport] | None = None) -> str:
+    # Derived from the graph when the caller did not already do it, so there is
+    # never a path where the markdown and the manifest disagree about gaps.
+    gaps = all_gaps(snapshot, graph) if gaps is None else gaps
+    sources = other_sources(graph) if sources is None else sources
     counts = Counter(f.severity for f in findings)
     live = sum(1 for u in snapshot.users if u.status != "DEPROVISIONED")
     activity = (
@@ -100,6 +151,7 @@ def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[s
         f"{len(snapshot.groups)} groups, {len(snapshot.apps)} apps",
         f"- **Activity checked from:** {activity}",
         f"- **HR roster:** {roster}",
+        *[f"- **Also read:** {s.source} ({s.principals} principals, read {s.collected_at[:10]})" for s in sources],
         f"- **Tool:** okta-access-review {__version__} (read-only)",
         "",
         "## Summary",
@@ -109,10 +161,10 @@ def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[s
     ]
     lines += [f"| {s} | {counts.get(s, 0)} |" for s in SEVERITIES]
     if skipped:
-        lines += ["", f"Skipped (no HR roster provided): {', '.join(skipped)}"]
-    if snapshot.gaps:
+        lines += ["", f"Skipped (needs data this run did not have): {', '.join(skipped)}"]
+    if gaps:
         lines += ["", "## ⚠️ Data gaps", "", "This review is incomplete. Fix these before relying on it:", ""]
-        lines += [f"- {g}" for g in snapshot.gaps]
+        lines += [f"- {g}" for g in gaps]
 
     lines += ["", "## Findings", ""]
     aged = bool(history and history.reviews)
@@ -221,6 +273,7 @@ def write_report(
     roster_path: Path | None = None,
     history: History | None = None,
     extra_files: dict[str, str] | None = None,
+    graph: IdentityGraph | None = None,
 ) -> Path:
     """extra_files are {name: text} written into the run folder before the
     manifest, so they are hashed with everything else (e.g. review_items.json)."""
@@ -243,15 +296,23 @@ def write_report(
     else:
         (run_dir / "roster.csv").unlink(missing_ok=True)  # don't hash a stale copy from an earlier run
     roster_text = roster_label(roster)
+    # Computed once. Every artifact this function writes -- the markdown, the
+    # PDF and the manifest's signed `complete` flag -- is the same answer.
+    gaps = all_gaps(snapshot, graph)
+    sources = other_sources(graph)
 
-    (run_dir / "report.md").write_text(render_markdown(snapshot, findings, skipped, as_of, roster_text, history))
+    (run_dir / "report.md").write_text(
+        render_markdown(snapshot, findings, skipped, as_of, roster=roster_text, history=history,
+                        gaps=gaps, sources=sources)
+    )
     finding_rows = [_finding_row(f) for f in findings]
     _write_csv(run_dir / "findings.csv", finding_rows, FINDING_COLUMNS)
     matrix = access_matrix(snapshot)
     _write_csv(run_dir / "access_matrix.csv", matrix, MATRIX_COLUMNS)
     write_pdf(run_dir / "report.pdf", snapshot, findings, skipped, as_of, matrix,
               Branding.from_config(config.branding), roster_label=roster_text,
-              history_note=HISTORY_NOTE if history and history.reviews else "")
+              history_note=HISTORY_NOTE if history and history.reviews else "",
+              gaps=gaps, sources=sources)
     (run_dir / "snapshot.json").write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n")
     for name, text in extra_files.items():
         (run_dir / name).write_text(text)
@@ -267,8 +328,12 @@ def write_report(
         "skipped_checks": skipped,
         "activity_since": snapshot.to_dict()["activity_since"],
         "app_usage_since": snapshot.to_dict()["app_usage_since"],
-        "complete": not snapshot.gaps,
-        "data_gaps": snapshot.gaps,
+        # Every source, not just Okta: a manifest that called a review complete
+        # while another source failed would be signed-off evidence of a claim
+        # nobody checked.
+        "complete": not gaps,
+        "data_gaps": gaps,
+        "sources": [s._asdict() for s in sources],
         "history": history.manifest_block() if history is not None else None,
         "files": {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
