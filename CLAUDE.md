@@ -122,6 +122,15 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   exists for. `items.CROSS_SOURCE` is the person-level item that catches them. It settles by
   acknowledging (`ACKNOWLEDGE_ONLY`, like `HR_RECORD`): this review cannot change another source,
   and the finding's own ticket tracks the fix.
+- A cross-source concern goes in `ReviewItem.outside_okta`, never in `.concerns`. It is on every one
+  of that person's items by design, and `.concerns` is what `tickets.open_revokes` copies as the work
+  a ticket covers -- a ticket that closes when the daily check re-reads **Okta**, which cannot see
+  whether a GitHub owner role is gone. Listed there, one untouchable finding was signed off as fixed
+  once per revoke ticket by something that never looked. The reviewer still sees both
+  (`slack_review.card_lines` puts `outside_okta` first: it is the part no other screen in the review
+  reaches and the part the decision cannot change), and the ticket names it under "Not part of this
+  ticket". Anything that can land there must be in `FIX_CHECKS`, or the claim that it has its own
+  ticket is false; `test_every_graph_backed_check_can_actually_open_a_ticket` guards that.
 - A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
   emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
   because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.

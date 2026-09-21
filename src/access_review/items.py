@@ -56,8 +56,8 @@ ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
 # files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
 ITEMS_FILE = "review_items.json"
-FORMAT = 2  # 2 added name, facts and concerns; format 1 files (earlier runs) still load
-READABLE_FORMATS = (1, 2)
+FORMAT = 3  # 2 added name, facts and concerns; 3 split outside_okta out of concerns
+READABLE_FORMATS = (1, 2, 3)
 # Findings about a person that matter for every piece of their access. AR-11
 # (admin user) only matters on admin items, AR-14 on the one unused app, and
 # AR-10 is about API clients, not people.
@@ -94,11 +94,19 @@ class ReviewItem:
     name: str = ""
     facts: tuple[str, ...] = ()
     concerns: tuple[str, ...] = ()
+    # Concerns about access in another source, kept apart from `concerns`
+    # because deciding this item cannot settle any of them. Everything in
+    # `concerns` is either about this access or about the person in Okta, so a
+    # revoke ticket can carry it and the daily Okta re-check can close it.
+    # These cannot be closed that way, and a ticket listing them alongside the
+    # rest asserts that removing an Okta assignment dealt with a credential
+    # Okta has never been able to see.
+    outside_okta: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict) -> ReviewItem:
         fields = {k: d[k] for k in cls.__dataclass_fields__ if k in d}
-        for k in ("facts", "concerns"):
+        for k in ("facts", "concerns", "outside_okta"):
             fields[k] = tuple(fields.get(k, ()))
         item = cls(**fields)
         if item.proposed not in PROPOSALS or item.reviewer not in (ADMIN, CISO):
@@ -191,16 +199,13 @@ def _worst_first(concerns: list[tuple[str, str]]) -> list[str]:
     return [text for _, text in sorted(concerns, key=lambda c: SEVERITIES.index(c[0]))]
 
 
-def concerns_for(findings, user: User, kind: str, app: App | None,
-                 graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None = None) -> list[str]:
-    """Why this access could be an issue: the findings about this person, the
-    findings about this access specifically, and the findings about what they
-    hold in another source entirely.
+def concerns_for(findings, user: User, kind: str, app: App | None) -> list[str]:
+    """Why this access could be an issue, from what Okta and HR say: the
+    findings about this person and the findings about this access specifically.
 
-    That last group is the point of the cross-source checks. A reviewer
-    approving someone's Okta access while they still hold a write-capable
-    credential somewhere Okta deactivation never reaches is approving half a
-    picture, and this is the only screen where the decision is actually made.
+    Only findings a decision here can act on. What the person holds in another
+    source goes to `outside_okta_concerns`, which the reviewer sees just as
+    plainly and a ticket treats differently.
     """
     login = user.login.lower()
     out: list[tuple[str, str]] = []
@@ -212,12 +217,34 @@ def concerns_for(findings, user: User, kind: str, app: App | None,
             out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-14" and app is not None and subject == f"{login} / {app.label.lower()}":
             out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
-    identity = identity_key(user)
-    if identity and graph_by_identity:
-        for f, link in graph_by_identity.get(identity, ()):
-            basis = LINK_BASIS.get(link.method, str(link.method))
-            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title}; tied to them by {basis})"))
     return _worst_first(out)
+
+
+def outside_okta_concerns(
+    user: User, graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None
+) -> list[str]:
+    """What this person holds in another source entirely.
+
+    The point of the cross-source checks. A reviewer approving someone's Okta
+    access while they still hold a write-capable credential somewhere Okta
+    deactivation never reaches is approving half a picture, and this is the only
+    screen where the decision is actually made -- so it belongs on every one of
+    their items.
+
+    It is a separate list because appearing on every item also means appearing
+    in every revoke ticket built from one, and those close when the daily check
+    re-reads Okta. Okta cannot show whether a GitHub owner role is gone, so a
+    ticket that listed this with the rest and then closed on an Okta re-check
+    would be signing off a fix nothing verified.
+    """
+    identity = identity_key(user)
+    if not identity or not graph_by_identity:
+        return []
+    return _worst_first([
+        (f.severity, f"{f.detail} ({f.check_id} {f.title}; tied to them by "
+                     f"{LINK_BASIS.get(link.method, str(link.method))})")
+        for f, link in graph_by_identity.get(identity, ())
+    ])
 
 
 # What an admin role lets someone do, said plainly, for the reviewer.
@@ -253,8 +280,8 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
             target_id, target, via, proposed, reason, CISO,
             name=user.name, facts=tuple(facts),
-            concerns=tuple(role_concern(kind, target)
-                           + concerns_for(findings, user, kind, app, graph_by_identity)),
+            concerns=tuple(role_concern(kind, target) + concerns_for(findings, user, kind, app)),
+            outside_okta=tuple(outside_okta_concerns(user, graph_by_identity)),
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
@@ -298,7 +325,8 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
 def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
     return json.dumps(
         {"format": FORMAT, "review_date": as_of.isoformat(), "app_unused_days": unused_days,
-         "items": [{**asdict(i), "facts": list(i.facts), "concerns": list(i.concerns)} for i in items]},
+         "items": [{**asdict(i), "facts": list(i.facts), "concerns": list(i.concerns),
+                    "outside_okta": list(i.outside_okta)} for i in items]},
         indent=2,
     ) + "\n"
 

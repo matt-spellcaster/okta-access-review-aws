@@ -72,16 +72,26 @@ def describe(item: ReviewItem) -> str:
     if item.kind == HR_RECORD:
         return f"{who} · *No HR record* (flag for HR; no ticket)"
     if item.kind == CROSS_SOURCE:
-        return f"{who} · *Access outside Okta* (nothing left in Okta; see the concerns below)"
+        return f"{who} · *Access outside Okta* (nothing left in Okta itself)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
 def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
-    """The facts, then why it could be an issue, then the proposal."""
+    """The facts, then why it could be an issue, then the proposal.
+
+    Access outside Okta gets its own block above the rest. Not buried below it:
+    it is the part of the picture no other screen in this review reaches, and
+    it is the part deciding this item cannot change.
+    """
     lines = [describe(item), "*Facts*"]
     lines += [f"• {_esc(f)}" for f in item.facts] or ["• (not recorded for this review)"]
+    if item.outside_okta:
+        lines.append("*Access outside Okta* — deciding this item does not change it; "
+                     "each of these gets its own ticket")
+        lines += [f"• :warning: {_esc(c)}" for c in item.outside_okta]
     lines.append("*Why it could be an issue*")
-    lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or ["• Nothing flagged."]
+    lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or \
+        [f"• Nothing {'else ' if item.outside_okta else ''}flagged."]
     if ticket:
         lines.append(f"• :ticket: Leaver ticket {ticket_link(ticket)}")
     if item.kind in ACKNOWLEDGE_ONLY:
@@ -188,6 +198,8 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
         for fact in item.facts:
             if fact.startswith(("Okta:", "Access:")):
                 lines.append(f"      {_esc(fact)}")
+        for concern in item.outside_okta:
+            lines.append(f"      :warning: outside Okta, not changed by this decision: {_esc(concern)}")
         for concern in item.concerns:
             lines.append(f"      :warning: {_esc(concern)}")
         why = []

@@ -114,6 +114,12 @@ def signed_review(tmp_path):
     return rem, session, run, s3
 
 
+def _paragraphs(description: dict) -> list[str]:
+    """Each paragraph of an ADF description as one string."""
+    return ["".join(node.get("text", "") for node in para.get("content", []))
+            for para in description["content"]]
+
+
 def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     rem, session, run, s3 = signed_review
     manifest = json.loads((run.run_dir / "manifest.json").read_text())
@@ -298,6 +304,48 @@ def test_cross_source_findings_get_remediation_tickets(graph_review):
     victor = next(f for f in session.issues.values()
                   if "github:acme-eng/U_kgDOBq1cZy" in f["summary"])
     assert "victor-nguyen" in json.dumps(victor["description"])
+
+
+def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_review):
+    """The ticket closes when the daily check re-reads Okta, and Okta cannot see
+    whether a GitHub owner role is gone. marcus.lee's AR-17 concern is on every
+    one of his items, so it used to be copied into every one of his revoke
+    tickets as a plain "Concern:" -- each of them then closed as verified over a
+    credential nothing re-read. It is still named, under its own heading, as work
+    this ticket does not cover."""
+    rem, session, run, _ = graph_review
+    items = {i.key: i for i in run.items}
+    mine = {k: i for k, i in items.items() if i.user.startswith("marcus.lee")}
+    assert any(i.outside_okta for i in mine.values()), "no cross-source concern to scope"
+    rem.open_revokes(run.run_dir.name, "UAR-99", items,
+                     {k: {"decision": REVOKE, "reason": ""} for k in mine})
+    tickets = [f["description"] for f in session.issues.values()
+               if f["summary"].endswith("for marcus.lee@acme.example")]
+    assert tickets, "marcus.lee got no revoke ticket"
+    for description in tickets:
+        lines = _paragraphs(description)
+        assert any("AR-17" in ln for ln in lines), "the reviewer's evidence must not be dropped"
+        # Not as a "Concern:", which is the list this ticket's Okta re-check settles.
+        assert not [ln for ln in lines if ln.startswith("Concern: ") and "AR-17" in ln], lines
+        assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+        assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
+        # The closing promise still stands, because it now covers only the Okta change.
+        assert any("the next daily check confirms it in Okta" in ln for ln in lines)
+    # And the claim that each has its own ticket is what
+    # test_every_graph_backed_check_can_actually_open_a_ticket guards.
+
+
+def test_an_okta_only_revoke_ticket_says_nothing_about_other_sources(signed_review):
+    """No graph, so nothing is held outside Okta as far as this review knows.
+    The scoping paragraph must not appear and imply otherwise."""
+    rem, session, run, _ = signed_review
+    items = {i.key: i for i in run.items}
+    rem.open_revokes(run.run_dir.name, "UAR-99", items,
+                     {k: {"decision": REVOKE, "reason": ""} for k, i in items.items()
+                      if i.proposed == REVOKE})
+    lines = [ln for f in session.issues.values() for ln in _paragraphs(f["description"])]
+    assert lines
+    assert not [ln for ln in lines if ln.startswith(("Not part of this ticket", "Outside Okta"))]
 
 
 def test_cross_source_checks_settle_by_reviewer_until_their_sources_can_be_reverified():

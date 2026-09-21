@@ -191,6 +191,14 @@ class Remediation:
                     f"Why: {final[key].get('reason') or item.reason}",
                     *[f"Fact: {f}" for f in item.facts],
                     *[f"Concern: {c}" for c in item.concerns],
+                    # Access in another source is named but held outside this
+                    # ticket's scope. The closing line below promises the daily
+                    # check confirms the fix in Okta, and Okta cannot see
+                    # whether a GitHub owner role is gone -- so listing these as
+                    # plain concerns had this ticket close as verified over a
+                    # credential nothing re-read. Each has its own ticket
+                    # (FIX_CHECKS), which is what settles it.
+                    *_outside_okta(item),
                     f"Decided in the access review {run} and signed off by the CISO.",
                     [("Review item: ", None), (key, "code")],
                     "Resolve this ticket once done; the next daily check confirms it in Okta.",
@@ -236,6 +244,19 @@ class Remediation:
             })
             created += new
         return created
+
+
+def _outside_okta(item: ReviewItem) -> list:
+    """The paragraphs naming what this person holds elsewhere, or none."""
+    if not item.outside_okta:
+        return []
+    return [
+        [("Not part of this ticket: ", "strong"),
+         ("they also hold access outside Okta. Making this Okta change does not remove it, and the "
+          "daily check that closes this ticket cannot see it. Each of the findings below has its own "
+          "ticket under the same review ticket; resolve this one on the Okta change alone.", None)],
+        *[f"Outside Okta: {c}" for c in item.outside_okta],
+    ]
 
 
 def _sentence(text: str) -> str:
