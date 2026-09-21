@@ -19,7 +19,15 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
-from .checks import ReviewContext, app_usage_covers, records_sign_ins
+from .checks import (
+    SEVERITIES,
+    Finding,
+    ReviewContext,
+    app_usage_covers,
+    graph_findings_by_identity,
+    records_sign_ins,
+)
+from .identity import Link, LinkMethod, identity_key
 from .models import App, User
 
 KEEP, REVOKE, DECIDE = "keep", "revoke", "decide"
@@ -41,6 +49,15 @@ READABLE_FORMATS = (1, 2)
 # (admin user) only matters on admin items, AR-14 on the one unused app, and
 # AR-10 is about API clients, not people.
 PERSON_CHECKS = ("AR-01", "AR-02", "AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-12", "AR-13")
+# What a link method means, for a reviewer deciding how much weight to give it.
+# The ladder is named evidence rather than a score precisely so this can be
+# said in words at the point where someone acts on it.
+LINK_BASIS = {
+    LinkMethod.SSO_IDENTITY: "the identity provider's own assertion",
+    LinkMethod.VERIFIED_EMAIL: "an email address the source itself states is verified",
+    LinkMethod.DECLARED: "a register entry someone signed up to",
+    LinkMethod.CREATOR: "an audit record of who created it, so accountable rather than necessarily the owner",
+}
 
 
 class ItemsError(ValueError):
@@ -150,20 +167,44 @@ def access_fact(ctx: ReviewContext, user: User, kind: str, target: str, via: str
     return line
 
 
-def concerns_for(findings, user: User, kind: str, app: App | None) -> list[str]:
-    """Why this access could be an issue: the findings about this person, and
-    about this access specifically."""
+def _worst_first(concerns: list[tuple[str, str]]) -> list[str]:
+    """Order finding-derived concerns by severity, worst first.
+
+    The reviewer reads the top of the list. A critical finding about access
+    Okta cannot reach is the single most useful thing on the screen and must
+    not sit below three medium notes. Stable within a severity, so the order
+    findings already came in is kept.
+    """
+    return [text for _, text in sorted(concerns, key=lambda c: SEVERITIES.index(c[0]))]
+
+
+def concerns_for(findings, user: User, kind: str, app: App | None,
+                 graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None = None) -> list[str]:
+    """Why this access could be an issue: the findings about this person, the
+    findings about this access specifically, and the findings about what they
+    hold in another source entirely.
+
+    That last group is the point of the cross-source checks. A reviewer
+    approving someone's Okta access while they still hold a write-capable
+    credential somewhere Okta deactivation never reaches is approving half a
+    picture, and this is the only screen where the decision is actually made.
+    """
     login = user.login.lower()
-    out = []
+    out: list[tuple[str, str]] = []
     for f in findings:
         subject = f.subject.lower()
         if f.check_id in PERSON_CHECKS and subject == login:
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-11" and subject == login and kind in ("admin_role", "admin_group"):
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
         elif f.check_id == "AR-14" and app is not None and subject == f"{login} / {app.label.lower()}":
-            out.append(f"{f.detail} ({f.check_id} {f.title})")
-    return out
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title})"))
+    identity = identity_key(user)
+    if identity and graph_by_identity:
+        for f, link in graph_by_identity.get(identity, ()):
+            basis = LINK_BASIS.get(link.method, str(link.method))
+            out.append((f.severity, f"{f.detail} ({f.check_id} {f.title}; tied to them by {basis})"))
+    return _worst_first(out)
 
 
 # What an admin role lets someone do, said plainly, for the reviewer.
@@ -197,9 +238,11 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
             target_id, target, via, proposed, reason, CISO,
             name=user.name, facts=tuple(facts),
-            concerns=tuple(role_concern(kind, target) + concerns_for(findings, user, kind, app)),
+            concerns=tuple(role_concern(kind, target)
+                           + concerns_for(findings, user, kind, app, graph_by_identity)),
         )
 
+    graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
     no_hr_record = {f.subject.lower() for f in findings if f.check_id == "AR-03"}
     items: list[ReviewItem] = []

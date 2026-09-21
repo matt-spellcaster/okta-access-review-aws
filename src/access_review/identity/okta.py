@@ -126,6 +126,22 @@ def _index_events(snapshot: Snapshot) -> tuple[dict[str, tuple[ActivityEvent, Us
     return creators, last_token
 
 
+def identity_key(user: User) -> str:
+    """The identity key an Okta user's principals link to.
+
+    The profile's own email attribute, lowercased, and never `User.email`,
+    which falls back to the login when the profile has no email. An identity
+    key built from that fallback merges two accounts the moment one person's
+    login is another person's email address, and a merged identity reports a
+    credential as accounted for by the wrong person.
+
+    Empty when the profile has no email: that is a user who cannot be joined
+    across sources, not a user who owns every unattributed principal. Callers
+    must treat "" as no identity rather than as a key.
+    """
+    return (user.profile.get("email") or "").strip().lower()
+
+
 def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = None) -> IdentityGraph:
     """Turn a snapshot into a one-source graph.
 
@@ -157,7 +173,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
                 # The profile attribute only, for the same reason the link key is:
                 # User.email falls back to the login, and a field named email that
                 # holds a login is the join bug waiting to happen again.
-                email=(user.profile.get("email") or "").strip().lower(),
+                email=identity_key(user),
                 created=user.created,
                 last_used=user.last_login,
             )
@@ -165,10 +181,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
         if service:
             links.append(Link(key, LinkMethod.DECLARED, "", "declared a service account in the review config"))
         else:
-            # The profile attribute only. User.email falls back to the login,
-            # and keying an identity on that merges two accounts whenever one
-            # person's login is another person's email address.
-            profile_email = (user.profile.get("email") or "").strip().lower()
+            profile_email = identity_key(user)
             if profile_email:
                 links.append(Link(key, LinkMethod.SSO_IDENTITY, profile_email, f"Okta user {user.login}"))
         for role in user.admin_roles or []:
@@ -263,7 +276,7 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
         found = creators.get(app.client_id)
         if found:
             event, creator = found
-            creator_email = (creator.profile.get("email") or "").strip().lower()
+            creator_email = identity_key(creator)
             if creator_email:
                 links.append(
                     Link(

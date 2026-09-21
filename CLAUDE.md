@@ -100,6 +100,19 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   allowlist here is the requirement the collector must meet, per `ActivityEvent.from_okta`.
 - Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
   "decide" instead.
+- A cross-source finding reaches the reviewer through `checks.graph_findings_by_identity`, which goes
+  subject -> principal -> strongest link -> identity. Never match a graph finding to a person by
+  login, label or email similarity: the link already carries the evidence. A principal that is
+  unlinked or contested, or declared with nobody named, reaches no one's review item -- putting it
+  on somebody's screen would assert the attribution the graph refused to make. `GRAPH_CHECKS` is
+  derived from `CHECKS`, not listed, so a new graph check cannot be printed in the report and
+  missing from the screen that settles it.
+- A departure bundle (`transitions.py`) is per identity, never per account, and takes the review's
+  gaps from `ReviewRun.gaps` rather than deciding completeness itself. `build_transitions` returns
+  None when there was no graph or no roster: "nobody left" and "nothing looked" are different
+  answers, and an empty list reports every departure clean. Bundles carry personal data, so they go
+  in the run folder, the PDF and JSM; `transitions.summary` is the counts-only shape for Slack and
+  Step Functions. Walk users in login order -- evidence that changes with API paging is not evidence.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
   change a hashed file, and never send anything. History must never count a review it couldn't
   verify against its manifest; when unsure, count lower. `reopened` ("Back again") asserts a

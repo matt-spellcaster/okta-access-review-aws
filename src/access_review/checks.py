@@ -25,7 +25,17 @@ from .models import (
     Snapshot,
     User,
 )
-from .identity import OKTA, Credential, IdentityGraph, Principal, PrincipalKind, Status
+from .identity import (
+    OKTA,
+    Credential,
+    GrantKind,
+    IdentityGraph,
+    Link,
+    Principal,
+    PrincipalKind,
+    Status,
+    identity_key,
+)
 from .roster import RosterEntry, entry_for
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -439,7 +449,7 @@ def _unused_app_assignment(ctx: ReviewContext, check: Check) -> list[Finding]:
     return out
 
 
-def _subject(principal: Principal) -> str:
+def graph_subject(principal: Principal) -> str:
     """Source-qualified, and keyed on the source's own id, always.
 
     Ticket identity is (check_id, subject) and `tickets.ticket_label` hashes it
@@ -451,6 +461,45 @@ def _subject(principal: Principal) -> str:
     which is what the ticket body and the PDF show.
     """
     return f"{principal.source}/{principal.id}"
+
+
+def graph_findings_by_identity(
+    graph: IdentityGraph | None, findings
+) -> dict[str, list[tuple[Finding, Link]]]:
+    """Cross-source findings grouped by the person they are about.
+
+    A graph finding's subject is `{source}/{principal.id}` and says nothing
+    about who the principal belongs to, so getting from a finding back to a
+    person means going through the graph: subject to principal, principal to
+    its strongest link, link to an identity. Nothing is matched on a name or
+    an email here -- the link already carries the evidence, and this only
+    reads it.
+
+    Subjects are compared against `graph_subject` over the graph's own
+    principals rather than parsed. Splitting `{source}/{id}` back apart would
+    be a second, separate opinion about the format, and the day a source name
+    contains a slash it would be a wrong one.
+    """
+    if graph is None:
+        return {}
+    principals = {graph_subject(p): p for p in graph.principals}
+    out: dict[str, list[tuple[Finding, Link]]] = {}
+    for f in findings:
+        if f.check_id not in GRAPH_CHECKS:
+            continue
+        principal = principals.get(f.subject)
+        if principal is None:
+            continue
+        link = graph.link_for(principal.key)
+        # Unlinked or contested, or declared with nobody named: there is no
+        # person to show this to. It is still in the report and still gets a
+        # ticket -- AR-15 exists for exactly this -- but it cannot be put on
+        # somebody's review item without inventing the attribution the graph
+        # deliberately refused to make.
+        if link is None or not link.identity:
+            continue
+        out.setdefault(link.identity, []).append((f, link))
+    return out
 
 
 def _credential_evidence_complete(graph: IdentityGraph, source: str) -> bool:
@@ -542,7 +591,7 @@ def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
         # case. Dormant is a cleanup; this is an investigation. Unknown counts
         # as the worse branch on both axes -- see _write_access, _maybe_recent.
         severity = "high" if writes and recent else "medium" if writes or recent else "low"
-        out.append(check.finding(_subject(principal), detail, severity=severity))
+        out.append(check.finding(graph_subject(principal), detail, severity=severity))
     return out
 
 
@@ -566,13 +615,27 @@ def _access_without_an_account(ctx: ReviewContext, check: Check) -> list[Finding
         if not parts:
             continue
         out.append(check.finding(
-            _subject(principal),
+            graph_subject(principal),
             f"{principal.label} holds {'; '.join(parts)}, but the account was not returned by the "
             f"{principal.source} user read.",
             # Unknown write access is not the milder case: see _write_access.
             severity="high" if _write_access(credentials, known) is not False else "medium",
         ))
     return out
+
+
+def _elevated_roles(graph: IdentityGraph, principal: Principal) -> list[str]:
+    """Role grants a source records for this principal.
+
+    A projection only emits a ROLE grant where the role is above ordinary
+    membership, so this is the power a departure leaves behind that no
+    credential list shows. An organization owner can add collaborators, change
+    settings and turn off branch protection whether or not any token they hold
+    can write, so a finding that named only their credentials would describe
+    the smaller half of the problem.
+    """
+    return sorted({g.target_label or g.target for g in graph.grants_for(principal.key)
+                   if g.kind is GrantKind.ROLE})
 
 
 def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Finding]:
@@ -588,7 +651,7 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
     # ticket label, and an inflated critical count in the Slack summary.
     leavers: dict[str, RosterEntry] = {}
     for user, entry in _leavers(ctx):
-        identity = (user.profile.get("email") or "").strip().lower()
+        identity = identity_key(user)
         if identity:
             leavers.setdefault(identity, entry)
     for identity, entry in leavers.items():
@@ -601,11 +664,18 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
             credentials = graph.credentials_for(principal.key)
             known = _credential_evidence_complete(graph, principal.source)
             held = _describe(credentials, ctx.as_of)
+            roles = _elevated_roles(graph, principal)
             detail = (f"{_left_on(entry)}, but {principal.source} still shows {principal.label} "
                       f"{principal.source_status or 'with access'}")
-            detail += f" holding {held}." if held else "."
+            carries = []
+            if roles:
+                carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
+                               else f"the {', '.join(roles)} roles")
+            if held:
+                carries.append(held)
+            detail += f" holding {' and '.join(carries)}." if carries else "."
             out.append(check.finding(
-                _subject(principal), detail,
+                graph_subject(principal), detail,
                 # Unknown write access is not the milder case: see _write_access.
                 severity="critical" if _write_access(credentials, known) is not False else "high",
             ))
@@ -735,6 +805,12 @@ CHECKS: list[Check] = [
         _leaver_access_outside_okta, needs_graph=True, needs_roster=True,
     ),
 ]
+
+
+# Checks that read the graph. Derived from the registry rather than listed, so a
+# new one reaches everything downstream -- the reviewer's screen, the departure
+# bundle -- without a second list to remember.
+GRAPH_CHECKS = tuple(c.id for c in CHECKS if c.needs_graph)
 
 
 def run_checks(ctx: ReviewContext) -> tuple[list[Finding], list[str]]:
