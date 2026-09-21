@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from . import csvsafe
 from .checks import Finding
 
 MAX_FINDINGS_BYTES = 50 * 1024 * 1024
@@ -112,7 +113,8 @@ def _finding_keys(folder: Path, manifest: dict) -> tuple[set[tuple[str, str]] | 
             reader = csv.DictReader(f)
             if not {"check_id", "subject"} <= set(reader.fieldnames or []):
                 return None, "findings.csv has no check_id and subject columns"
-            return {(row["check_id"], subject_key(row["subject"] or "")) for row in reader}, ""
+            return {(csvsafe.value(row["check_id"]), subject_key(csvsafe.value(row["subject"] or "")))
+                    for row in reader}, ""
     except (OSError, UnicodeDecodeError, csv.Error):
         return None, "findings.csv can't be read"
 

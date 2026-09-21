@@ -13,7 +13,7 @@ from access_review.items import DECIDE, KEEP
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
-from access_review.state import CLOSED, load_state
+from access_review.state import CLOSED, load_state, update_state
 from access_review.tickets import Remediation
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -34,6 +34,10 @@ class FakeJira:
         for key, f in self.issues.items():
             if 'labels = "uar-key-' in jql and jql.split('labels = "')[1].rstrip('"') not in f["labels"]:
                 continue
+            if "labels in (" in jql:
+                wanted = jql.split("labels in (")[1].split(")")[0].replace('"', "").split(", ")
+                if not set(wanted) & set(f["labels"]):
+                    continue
             if "statusCategory = Done" in jql and not f.get("done"):
                 continue
             if "statusCategory != Done" in jql and f.get("done"):
@@ -266,3 +270,57 @@ def test_a_leaver_with_a_working_api_client_is_not_cleared(world):
     assert leavers(unread) is None
     clock.now += timedelta(days=1)
     assert watch.daily(deps, jira, unread, None) == {"verified": 0, "still_present": 0}
+
+
+def test_the_hourly_check_reposts_a_lost_approve_message(world):
+    deps, run, items, clock, jira, snapshot = world
+    src = {"channel": "D0CISO00001"}
+    workflow.confirm(deps, run, R.ciso, src)
+    for key, item in items.items():
+        if item.proposed == DECIDE:
+            workflow.record(deps, run, [(key, KEEP, "")], R.ciso, src)
+
+    def approves():
+        return [p for _, p, _ in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
+
+    assert len(approves()) == 1
+    # As if a worker had claimed the post and died before sending it.
+    update_state(deps.s3, "work", run, lambda s: s.update(approve={"claimed": "2026-09-16T09:00:00Z"}))
+    clock.now = OPENED + timedelta(minutes=30)
+    watch.hourly(deps, jira)
+    assert len(approves()) == 1  # too soon: that worker may still be posting
+    clock.now = OPENED + timedelta(hours=2)
+    watch.hourly(deps, jira)
+    assert len(approves()) == 2
+    assert load_state(deps.s3, "work", run)[0]["approve"]["ts"]
+
+
+def test_a_fix_ticket_is_not_verified_when_its_data_could_not_be_read(world):
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    mfa = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+               if r["kind"] == "finding" and r["check_id"] == "AR-04")
+    jira.issues[mfa["issue"]]["done"] = True
+    unread = copy.deepcopy(snapshot)
+    unread.gaps.append("Could not read MFA factors; AR-04 may be incomplete.")
+
+    assert watch.daily(deps, jira, unread, leavers(unread), current=set())["verified"] == 0
+    assert watch.daily(deps, jira, snapshot, leavers(snapshot), current=set())["verified"] == 1
+
+
+def test_resolved_tickets_are_found_however_many_the_project_holds(world):
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    old = {f"OLD-{n}": {"labels": ["access-review", f"uar-key-{n:012x}"], "done": True} for n in range(1200)}
+    jira.issues = {**old, **jira.issues}  # years of resolved tickets, listed first
+    lee = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+               if r.get("item_key") and items[r["item_key"]].target == "Salesforce"
+               and items[r["item_key"]].user.startswith("lee.chen"))
+    jira.issues[lee["issue"]]["done"] = True
+    fresh = copy.deepcopy(snapshot)
+    next(a for a in fresh.apps if a.label == "Salesforce").users.discard("u05")
+    asked, real = [], jira.search
+    jira.search = lambda jql, fields, limit=1000: asked.append(jql) or real(jql, fields, limit)
+
+    assert watch.daily(deps, jira, fresh, leavers(fresh))["verified"] == 1
+    assert asked and all("labels in (" in jql for jql in asked)  # by label, never the whole project

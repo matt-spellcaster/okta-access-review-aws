@@ -24,6 +24,7 @@ Channel posts carry counts only; ticket keys and names go to the CISO's DM.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from . import slack_review as msgs
@@ -32,9 +33,22 @@ from .decisions import outstanding
 from .jira import adf
 from .models import LIVE_STATUSES, Snapshot
 from .state import CLOSED, OPEN, SIGNED_OFF, claim_once, load_state, runs_with_status, update_state
-from .workflow import Deps, current_decisions, load_run, post_to_channel, refresh_checklist, send_callback
+from .workflow import (
+    Deps,
+    current_decisions,
+    load_run,
+    maybe_ready,
+    post_to_channel,
+    refresh_checklist,
+    send_callback,
+)
 
 REMINDERS = ((3, "reminder"), (6, "due tomorrow"))
+# Ticket labels, as tickets.ticket_label makes them; anything else never reaches a JQL query.
+LABEL_RE = re.compile(r"^uar-key-[0-9a-f]{12}$")
+LABEL_BATCH = 50
+# A worker claims the Approve post before sending it; a claim this old with no message behind it is dead.
+CLAIM_TIMEOUT = timedelta(hours=1)
 
 
 def _t(value: str) -> datetime:
@@ -56,7 +70,13 @@ def hourly(deps: Deps, jira=None) -> dict:
         final = current_decisions(deps, data)
         left = len(outstanding(data.items, final))
         if not left:
-            continue  # waiting on the CISO's Approve, which has its own message
+            # Waiting on the CISO's Approve, which has its own message -- unless
+            # that message never made it out (record() failed after the last
+            # decision, or a worker died mid-post), in which case post it now.
+            if _approve_lost(state, now):
+                update_state(deps.s3, deps.work_bucket, run, lambda s: s.update(approve=None))
+                maybe_ready(deps, data, final)
+            continue
         opened, due = _t(state["opened_at"]), _t(state["due_at"])
         age = now - opened
         for days, what in REMINDERS:
@@ -102,6 +122,17 @@ def hourly(deps: Deps, jira=None) -> dict:
     return sent
 
 
+def _approve_lost(state: dict, now: datetime) -> bool:
+    """Every item is decided, but no Approve message is on record."""
+    approve = state.get("approve")
+    if approve is None:
+        return True
+    if approve.get("ts"):
+        return False
+    claimed = approve.get("claimed")
+    return not isinstance(claimed, str) or now - _t(claimed) > CLAIM_TIMEOUT
+
+
 # --- daily verification --------------------------------------------------------
 
 # A leaver still has a way in while any of these report them.
@@ -128,7 +159,8 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     """Is what a ticket asked to fix still there? (present, what was seen);
     present is None when it can't be told from today's data."""
     if record["kind"] == "finding":
-        if current is None:
+        # A finding that is gone because its data couldn't be read today proves nothing.
+        if current is None or any(record["check_id"] in gap for gap in snapshot.gaps):
             return None, {}
         present = (record["check_id"], record["subject"].lower()) in current
         return present, {"finding_still_reported": present}
@@ -155,29 +187,39 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     return present, {"account_status": user.status, "still_present": present}
 
 
+def done_labels(jira, labels: list[str]) -> set[str]:
+    """Which of these ticket labels are on an issue marked done. Asked by label,
+    in batches, so the answer never depends on how many tickets the project has
+    accumulated over the years."""
+    wanted = {label for label in labels if LABEL_RE.match(label)}
+    ordered = sorted(wanted)
+    done: set[str] = set()
+    for n in range(0, len(ordered), LABEL_BATCH):
+        batch = ordered[n:n + LABEL_BATCH]
+        quoted = ", ".join(f'"{label}"' for label in batch)
+        for issue in jira.search(f'project = "{jira.project}" AND labels in ({quoted}) AND statusCategory = Done',
+                                 ["labels"], limit=len(batch)):
+            done.update(label for label in issue["fields"].get("labels", []) if label in wanted)
+    return done
+
+
 def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
           current: set[tuple[str, str]] | None = None) -> dict:
     """leavers is leaver_access() and current is finding_keys() for the same snapshot."""
     now = deps.now()
-    done_labels = {
-        label
-        for issue in jira.search(f'project = "{jira.project}" AND labels = "access-review" AND statusCategory = Done',
-                                 ["labels"], limit=1000)
-        for label in issue["fields"].get("labels", []) if label.startswith("uar-key-")
-    }
     result = {"verified": 0, "still_present": 0}
     for run in runs_with_status(deps.s3, deps.work_bucket, SIGNED_OFF, OPEN):
         tickets = [(n, r) for n, r in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
                    if r.get("kind") in ("leaver", "revoke", "finding")]
         checked = {n for n, _ in store.list_records(deps.s3, deps.evidence_bucket, run, "verifications")}
-        items = load_run(deps, run).items if any(r["kind"] == "revoke" for _, r in tickets) else {}
+        pending = [(n, r) for n, r in tickets if f"{r['label']}-verified.json" not in checked]
+        done = done_labels(jira, [r["label"] for _, r in pending])
+        items = load_run(deps, run).items if any(r["kind"] == "revoke" for _, r in pending) else {}
         unverified = 0
-        for _, rec in tickets:
+        for _, rec in pending:
             label = rec["label"]
-            if f"{label}-verified.json" in checked:
-                continue
             unverified += 1
-            if label not in done_labels:
+            if label not in done:
                 continue
             present, seen = still_present(rec, snapshot, items, leavers, current)
             if present is None:

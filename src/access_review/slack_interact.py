@@ -125,6 +125,7 @@ def _block_action(payload, user, items, bot, enqueue) -> dict:
     value = _json(action.get("value", ""))
     run = _run(value)
     source = _source(payload)
+    chunk = value.get("c")  # which item message the click came from; only that one is redrawn
     if action_id.startswith("decide:"):
         decision = action_id.removeprefix("decide:")
         item = items.get(run).get(str(value.get("k", "")))
@@ -132,10 +133,11 @@ def _block_action(payload, user, items, bot, enqueue) -> dict:
             raise DecisionError("that item isn't part of this review")
         if reason_required(item, decision):
             bot.open_modal(payload.get("trigger_id", ""), msgs.reason_modal(
-                run, item, decision, {"ch": source["channel"], "ts": source["message_ts"], "t": source["team"]}))
+                run, item, decision,
+                {"ch": source["channel"], "ts": source["message_ts"], "t": source["team"], "c": chunk}))
             return OK
         enqueue({"action": "decide", "run": run, "choices": [[item.key, decision, ""]], "user": user,
-                 "source": source})
+                 "source": source, "chunk": chunk})
     elif action_id == "confirm_proposed":
         enqueue({"action": "confirm", "run": run, "user": user, "source": source})
     elif action_id == "approve":
@@ -158,7 +160,7 @@ def _reason_submitted(payload, user, items, enqueue) -> dict:
         raise DecisionError("that item isn't part of this review")
     enqueue({"action": "decide", "run": run, "choices": [[key, decision, reason]], "user": user,
              "source": {"team": str(meta.get("t", "")), "channel": str(meta.get("ch", "")),
-                        "message_ts": str(meta.get("ts", ""))}})
+                        "message_ts": str(meta.get("ts", ""))}, "chunk": meta.get("c")})
     return OK
 
 
@@ -180,7 +182,8 @@ def worker(event: dict, deps) -> dict:
     source = event.get("source") or {}
     try:
         if action == "decide":
-            result = workflow.record(deps, run, [tuple(c) for c in event["choices"]], user, source)
+            result = workflow.record(deps, run, [tuple(c) for c in event["choices"]], user, source,
+                                     chunk=event.get("chunk"))
         elif action == "confirm":
             result = workflow.confirm(deps, run, user, source)
         elif action == "approve":

@@ -214,3 +214,15 @@ def test_extra_files_cannot_replace_evidence_or_escape_the_folder(tmp_path):
         with pytest.raises(ReportError):
             write_report(tmp_path, snapshot, findings, skipped, config, as_of, extra_files={name: "x"})
     assert list(tmp_path.iterdir()) == []
+
+
+def test_spreadsheet_formulas_in_evidence_csvs_are_neutralised(tmp_path):
+    from access_review import csvsafe
+    from access_review.report import _write_csv
+
+    rows = [{"a": '=HYPERLINK("http://x")', "b": "'quoted", "c": "-1", "d": "plain", "e": 3}]
+    _write_csv(tmp_path / "t.csv", rows, ["a", "b", "c", "d", "e"])
+    text = (tmp_path / "t.csv").read_text()
+    assert "'=HYPERLINK" in text and ",''quoted," in text and ",'-1," in text and ",plain," in text
+    [back] = csvsafe.read_rows(text)  # the tool always reads the original value back
+    assert back == {"a": '=HYPERLINK("http://x")', "b": "'quoted", "c": "-1", "d": "plain", "e": "3"}
