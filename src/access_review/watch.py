@@ -13,7 +13,9 @@ daily(snapshot):
     the checks. Done: a "verified" comment, an evidence record, and a tick in
     the approval thread's checklist. Still there: a comment and an alert to the
     CISO. Can't tell from today's data (e.g. the System Log couldn't be read):
-    nothing yet.
+    nothing yet. Fix tickets that asked for a decision rather than a change
+    (tickets.REVIEW_CHECKS) are taken as done the moment they are resolved;
+    there is nothing in Okta to check.
   - once everything under a review is verified, its tracking ticket is closed:
     the only ticket the tool ever moves.
 
@@ -33,6 +35,7 @@ from .decisions import outstanding
 from .jira import adf
 from .models import LIVE_STATUSES, Snapshot
 from .state import CLOSED, OPEN, SIGNED_OFF, claim_once, load_state, runs_with_status, update_state
+from .tickets import verify_mode
 from .workflow import (
     Deps,
     current_decisions,
@@ -187,6 +190,11 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     return present, {"account_status": user.status, "still_present": present}
 
 
+def _verify_mode(rec: dict) -> str:
+    """Ticket records from before the field existed go by their check."""
+    return rec.get("verify") or verify_mode(rec.get("check_id", ""))
+
+
 def done_labels(jira, labels: list[str]) -> set[str]:
     """Which of these ticket labels are on an issue marked done. Asked by label,
     in batches, so the answer never depends on how many tickets the project has
@@ -221,10 +229,22 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
             unverified += 1
             if label not in done:
                 continue
+            stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if rec["kind"] == "finding" and _verify_mode(rec) == "reviewer":
+                # A judgement call: resolving the ticket is the answer, and nothing in Okta can confirm it.
+                store.put_record(deps.s3, deps.evidence_bucket, run, "verifications", f"{label}-verified.json", {
+                    "issue": rec["issue"], "label": label, "checked_at": stamp, "result": "accepted",
+                    "observed": {"resolved_by": "reviewer"},
+                })
+                jira.add_comment(rec["issue"], adf(
+                    f"Resolved on {now.date()}: this ticket asked for a decision, not a change that can be "
+                    f"checked in Okta, so it is taken as done on the reviewer's word."))
+                result["verified"] += 1
+                unverified -= 1
+                continue
             present, seen = still_present(rec, snapshot, items, leavers, current)
             if present is None:
                 continue
-            stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             if not present:
                 store.put_record(deps.s3, deps.evidence_bucket, run, "verifications", f"{label}-verified.json", {
                     "issue": rec["issue"], "label": label, "checked_at": stamp, "result": "removed",

@@ -5,7 +5,7 @@
                    (AR-01/02/12/13), when the review opens, due in 24 hours
     open_revokes   one ticket per Revoke decision, after sign-off, due in 7 days
     open_findings  one ticket per finding that isn't an access decision (no MFA,
-                   no HR record, ...), after sign-off, due in 7 days
+                   an inactive account, ...), after sign-off, due in 7 days
 
 Tickets about a person link to their page in the Okta admin console.
 
@@ -34,12 +34,26 @@ from .okta import admin_url
 LABEL = "access-review"
 # Findings that need a fix but aren't a Keep/Revoke decision: each gets a ticket
 # after sign-off. Leaver findings (AR-01/02/12/13) already have leaver tickets,
-# AR-11 and AR-14 are decided as review items.
-FIX_CHECKS = ("AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10")
+# AR-11 and AR-14 are decided as review items, and AR-03 (no HR record) is
+# acknowledged by the CISO as a review item and raised with HR: never a ticket.
+FIX_CHECKS = ("AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10")
 # A finding at this severity says something could not be checked (AR-04 when MFA
 # enrollment can't be read, AR-13 when HR gave no end date), not that something
 # is wrong. It stays in the report; nobody gets a ticket to "fix" it.
 INFO = "info"
+# Fix tickets whose remediation is a decision, not a change Okta can show: the
+# reviewer may well keep things as they are (confirm an inactive account is
+# still needed, document a contractor's exception, accept an API client's
+# scopes). Resolving one of these is the reviewer's word
+# that it is settled, and the daily check ticks it off without looking at
+# Okta. The other fix checks (no MFA, a bare profile, a disabled account's
+# leftover access) are checked against a fresh snapshot.
+REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10")
+
+
+def verify_mode(check_id: str) -> str:
+    """How the daily check settles a fix ticket: "okta" or "reviewer"."""
+    return "reviewer" if check_id in REVIEW_CHECKS else "okta"
 
 
 def quarter(review_date: str) -> str:
@@ -188,9 +202,17 @@ class Remediation:
                 continue
             subject = f["subject"]
             label = ticket_label("finding", run, f["check_id"], subject.lower())
+            mode = verify_mode(f["check_id"])
+            closing = (
+                f"Found in the access review {run}. Resolve this ticket once you have decided. This is a "
+                f"judgement call, so the daily check takes your word for it and does not look in Okta."
+                if mode == "reviewer" else
+                f"Found in the access review {run}. Resolve this ticket once done; "
+                f"the next daily check confirms the finding is gone."
+            )
             _, new = self._create(run, label, {
                 "kind": "finding", "run": run, "check_id": f["check_id"], "subject": subject, "due": due,
-                "todo": f"{f['title']} ({f['check_id']}) for {subject}: {f['remediation']}",
+                "todo": f"{f['title']} ({f['check_id']}) for {subject}: {f['remediation']}", "verify": mode,
             }, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
@@ -200,8 +222,7 @@ class Remediation:
                     [(f"{f['check_id']} {f['title']}: ", "strong"), (f["detail"], None)],
                     [("To do: ", "strong"), (f["remediation"], None)],
                     self._okta_link(people.get(subject.lower()), subject),
-                    f"Found in the access review {run}. Resolve this ticket once done; "
-                    f"the next daily check confirms the finding is gone.",
+                    closing,
                 ) if p]),
             })
             created += new

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 from . import __version__
 from .attest import MAX_NOTE, check_text
-from .items import DECIDE, KEEP, REVOKE, ReviewItem
+from .items import DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
 
 FORMAT = 1
 DECISIONS = (KEEP, REVOKE)
@@ -82,6 +82,8 @@ def make_decision_record(
             raise DecisionError("that item isn't part of this review")
         if decision not in DECISIONS:
             raise DecisionError(f"decision must be one of {', '.join(DECISIONS)}")
+        if item.kind == HR_RECORD and decision != KEEP:
+            raise DecisionError("an account with no HR record can only be acknowledged; raise it with HR")
         if not reviewers.may_decide(slack_user):
             raise DecisionError("only the CISO can decide items in this review")
         try:
@@ -135,6 +137,8 @@ def consolidate(
         for entry in rec.get("decisions", []):
             item = items.get(entry.get("item_key"))
             if item is None or entry.get("decision") not in DECISIONS:
+                continue
+            if item.kind == HR_RECORD and entry.get("decision") != KEEP:
                 continue
             if not reviewers.may_decide(rec.get("slack_user", "")):
                 continue

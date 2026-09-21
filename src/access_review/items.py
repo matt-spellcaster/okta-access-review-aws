@@ -24,6 +24,13 @@ from .models import App, User
 
 KEEP, REVOKE, DECIDE = "keep", "revoke", "decide"
 PROPOSALS = (KEEP, REVOKE, DECIDE)
+# An account with no HR record (AR-03) is its own item: the CISO acknowledges it
+# and raises it with HR. It is settled outside the review, so acknowledging is
+# recorded as "keep" and no ticket is ever opened for it.
+HR_RECORD = "hr_record"
+HR_REASON = ("No HR record. Raise it with HR: add them to the roster, list them as a service account in the "
+             "config, or have the account deactivated. This is handled outside the review, and no ticket is "
+             "opened for it.")
 # Reviewer roles. Every new item goes to the CISO; "admin" only appears in item
 # files from reviews run before there was a single reviewer.
 ADMIN, CISO = "admin", "ciso"
@@ -43,7 +50,7 @@ class ItemsError(ValueError):
 @dataclass(frozen=True)
 class ReviewItem:
     key: str  # stable across runs for the same access, so decisions and tickets line up
-    kind: str  # "app", "admin_role" or "admin_group"
+    kind: str  # "app", "admin_role", "admin_group" or "hr_record"
     user_id: str
     user: str  # Okta login
     target_id: str
@@ -183,7 +190,9 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     """findings are this review's findings (run_checks); they become each item's concerns."""
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str,
              app: App | None = None) -> ReviewItem:
-        facts = person_facts(ctx, user) + [access_fact(ctx, user, kind, target, via, app)]
+        facts = person_facts(ctx, user)
+        if kind != HR_RECORD:
+            facts.append(access_fact(ctx, user, kind, target, via, app))
         return ReviewItem(
             item_key(kind, user.id, target_id, via), kind, user.id, user.login,
             target_id, target, via, proposed, reason, CISO,
@@ -192,6 +201,7 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
+    no_hr_record = {f.subject.lower() for f in findings if f.check_id == "AR-03"}
     items: list[ReviewItem] = []
     for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
         for app, via in ctx.snapshot.apps_for(user.id):
@@ -208,6 +218,8 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
                     "admin_group", user, group.id, group.name, "direct", DECIDE,
                     "Member of an admin group; confirm it is still needed.",
                 ))
+        if user.login.lower() in no_hr_record:
+            items.append(item(HR_RECORD, user, "hr-record", "HR record", "none", DECIDE, HR_REASON))
 
     keys = [i.key for i in items]
     if len(keys) != len(set(keys)):

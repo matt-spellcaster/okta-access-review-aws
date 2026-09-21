@@ -448,7 +448,8 @@ CHECKS: list[Check] = [
     Check(
         "AR-03", "Account has no HR record", "high",
         ["SOC 2 CC6.2", "ISO 27001 A.5.16"],
-        "Identify the owner. Add to HR, list as a service account, or deactivate.",
+        "Raise with HR: add them to the roster, list them as a service account, or have the account "
+        "deactivated. Handled outside the review; no ticket is opened.",
         _not_in_roster, needs_roster=True,
     ),
     Check(

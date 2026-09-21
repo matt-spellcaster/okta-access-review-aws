@@ -74,8 +74,8 @@ One tracking ticket per review, with the manifest hash and where the evidence is
 ![JSM tracking ticket "Okta Access Review 2026-Q3" with counts, manifest SHA-256 and evidence path](docs/images/jira-tracking-ticket.png)
 
 Under it, one sub-ticket for each leaver, each revoke and each finding to fix. Each links to the
-person in the Okta admin console. The tracking ticket closes itself once the daily check has
-verified all of them.
+person in the Okta admin console. The tracking ticket closes itself once every ticket is resolved
+and, where Okta can show the change, verified by the daily check.
 
 ![JSM sub-tickets: leaver removals, revokes and fixes for the Acme demo](docs/images/jira-subtasks.png)
 
@@ -117,7 +117,7 @@ those and nothing else.
 |---|---|---|---|
 | AR-01 | Terminated in HR, but the account is still live | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
 | AR-02 | Contract or end date has passed | high | SOC 2 CC6.2 · ISO A.5.18 |
-| AR-03 | Account with no HR record (service accounts can be listed) | high | SOC 2 CC6.2 · ISO A.5.16 |
+| AR-03 | Account with no HR record (service accounts can be listed); acknowledged by the CISO and raised with HR, no ticket | high | SOC 2 CC6.2 · ISO A.5.16 |
 | AR-04 | Can sign in, but has no MFA factor | high | SOC 2 CC6.1 · ISO A.8.5 |
 | AR-05 | No sign-in for 90+ days | medium | SOC 2 CC6.2 · ISO A.5.18 |
 | AR-06 | Created 14+ days ago and never used | medium | SOC 2 CC6.2 · ISO A.5.16 |
