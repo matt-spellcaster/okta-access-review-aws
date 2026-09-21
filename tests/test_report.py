@@ -226,3 +226,31 @@ def test_spreadsheet_formulas_in_evidence_csvs_are_neutralised(tmp_path):
     assert "'=HYPERLINK" in text and ",''quoted," in text and ",'-1," in text and ",plain," in text
     [back] = csvsafe.read_rows(text)  # the tool always reads the original value back
     assert back == {"a": '=HYPERLINK("http://x")', "b": "'quoted", "c": "-1", "d": "plain", "e": "3"}
+
+
+def test_the_report_speaks_for_every_source_it_read(tmp_path):
+    """A manifest that called a review complete while another source failed
+    would be signed-off evidence of a claim nobody checked."""
+    import json
+    from pathlib import Path
+
+    from access_review.checks import Config
+    from access_review.identity import GitHubSnapshot, IdentityGraph, project_github, project_snapshot
+    from access_review.models import Snapshot
+    from access_review.report import all_gaps, other_sources
+
+    fixtures = Path(__file__).parent.parent / "fixtures"
+    snapshot = Snapshot.from_dict(json.loads((fixtures / "demo_snapshot.json").read_text()))
+    config = Config.load(fixtures / "demo_config.json")
+    github = GitHubSnapshot.from_dict(json.loads((fixtures / "demo_github.json").read_text()))
+    graph = IdentityGraph.compose(project_snapshot(snapshot, config.service_accounts), project_github(github))
+
+    assert snapshot.gaps == []  # Okta alone would call this review complete
+    gaps = all_gaps(snapshot, graph)
+    assert gaps and all(g.startswith("github:acme-eng: ") for g in gaps)
+    assert other_sources(graph) == [("github:acme-eng", 13, github_gaps(graph))]
+    assert other_sources(None) == [] and all_gaps(snapshot, None) == []
+
+
+def github_gaps(graph):
+    return next(m.gaps for m in graph.sources if m.source == "github:acme-eng")

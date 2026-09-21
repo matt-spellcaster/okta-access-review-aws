@@ -43,8 +43,17 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
 - Tests never call real AWS, Slack, Jira or SMTP. `tests/conftest.py` clears those settings; inject
   fakes through `session=` / `client=` parameters like the existing tests do.
 - A new check needs: an entry in `CHECKS` (`checks.py`) with SOC 2 and ISO 27001 control IDs, a planted
-  case in `fixtures/demo_snapshot.json`, and an updated expectation in
-  `test_demo_findings_are_exactly_the_planted_ones`.
+  case in the fixture for the source it reads (`fixtures/demo_snapshot.json`, or
+  `fixtures/demo_github.json` for a `needs_graph` check), and an updated expectation in
+  `test_demo_findings_are_exactly_the_planted_ones`. A `needs_graph` check reads `ctx.graph` rather
+  than `ctx.snapshot`, is skipped when no graph was built, and its finding subjects are
+  source-qualified (`github:acme-eng/login`) because ticket identity is hashed into a permanent
+  Jira label.
+- A `needs_graph` check settles by reviewer (`REVIEW_CHECKS` in `tickets.py`) until `watch.still_present`
+  can see that source's gaps. It re-verifies against a fresh Okta snapshot only, so a graph finding
+  would otherwise be ticked off because the other source's read failed. `tests/test_tickets.py` guards this.
+- The report, PDF and manifest speak for every source the review read: `report.all_gaps` and
+  `report.other_sources` span them, so a run cannot be called complete while a source it read failed.
 - After changing the PDF layout or demo fixtures, run `uv run python scripts/render_samples.py`
   and look at `docs/images/*.png` before committing. README images use fixture data, or real
   screenshots with every name, email, org URL and ID blacked out, including inside PDF previews.

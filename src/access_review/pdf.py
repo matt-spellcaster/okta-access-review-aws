@@ -171,7 +171,12 @@ def write_pdf(
     branding: Branding | None = None,
     roster_label: str = "not provided",
     history_note: str = "",
+    graph: object = None,
 ) -> Path:
+    from .report import all_gaps, other_sources  # late: report imports this module
+
+    sources = other_sources(graph)
+    gaps = all_gaps(snapshot, graph)
     brand = branding or Branding()
     t = _Theme(brand)
     doc = SimpleDocTemplate(
@@ -198,7 +203,8 @@ def write_pdf(
         ["Scope", f"{len(snapshot.users)} users ({live} not deprovisioned), "
                   f"{len(snapshot.groups)} groups, {len(snapshot.apps)} apps"],
         ["HR roster", roster_label],
-        ["Status", "INCOMPLETE, see data gaps" if snapshot.gaps else "Complete"],
+        *[[f"Also read", f"{name} ({n} principals)"] for name, n, _ in sources],
+        ["Status", "INCOMPLETE, see data gaps" if gaps else "Complete"],
         ["Tool", f"okta-access-review {__version__} (read-only)"],
     ]
     meta_table = Table(
@@ -217,12 +223,12 @@ def write_pdf(
     story.append(t.table(summary, [1.2 * inch] + [0.9 * inch] * len(SEVERITIES) + [0.9 * inch]))
     if skipped:
         story.append(Spacer(1, 4))
-        story.append(t.p(f"Skipped (no HR roster provided): {', '.join(skipped)}", t.muted))
+        story.append(t.p(f"Skipped (needs data this run did not have): {', '.join(skipped)}", t.muted))
 
-    if snapshot.gaps:
+    if gaps:
         story.append(Paragraph("Data gaps", t.h2))
         story.append(t.p("This review is incomplete. Fix these before relying on it:", t.warn))
-        for gap in snapshot.gaps:
+        for gap in gaps:
             story.append(t.p(f"• {gap}", t.body))
 
     story.append(Paragraph("Findings", t.h2))

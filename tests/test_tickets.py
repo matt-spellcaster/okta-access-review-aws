@@ -246,3 +246,20 @@ def test_info_findings_get_no_tickets(signed_review):
     assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0
     assert rem.open_urgent(run.run_dir.name, "UAR-99", rows) == 0
     assert len(session.issues) == before
+
+
+def test_cross_source_checks_settle_by_reviewer_until_their_sources_can_be_reverified():
+    """watch.still_present re-verifies a finding against a fresh Okta snapshot
+    and gates on snapshot.gaps. It cannot see a graph source's gaps, so a
+    GitHub finding would be ticked off because the GitHub read failed -- the
+    silence-is-absence bug. Until still_present takes the graph, every
+    graph-backed check must settle by reviewer instead.
+
+    If you remove one of these from REVIEW_CHECKS, widen still_present first.
+    """
+    from access_review.checks import CHECKS
+    from access_review.tickets import verify_mode
+
+    graph_checks = [c.id for c in CHECKS if c.needs_graph]
+    assert graph_checks, "expected at least one graph-backed check"
+    assert all(verify_mode(check_id) == "reviewer" for check_id in graph_checks)

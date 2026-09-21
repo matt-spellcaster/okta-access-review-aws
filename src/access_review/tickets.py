@@ -48,7 +48,13 @@ INFO = "info"
 # that it is settled, and the daily check ticks it off without looking at
 # Okta. The other fix checks (no MFA, a bare profile, a disabled account's
 # leftover access) are checked against a fresh snapshot.
-REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10")
+# AR-15 and AR-16 are judgement calls in the same way: they ask someone to
+# establish what an account is, and the answer is a register entry, not a
+# change Okta can show. AR-17 is not a judgement call -- it asks for access to
+# be removed in another system -- but nothing can confirm that until that
+# system has a collector, and claiming to have verified it would be worse than
+# taking the reviewer's word. See the guard in tests/test_tickets.py.
+REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17")
 
 
 def verify_mode(check_id: str) -> str:

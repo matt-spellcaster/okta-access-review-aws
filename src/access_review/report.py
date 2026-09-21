@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import __version__
 from .checks import CHECKS, SEVERITIES, Config, Finding
+from .identity import OKTA, IdentityGraph
 from .csvsafe import cell
 from .history import History, label
 from .models import SIGN_IN_STATUSES, Snapshot
@@ -82,7 +83,32 @@ HISTORY_NOTE = (
 )
 
 
+
+def other_sources(graph: IdentityGraph | None) -> list[tuple[str, int, list[str]]]:
+    """Sources beyond Okta, as (name, principals, gaps).
+
+    The report speaks for every source the review read. A gaps list that only
+    covers Okta would let the PDF say "Complete" while a whole source failed,
+    which is the one claim an evidence artifact must never make wrongly.
+    """
+    if graph is None:
+        return []
+    counts: dict[str, int] = {}
+    for principal in graph.principals:
+        counts[principal.source] = counts.get(principal.source, 0) + 1
+    return [(m.source, counts.get(m.source, 0), m.gaps) for m in graph.sources if m.source != OKTA]
+
+
+def all_gaps(snapshot: Snapshot, graph: IdentityGraph | None) -> list[str]:
+    """Every gap, each named with the source it came from."""
+    gaps = list(snapshot.gaps)
+    for source, _, source_gaps in other_sources(graph):
+        gaps += [f"{source}: {gap}" for gap in source_gaps]
+    return gaps
+
+
 def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[str], as_of: date,
+                    graph: IdentityGraph | None = None,
                     roster: str = "not provided", history: History | None = None) -> str:
     counts = Counter(f.severity for f in findings)
     live = sum(1 for u in snapshot.users if u.status != "DEPROVISIONED")
@@ -100,6 +126,7 @@ def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[s
         f"{len(snapshot.groups)} groups, {len(snapshot.apps)} apps",
         f"- **Activity checked from:** {activity}",
         f"- **HR roster:** {roster}",
+        *[f"- **Also read:** {name} ({n} principals)" for name, n, _ in other_sources(graph)],
         f"- **Tool:** okta-access-review {__version__} (read-only)",
         "",
         "## Summary",
@@ -109,10 +136,11 @@ def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[s
     ]
     lines += [f"| {s} | {counts.get(s, 0)} |" for s in SEVERITIES]
     if skipped:
-        lines += ["", f"Skipped (no HR roster provided): {', '.join(skipped)}"]
-    if snapshot.gaps:
+        lines += ["", f"Skipped (needs data this run did not have): {', '.join(skipped)}"]
+    gaps = all_gaps(snapshot, graph)
+    if gaps:
         lines += ["", "## ⚠️ Data gaps", "", "This review is incomplete. Fix these before relying on it:", ""]
-        lines += [f"- {g}" for g in snapshot.gaps]
+        lines += [f"- {g}" for g in gaps]
 
     lines += ["", "## Findings", ""]
     aged = bool(history and history.reviews)
@@ -221,6 +249,7 @@ def write_report(
     roster_path: Path | None = None,
     history: History | None = None,
     extra_files: dict[str, str] | None = None,
+    graph: IdentityGraph | None = None,
 ) -> Path:
     """extra_files are {name: text} written into the run folder before the
     manifest, so they are hashed with everything else (e.g. review_items.json)."""
@@ -244,14 +273,16 @@ def write_report(
         (run_dir / "roster.csv").unlink(missing_ok=True)  # don't hash a stale copy from an earlier run
     roster_text = roster_label(roster)
 
-    (run_dir / "report.md").write_text(render_markdown(snapshot, findings, skipped, as_of, roster_text, history))
+    (run_dir / "report.md").write_text(
+        render_markdown(snapshot, findings, skipped, as_of, graph=graph, roster=roster_text, history=history)
+    )
     finding_rows = [_finding_row(f) for f in findings]
     _write_csv(run_dir / "findings.csv", finding_rows, FINDING_COLUMNS)
     matrix = access_matrix(snapshot)
     _write_csv(run_dir / "access_matrix.csv", matrix, MATRIX_COLUMNS)
     write_pdf(run_dir / "report.pdf", snapshot, findings, skipped, as_of, matrix,
               Branding.from_config(config.branding), roster_label=roster_text,
-              history_note=HISTORY_NOTE if history and history.reviews else "")
+              history_note=HISTORY_NOTE if history and history.reviews else "", graph=graph)
     (run_dir / "snapshot.json").write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n")
     for name, text in extra_files.items():
         (run_dir / name).write_text(text)
@@ -267,8 +298,12 @@ def write_report(
         "skipped_checks": skipped,
         "activity_since": snapshot.to_dict()["activity_since"],
         "app_usage_since": snapshot.to_dict()["app_usage_since"],
-        "complete": not snapshot.gaps,
-        "data_gaps": snapshot.gaps,
+        # Every source, not just Okta: a manifest that called a review complete
+        # while another source failed would be signed-off evidence of a claim
+        # nobody checked.
+        "complete": not all_gaps(snapshot, graph),
+        "data_gaps": all_gaps(snapshot, graph),
+        "sources": [{"source": name, "principals": n, "gaps": gaps} for name, n, gaps in other_sources(graph)],
         "history": history.manifest_block() if history is not None else None,
         "files": {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()

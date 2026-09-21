@@ -25,6 +25,7 @@ from .models import (
     Snapshot,
     User,
 )
+from .identity import OKTA, IdentityGraph, Principal, PrincipalKind, Status
 from .roster import RosterEntry, entry_for
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -108,6 +109,10 @@ class ReviewContext:
     roster: dict[str, RosterEntry] | None
     config: Config
     as_of: date
+    # Every source composed into one graph. None for a review that read only
+    # Okta, which is every review until the other sources have collectors, so
+    # checks that need it are skipped rather than run against half an estate.
+    graph: IdentityGraph | None = None
 
     def roster_entry(self, user: User) -> RosterEntry | None:
         return entry_for(self.roster, user.email, user.login)
@@ -127,6 +132,9 @@ class Check:
     needs_roster: bool = False
     # Needs complete app sign-in data covering app_unused_days.
     needs_app_usage: bool = False
+    # Reads ctx.graph rather than ctx.snapshot, so it only runs when sources
+    # beyond Okta were collected.
+    needs_graph: bool = False
 
     def finding(self, subject: str, detail: str, severity: str | None = None) -> Finding:
         return Finding(self.id, self.title, severity or self.severity, self.controls, subject, detail, self.remediation)
@@ -431,6 +439,115 @@ def _unused_app_assignment(ctx: ReviewContext, check: Check) -> list[Finding]:
     return out
 
 
+def _subject(principal: Principal) -> str:
+    """Source-qualified, always.
+
+    Ticket identity is (check_id, subject) and `tickets.ticket_label` hashes it
+    into a permanent Jira label, so two orgs with the same bot login would
+    share one ticket for ever. Qualifying costs nothing now and cannot be
+    undone later.
+    """
+    return f"{principal.source}/{principal.label}"
+
+
+def _describe(graph: IdentityGraph, principal: Principal, as_of: date) -> str:
+    """The credentials a principal holds, worst first, for a finding's detail."""
+    parts = []
+    for credential in sorted(graph.credentials_for(principal.key), key=lambda c: (c.write_access is not True, c.label)):
+        notes = []
+        if credential.write_access is True:
+            notes.append("can write")
+        elif credential.write_access is None:
+            notes.append("write access unknown")
+        if credential.last_used:
+            notes.append(f"last used {credential.last_used.date()} ({(as_of - credential.last_used.date()).days} days ago)")
+        else:
+            notes.append("no record of use")
+        parts.append(f"{credential.label} ({'; '.join(notes)})")
+    return ", ".join(parts)
+
+
+def _recently_used(graph: IdentityGraph, principal: Principal, as_of: date, days: int) -> bool:
+    cutoff = as_of - timedelta(days=days)
+    return any(c.last_used and c.last_used.date() >= cutoff for c in graph.credentials_for(principal.key))
+
+
+def _can_write(graph: IdentityGraph, principal: Principal) -> bool:
+    return any(c.write_access is True for c in graph.credentials_for(principal.key))
+
+
+def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
+    """An account the source knows about, holding credentials, that no evidence
+    ties to a person. The cross-source identity join is the heart of this tool,
+    so this is the headline check, not an edge case."""
+    graph = ctx.graph
+    out = []
+    for principal in graph.unlinked():
+        # AR-16's case: the account itself is unknown to the source's own
+        # member read, which is a different and sharper problem.
+        if principal.kind is PrincipalKind.UNKNOWN:
+            continue
+        held = _describe(graph, principal, ctx.as_of)
+        if not held:
+            continue
+        writes = _can_write(graph, principal)
+        recent = _recently_used(graph, principal, ctx.as_of, ctx.config.inactive_days)
+        # Recently used and nobody knows whose it is: the genuinely alarming
+        # case. Dormant is a cleanup; this is an investigation.
+        severity = "high" if writes and recent else "medium" if writes or recent else "low"
+        out.append(check.finding(_subject(principal), f"No evidence ties this account to a person. Holds {held}.", severity=severity))
+    return out
+
+
+def _access_without_an_account(ctx: ReviewContext, check: Check) -> list[Finding]:
+    """Something holds access that the source's own user or member read never
+    returned, so the review knows it exists only from what it can reach."""
+    graph = ctx.graph
+    out = []
+    for principal in graph.principals:
+        if principal.kind is not PrincipalKind.UNKNOWN:
+            continue
+        grants = graph.grants_for(principal.key)
+        held = _describe(graph, principal, ctx.as_of)
+        parts = []
+        if grants:
+            parts.append("access to " + ", ".join(sorted({g.target_label or g.target for g in grants})))
+        if held:
+            parts.append(f"credentials: {held}")
+        if not parts:
+            continue
+        out.append(check.finding(
+            _subject(principal),
+            f"Holds {'; '.join(parts)}, but the account was not returned by the {principal.source} user read.",
+            severity="high" if _can_write(graph, principal) else "medium",
+        ))
+    return out
+
+
+def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Finding]:
+    """Someone HR says is gone, still holding access somewhere Okta
+    deactivation does not reach. This is the whole thesis of the tool: the long
+    tail of a departure is not the account, it is everything the account was
+    never the only way in to."""
+    graph = ctx.graph
+    out = []
+    for user, entry in _leavers(ctx):
+        identity = (user.profile.get("email") or "").strip().lower()
+        if not identity:
+            continue
+        for principal in graph.principals_of(identity):
+            if principal.source == OKTA or principal.status is Status.DISABLED:
+                continue
+            held = _describe(graph, principal, ctx.as_of)
+            detail = f"{_left_on(entry)}, but {principal.source} still shows {principal.source_status or 'access'}"
+            detail += f" holding {held}." if held else " for this account."
+            out.append(check.finding(
+                _subject(principal), detail,
+                severity="critical" if _can_write(graph, principal) else "high",
+            ))
+    return out
+
+
 CHECKS: list[Check] = [
     Check(
         "AR-01", "Terminated in HR but account still live", "critical",
@@ -519,6 +636,27 @@ CHECKS: list[Check] = [
         "Remove the direct app assignment in Okta, or record why it is still needed.",
         _unused_app_assignment, needs_app_usage=True,
     ),
+    Check(
+        "AR-15", "Credential nobody is accountable for", "medium",
+        ["SOC 2 CC6.1", "SOC 2 CC6.2", "ISO 27001 A.5.16", "ISO 27001 A.5.17"],
+        "Establish who owns this account and record them in the service account register, "
+        "or revoke its credentials. Resolving the ticket without either leaves it unowned.",
+        _unowned_credentials, needs_graph=True,
+    ),
+    Check(
+        "AR-16", "Access held by an account the source never returned", "high",
+        ["SOC 2 CC6.1", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
+        "Find out what this account is. It reaches things in the org while being absent from the "
+        "user read, so neither joiner-mover-leaver automation nor this review can see it directly.",
+        _access_without_an_account, needs_graph=True,
+    ),
+    Check(
+        "AR-17", "Someone who left still has access outside Okta", "critical",
+        ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.11", "ISO 27001 A.5.18"],
+        "Remove the access and revoke the credentials in that system. Deactivating the Okta "
+        "account did not reach them, which is why they are still here.",
+        _leaver_access_outside_okta, needs_graph=True, needs_roster=True,
+    ),
 ]
 
 
@@ -530,6 +668,9 @@ def run_checks(ctx: ReviewContext) -> tuple[list[Finding], list[str]]:
             skipped.append(check.id)
             continue
         if check.needs_app_usage and not app_usage_covers(ctx.snapshot, ctx.config.app_unused_days, ctx.as_of):
+            skipped.append(check.id)
+            continue
+        if check.needs_graph and ctx.graph is None:
             skipped.append(check.id)
             continue
         findings.extend(check.run(ctx, check))

@@ -28,6 +28,7 @@ def build_sample_pdf(out_dir: Path) -> Path:
         "--snapshot", str(FIXTURES / "demo_snapshot.json"),
         "--roster", str(FIXTURES / "demo_roster.csv"),
         "--config", str(FIXTURES / "demo_config.json"),
+        "--github", str(FIXTURES / "demo_github.json"),
         "--as-of", "2026-09-15",
         "--out", str(out_dir),
         "--no-email",

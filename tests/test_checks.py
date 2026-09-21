@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from access_review.checks import CHECKS, Config, ReviewContext, run_checks
+from access_review.identity import GitHubSnapshot, IdentityGraph, project_github, project_snapshot
 from access_review.models import Snapshot
 from access_review.roster import load_roster
 
@@ -18,7 +19,11 @@ def demo():
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
     roster = load_roster(FIXTURES / "demo_roster.csv", config.timezone())
-    return ReviewContext(snapshot, roster, config, AS_OF)
+    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    graph = IdentityGraph.compose(
+        project_snapshot(snapshot, config.service_accounts), project_github(github)
+    )
+    return ReviewContext(snapshot, roster, config, AS_OF, graph=graph)
 
 
 def by_check(findings):
@@ -46,6 +51,11 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-12": {"marcus.lee", "victor.nguyen"},
         "AR-13": {"marcus.lee", "victor.nguyen"},
         "AR-14": {"lee.chen"},
+        "AR-15": {"github:acme-eng/acme-ci-bot", "github:acme-eng/dev-contractor-42",
+                  "github:acme-eng/omar-haddad", "okta/Terraform Automation"},
+        "AR-16": {"github:acme-eng/U_kgDOBq1zzz", "github:acme-eng/sam-departed"},
+        "AR-17": {"github:acme-eng/marcus-lee", "github:acme-eng/sofia-ramos",
+                  "github:acme-eng/victor-nguyen"},
     }
 
 
@@ -117,8 +127,17 @@ def test_findings_sorted_most_severe_first(demo):
 def test_roster_checks_skipped_without_roster(demo):
     demo.roster = None
     findings, skipped = run_checks(demo)
-    assert skipped == ["AR-01", "AR-02", "AR-03", "AR-12", "AR-13"]
-    assert not {"AR-01", "AR-02", "AR-03", "AR-12", "AR-13"} & {f.check_id for f in findings}
+    assert skipped == ["AR-01", "AR-02", "AR-03", "AR-12", "AR-13", "AR-17"]
+    assert not {"AR-01", "AR-02", "AR-03", "AR-12", "AR-13", "AR-17"} & {f.check_id for f in findings}
+
+
+def test_cross_source_checks_skipped_without_a_graph(demo):
+    # A review that read only Okta must not answer questions about GitHub by
+    # finding nothing there.
+    demo.graph = None
+    findings, skipped = run_checks(demo)
+    assert skipped == ["AR-15", "AR-16", "AR-17"]
+    assert not {"AR-15", "AR-16", "AR-17"} & {f.check_id for f in findings}
 
 
 def test_without_roster_contractor_type_comes_from_okta_profile(demo):
