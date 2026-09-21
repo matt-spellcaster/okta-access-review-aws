@@ -17,8 +17,13 @@ on:
 permissions: {} # every job asks for exactly what it needs
 
 concurrency:
-  group: compliance-${{ github.ref }}
-  # Never cancel a master run: it may be in the middle of a Terraform apply.
+  # Pull requests share a group per branch, so a new push cancels the superseded run. Every
+  # other run gets a group to itself. It used to be one group per ref, which meant the deploy
+  # job waiting for approval owned master's group: later pushes queued behind it, and because
+  # GitHub keeps only one pending run per group, each new push cancelled the one before it.
+  # Three commits went unverified that way. Concurrent applies are still prevented by the
+  # deploy job's own `deploy` group, which is where that guarantee belongs.
+  group: compliance-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

@@ -58,8 +58,39 @@ gh attestation verify compliance-evidence-<commit>.tar.gz --repo <owner>/okta-ac
   SHA-256s. pip-audit, zizmor and checkov run at pinned versions.
 - AWS access uses GitHub's OIDC token; there are no AWS keys anywhere. Pull requests can only assume
   the read-only plan role, and only the `production` environment can assume the apply role.
-- `master` runs are never cancelled by a newer push, so a deploy can't stop halfway through an apply.
+- Concurrent applies are prevented by the Deploy job's own `deploy` concurrency group, which is
+  never cancelled in progress. The workflow's own group covers pull requests only, one per
+  branch, so a superseded pull request run is cancelled and a `master` run never queues behind
+  another (see [Why Deploy doesn't gate the workflow's concurrency](#why-deploy-doesnt-gate-the-workflows-concurrency)).
 - Pull requests from forks never get signing permissions: attestation runs only on `master`.
+
+## Why Deploy doesn't gate the workflow's concurrency
+
+Deploy waits for an approval in the `production` environment, and a run waiting for approval is
+still a live run that owns its concurrency group. While the workflow used one group per ref, that
+had a consequence worth recording, because it is silent:
+
+1. A push to `master` passes every check and its Deploy job goes to `waiting`.
+2. Nobody approves it. The run keeps the `master` group.
+3. The next push to `master` cannot start, so it sits `pending` with no jobs allocated.
+4. GitHub keeps only one *pending* run per group, so the push after that cancels the pending one.
+
+Each commit's verification is discarded to make room for the next, no job ever runs, and nothing
+fails: the runs read `cancelled`, which looks like somebody cancelled them. On 2026-09-21 one
+unapproved deploy from 04:22 left three commits unverified on `master` this way, including two merge
+commits.
+
+So `master` and scheduled runs now take a group per run (`github.run_id`) and never queue. Only
+pull requests share a group, where cancelling a superseded run is what you want. The apply is
+serialised by the Deploy job's own group instead, which is the narrower guarantee and the correct
+place for it.
+
+If Deploy is sitting in `waiting` and you don't want that deployment, reject it rather than leaving
+it: `gh api repos/<owner>/<repo>/actions/runs/<run-id>/pending_deployments` shows what it is waiting
+on, and the same path with `-X POST -F 'environment_ids[]=<id>' -f state=rejected` declines it. A
+rejected deployment marks the run failed even though every check passed, so read the job list, not
+the run's conclusion. Setting the `DEPLOY_ENABLED` variable to anything but `true` skips the job
+entirely.
 
 ## Branch rules
 
