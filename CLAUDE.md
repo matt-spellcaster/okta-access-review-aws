@@ -118,4 +118,7 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   comment, keep `permissions: {}` at the top with per-job grants, never interpolate `${{ }}` into
   `run:` (pass it via `env:`), and run `uvx zizmor@<pinned> --offline .github/workflows` after
   editing. If a job is renamed, update `REQUIRED_CHECKS` in `scripts/ci/check_branch_rules.py`
-  and the ruleset. See `docs/ci.md`.
+  and the ruleset. A job behind an environment approval (`deploy`) must never share a concurrency
+  group with anything else: a run waiting for approval owns its group, later runs queue behind it,
+  and GitHub cancels the pending one each time a newer run arrives, so commits lose their
+  verification silently and the runs read `cancelled`. See `docs/ci.md`.
