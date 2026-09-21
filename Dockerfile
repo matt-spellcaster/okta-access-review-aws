@@ -1,6 +1,6 @@
 # One image for every Lambda; each function picks its handler with image_config.command.
 # The base image is pinned by digest. Bump it deliberately (see docs/aws.md).
-FROM public.ecr.aws/lambda/python:3.14-arm64@sha256:84344aec27870adf6559bd984c5a5dbbc5112fd1b993457cd834f518e387bbd8
+FROM public.ecr.aws/lambda/python:3.14-arm64@sha256:5bacfb4f42ac05cc7a36782d360fdb2b30aac2a68959d16c5e76ae346f2bbce9
 
 # requirements.txt is produced by scripts/build_image.sh from uv.lock, with hashes.
 COPY requirements.txt /tmp/requirements.txt
