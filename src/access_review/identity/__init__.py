@@ -19,6 +19,7 @@ from .model import (
     SourceMeta,
     Status,
 )
+from .github import GitHubSnapshot, project_github
 from .okta import OKTA, project_snapshot
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Coverage",
     "Credential",
     "CredentialKind",
+    "GitHubSnapshot",
     "Grant",
     "GrantKind",
     "Identity",
@@ -38,5 +40,6 @@ __all__ = [
     "PrincipalKind",
     "SourceMeta",
     "Status",
+    "project_github",
     "project_snapshot",
 ]

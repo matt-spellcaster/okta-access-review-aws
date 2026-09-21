@@ -55,6 +55,7 @@ class CredentialKind(StrEnum):
 
     OKTA_API_TOKEN = "okta_api_token"
     GITHUB_PAT = "github_pat"
+    SSH_KEY = "ssh_key"
     OAUTH_CLIENT = "oauth_client"
 
 
@@ -250,11 +251,15 @@ class SourceMeta:
     org: str = ""
     collected_at: datetime | None = None
     gaps: list[str] = field(default_factory=list)
-    # Oldest point this source's activity evidence reaches. None means activity
-    # was not collected at all, which is not the same as "nothing happened".
+    # Oldest point this source's activity evidence reaches, for sources that
+    # report use over a window (Okta's System Log). None where the source has
+    # no window because it reports last-used per credential for all time
+    # (GitHub), or where the read never happened. Those are different things,
+    # so this field is NOT the trust signal -- activity_complete is.
     activity_since: datetime | None = None
-    # False when an activity read did not run or was cut short, so a missing
-    # record of use cannot be read as "not used".
+    # Whether a missing record of use can be believed. False when the read did
+    # not run or was cut short, so "no last-used" means "not known to have been
+    # used" rather than "not used". Every dormancy judgement reads this first.
     activity_complete: bool = True
 
     @property

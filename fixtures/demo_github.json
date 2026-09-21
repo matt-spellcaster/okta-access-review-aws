@@ -1,0 +1,186 @@
+{
+  "org": "acme-eng",
+  "collected_at": "2026-09-15T14:00:00Z",
+  "sso_enabled": true,
+  "gaps": [],
+  "members": [
+    {
+      "id": "U_kgDOpriya",
+      "login": "priya-shah",
+      "name": "Priya Shah",
+      "samlIdentity": "priya.shah@acme.example",
+      "verifiedEmail": "priya.shah@acme.example",
+      "role": "admin",
+      "twoFactorEnabled": true,
+      "createdAt": "2023-05-02T09:00:00Z",
+      "lastActive": "2026-09-14T16:20:00Z"
+    },
+    {
+      "id": "U_kgDOmarcus",
+      "login": "marcus-lee",
+      "name": "Marcus Lee",
+      "samlIdentity": "marcus.lee@acme.example",
+      "verifiedEmail": "marcus.lee@acme.example",
+      "role": "admin",
+      "twoFactorEnabled": true,
+      "createdAt": "2023-05-10T09:00:00Z",
+      "lastActive": "2026-08-28T17:40:00Z"
+    },
+    {
+      "id": "U_kgDOvictor",
+      "login": "victor-nguyen",
+      "name": "Victor Nguyen",
+      "samlIdentity": "victor.nguyen@acme.example",
+      "verifiedEmail": "victor.nguyen@acme.example",
+      "role": "member",
+      "twoFactorEnabled": true,
+      "createdAt": "2024-02-19T09:00:00Z",
+      "lastActive": "2026-09-10T03:12:00Z"
+    },
+    {
+      "id": "U_kgDOsofia",
+      "login": "sofia-ramos",
+      "name": "Sofia Ramos",
+      "samlIdentity": "sofia.ramos@acme.example",
+      "verifiedEmail": "sofia.ramos@acme.example",
+      "role": "member",
+      "twoFactorEnabled": true,
+      "createdAt": "2025-11-03T09:00:00Z",
+      "lastActive": "2026-06-28T11:05:00Z"
+    },
+    {
+      "id": "U_kgDOleechen",
+      "login": "lee-chen",
+      "name": "Lee Chen",
+      "samlIdentity": "lee.chen@acme.example",
+      "verifiedEmail": "lee.chen@acme.example",
+      "role": "member",
+      "twoFactorEnabled": true,
+      "createdAt": "2024-08-14T09:00:00Z",
+      "lastActive": "2026-09-12T09:30:00Z"
+    },
+    {
+      "id": "U_kgDOhannah",
+      "login": "hannah-ortiz",
+      "name": "Hannah Ortiz",
+      "samlIdentity": "",
+      "verifiedEmail": "hannah.ortiz@acme.example",
+      "role": "member",
+      "twoFactorEnabled": true,
+      "createdAt": "2024-01-08T09:00:00Z",
+      "lastActive": "2026-09-11T14:02:00Z"
+    },
+    {
+      "id": "U_kgDOdev42",
+      "login": "dev-contractor-42",
+      "name": "",
+      "samlIdentity": "",
+      "verifiedEmail": "",
+      "role": "member",
+      "twoFactorEnabled": false,
+      "createdAt": "2025-03-21T09:00:00Z",
+      "lastActive": "2026-09-13T22:47:00Z"
+    },
+    {
+      "id": "U_kgDOcibot",
+      "login": "acme-ci-bot",
+      "name": "Acme CI",
+      "samlIdentity": "",
+      "verifiedEmail": "",
+      "role": "admin",
+      "twoFactorEnabled": false,
+      "createdAt": "2023-09-01T09:00:00Z",
+      "lastActive": "2026-09-15T02:00:00Z"
+    }
+  ],
+  "teams": [
+    {
+      "id": "T_eng",
+      "name": "Engineering",
+      "members": ["U_kgDOpriya", "U_kgDOmarcus", "U_kgDOvictor", "U_kgDOsofia", "U_kgDOleechen"]
+    },
+    {
+      "id": "T_ops",
+      "name": "Operations",
+      "members": ["U_kgDOhannah", "U_kgDOcibot"]
+    },
+    {
+      "id": "T_contract",
+      "name": "Contractors",
+      "members": ["U_kgDOdev42"]
+    }
+  ],
+  "tokens": [
+    {
+      "id": "PAT_victor_ci",
+      "name": "victor-laptop-deploy",
+      "ownerId": "U_kgDOvictor",
+      "scopes": ["repo", "workflow"],
+      "createdAt": "2025-06-02T09:00:00Z",
+      "lastUsed": "2026-09-10T03:12:00Z",
+      "expiresAt": null
+    },
+    {
+      "id": "PAT_dev42",
+      "name": "contractor-automation",
+      "ownerId": "U_kgDOdev42",
+      "scopes": ["repo"],
+      "createdAt": "2025-04-11T09:00:00Z",
+      "lastUsed": "2026-09-13T22:47:00Z",
+      "expiresAt": null
+    },
+    {
+      "id": "PAT_cibot",
+      "name": "org-automation",
+      "ownerId": "U_kgDOcibot",
+      "scopes": ["admin:org", "repo"],
+      "createdAt": "2023-09-01T09:00:00Z",
+      "lastUsed": "2026-09-15T02:00:00Z",
+      "expiresAt": null
+    },
+    {
+      "id": "PAT_lee_readonly",
+      "name": "lee-dashboard",
+      "ownerId": "U_kgDOleechen",
+      "scopes": ["read:org", "read:user"],
+      "createdAt": "2026-01-19T09:00:00Z",
+      "lastUsed": "2026-09-12T09:30:00Z",
+      "expiresAt": "2027-01-19T09:00:00Z"
+    },
+    {
+      "id": "PAT_ghost",
+      "name": "legacy-release-bot",
+      "ownerId": "U_kgDOgone",
+      "scopes": ["repo"],
+      "createdAt": "2024-03-04T09:00:00Z",
+      "lastUsed": "2026-08-02T05:00:00Z",
+      "expiresAt": null
+    }
+  ],
+  "sshKeys": [
+    {
+      "id": "KEY_victor",
+      "title": "victor-macbook",
+      "ownerId": "U_kgDOvictor",
+      "readOnly": false,
+      "createdAt": "2024-03-01T09:00:00Z",
+      "lastUsed": "2026-07-14T18:00:00Z"
+    },
+    {
+      "id": "KEY_sofia",
+      "title": "sofia-workstation",
+      "ownerId": "U_kgDOsofia",
+      "readOnly": false,
+      "createdAt": "2025-11-10T09:00:00Z",
+      "lastUsed": "2026-06-28T11:05:00Z"
+    },
+    {
+      "id": "KEY_deploy_readonly",
+      "title": "docs-site-deploy",
+      "ownerId": "U_kgDOcibot",
+      "readOnly": true,
+      "createdAt": "2024-07-07T09:00:00Z",
+      "lastUsed": "2026-09-15T02:00:00Z"
+    }
+  ]
+}

@@ -56,6 +56,10 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   by name or email similarity, because a false link marks a credential as accounted for when nobody
   is. Completeness is per source (`SourceMeta`): a read that failed is "incomplete", never "nothing
   found".
+- A new source adapter in `identity/` needs: its own snapshot shape with `from_dict`/`to_dict`, a
+  hand-written fixture in `fixtures/` with one planted case per thing a check will find, a
+  projection into `IdentityGraph`, and tests -- before any collector that talks to the live API.
+  Project raw responses onto an explicit field allowlist, following `ActivityEvent.from_okta`.
 - Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
   "decide" instead.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
