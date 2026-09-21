@@ -40,7 +40,7 @@ from .decisions import (
     outstanding,
     progress,
 )
-from .items import CISO, ITEMS_FILE, REVOKE, ReviewItem, load_items, summary
+from .items import CISO, HR_RECORD, ITEMS_FILE, REVOKE, ReviewItem, load_items, summary
 from .state import CLOSED, OPEN, SIGNED_OFF, create_state, load_state, update_state
 
 # Findings that mean someone who has left can still get in: a ticket is opened
@@ -376,6 +376,7 @@ def remediate(deps: Deps, run: str) -> dict:
     parent = state.get("parent_issue")
     opened = deps.tickets.open_revokes(run, parent, data.items, final)
     revokes = sum(1 for d in final.values() if d["decision"] == REVOKE)
+    flagged = sum(1 for k in final if k in data.items and data.items[k].kind == HR_RECORD)
     rows = all_findings(deps, run)
     fixes = deps.tickets.open_findings(run, parent, rows, people(deps, run))
     deps.tickets.jira.add_comment(parent, _adf_signoff(att, opened, revokes))
@@ -384,8 +385,8 @@ def remediate(deps: Deps, run: str) -> dict:
     fix_count = sum(1 for _, r in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
                     if r.get("kind") == "finding")
     post_to_channel(deps, run, msgs.channel_finished(
-        run, data.manifest, check_counts(deps, run), att, len(final) - revokes, revokes,
-        _ticket(deps, parent), deps.tickets.revoke_days, fix_count), broadcast=True)
+        run, data.manifest, check_counts(deps, run), att, len(final) - revokes - flagged, revokes,
+        _ticket(deps, parent), deps.tickets.revoke_days, fix_count, flagged=flagged), broadcast=True)
     return {"run": run, "revoke_tickets": revokes, "opened_now": opened + fixes, "fix_tickets": fix_count}
 
 
@@ -396,13 +397,14 @@ def all_findings(deps: Deps, run: str) -> list[dict]:
 def checklist_entries(deps: Deps, run: str) -> list[dict]:
     """Every ticket that must be done before the tracking ticket closes, and
     whether the daily check has verified it yet."""
-    verified = {}
+    verified: dict[str, tuple[str, str]] = {}  # label -> (date, result)
     for name, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "verifications"):
         if name.endswith("-verified.json"):
-            verified[rec["label"]] = rec.get("checked_at", "")[:10]
+            verified[rec["label"]] = (rec.get("checked_at", "")[:10], rec.get("result", "removed"))
     return [
         {"ticket": _ticket(deps, rec["issue"]), "todo": rec.get("todo") or rec.get("kind", "ticket"),
-         "due": rec.get("due"), "verified": verified.get(rec["label"]), "label": rec["label"]}
+         "due": rec.get("due"), "verified": verified.get(rec["label"], ("", ""))[0] or None,
+         "accepted": verified.get(rec["label"], ("", ""))[1] == "accepted", "label": rec["label"]}
         for _, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
         if rec.get("kind") in ("leaver", "revoke", "finding")
     ]

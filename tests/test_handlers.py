@@ -100,7 +100,7 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
     s3, sfn, bot, jira = aws
     out = handlers.collect({}, None)
     no_personal_data(out)
-    assert out["items"]["total"] == 16 and out["complete"]
+    assert out["items"]["total"] == 17 and out["complete"]
     assert ("uar-evidence-test", f"runs/{out['run']}/review_items.json") in s3.objects
 
     opened = handlers.open_review({"run": out["run"], "task_token": "tok"}, None)

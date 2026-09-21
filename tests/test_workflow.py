@@ -13,7 +13,7 @@ from test_watch import FakeJira
 from access_review import store, workflow
 from access_review.checks import Config
 from access_review.decisions import Reviewers
-from access_review.items import DECIDE, KEEP, REVOKE
+from access_review.items import DECIDE, HR_RECORD, KEEP, REVOKE
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
@@ -352,3 +352,28 @@ def test_messages_state_the_configured_windows(env):
     decide_everything(deps, run, items)
     [approve] = [json.dumps(p) for _, p, _ in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
     assert "due in 14 days" in approve
+
+
+def test_an_account_with_no_hr_record_is_flagged_and_acknowledged_not_ticketed(env):
+    deps, run, items = env
+    [flag] = [i for i in items.values() if i.kind == HR_RECORD]
+    assert flag.user == "jordan.kim@acme.example" and flag.proposed == DECIDE
+    workflow.open_review(deps, run, "token-1")
+    dm = " ".join(posts_to(deps, CISO_DM))
+    assert "no ticket is opened for it" in dm and '"text": "Acknowledge"' in dm and "Flag for HR" in dm.replace("flag for HR", "Flag for HR")
+    # Only an acknowledgement is accepted for it, and it is never confirmed in bulk.
+    with pytest.raises(workflow.DecisionError, match="acknowledged"):
+        workflow.record(deps, run, [(flag.key, REVOKE, "")], R.ciso, {})
+    workflow.confirm(deps, run, R.ciso, {})
+    assert flag.key not in workflow.current_decisions(deps, workflow.load_run(deps, run))
+
+    for key, item in items.items():  # the CISO clicks Acknowledge along with the other calls
+        if item.proposed == DECIDE:
+            workflow.record(deps, run, [(key, KEEP, "")], R.ciso, {})
+    [approve] = [json.dumps(p) for _, p, _ in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
+    assert "Flagged for HR (1), no ticket" in approve and "Keep (9)" in approve and "1 flagged for HR" in approve
+    workflow.approve(deps, run, R.ciso, {})
+    workflow.remediate(deps, run)
+    assert not any("HR record" in f["summary"] for f in deps.tickets.jira.issues.values())
+    finished = posts_to(deps, deps.channel)[-1]
+    assert "9 keep, 7 revoke" in finished and "1 account(s) with no HR record" in finished and "no ticket" in finished

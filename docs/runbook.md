@@ -62,6 +62,11 @@ Each item is a card, read top to bottom:
 - **Proposed:** Keep, Revoke or Your call, with the reason. Under it are the **Keep** and **Revoke**
   buttons; the proposed one is coloured.
 
+An account with **no HR record** (AR-03) gets a card of its own with one button, **Acknowledge**.
+It asks you to raise the account with HR (add them to the roster, list them as a service account,
+or have the account deactivated). That happens outside the review, so **no ticket is opened for
+it**; the finding stays in the report and the sign-off lists it under *Flagged for HR*.
+
 1. **Accept the easy ones:** click **Confirm N proposed** in the summary message, then **Confirm**.
    This accepts every *Keep* and *Revoke* proposal at once. Items marked **Your call** stay open.
 2. **Decide the rest:** click **Keep** or **Revoke** on each remaining item. Admin roles and
@@ -98,9 +103,10 @@ Within a minute:
 
 - **JSM:** under the tracking ticket, due in 7 days:
   - one *"Revoke <access> for <person>"* ticket per revoke, saying exactly what to change
-  - one *"Fix: <finding> — <person>"* ticket per finding that isn't an access decision: no MFA, no
-    HR record, inactive or unused account, contractor in an employee-only group, missing manager,
-    disabled account still holding access, or an API client with admin rights
+  - one *"Fix: <finding> — <person>"* ticket per finding that isn't an access decision: no MFA,
+    inactive or unused account, contractor in an employee-only group, missing manager, disabled
+    account still holding access, or an API client with admin rights. Accounts with no HR record
+    get no ticket: the CISO acknowledged them and raises them with HR.
 
   Every ticket links to the person's page in the Okta admin console.
 - **The approval thread** (under the sign-off message): the **action checklist**. It lists every
@@ -122,6 +128,11 @@ Then work through the checklist:
      ✅ on the checklist.
    - **Not done:** a comment on the ticket and a DM to the CISO. Finish the change; it's checked
      again daily.
+   - **Judgement calls** are different: fix tickets for *inactive* or *never used* accounts
+     (AR-05, AR-06), *contractor in an employee-only group* (AR-07) and *API client with admin
+     access* (AR-10) ask you to decide, and deciding to leave things as they are
+     is a valid answer. Resolving the ticket is taken as done, with a *"Resolved…"* comment; nothing
+     is checked in Okta.
 4. When every line is ✅, the **tracking ticket closes itself**, and the channel says *"Access review
    `<run>` is complete"*. That's the only ticket the tool ever moves.
 

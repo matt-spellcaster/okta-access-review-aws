@@ -187,17 +187,22 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     rows = workflow.all_findings(deps, run.run_dir.name)
 
-    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 8
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 7
     assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0  # never twice
     summaries = sorted(f["summary"] for f in session.issues.values())
     assert "Fix: No MFA factor enrolled — lee.chen@acme.example" in summaries
-    # Leaver findings have leaver tickets, and AR-11/AR-14 are review items.
-    assert not any(s.startswith("Fix: ") and ("Terminated" in s or "Admin user" in s or "unused" in s)
+    # Leaver findings have leaver tickets, AR-11/AR-14 are review items, and no HR record is raised with HR.
+    assert not any(s.startswith("Fix: ") and ("Terminated" in s or "Admin user" in s or "unused" in s
+                                              or "HR record" in s)
                    for s in summaries)
     records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")]
     assert {r["check_id"] for r in records if r["kind"] == "finding"} == {
-        "AR-03", "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10"}
+        "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10"}
     assert all(r.get("todo") for r in records)
+    # Which ones the daily check can confirm in Okta, and which are the reviewer's call.
+    assert {r["check_id"]: r["verify"] for r in records if r["kind"] == "finding"} == {
+        "AR-04": "okta", "AR-05": "reviewer", "AR-06": "reviewer",
+        "AR-07": "reviewer", "AR-08": "okta", "AR-09": "okta", "AR-10": "reviewer"}
 
 
 class TransitionSession(FakeJiraSession):

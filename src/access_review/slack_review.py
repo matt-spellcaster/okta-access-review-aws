@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 
-from .items import DECIDE, KEEP, REVOKE, ReviewItem
+from .items import DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
 
 # Two blocks per item and Slack allows 50 per message, with room for a header.
 CHUNK = 20
 LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
-KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group"}
+KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group", HR_RECORD: "HR record"}
+FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 MAX_TEXT = 2900  # Slack's section limit is 3000
 # Sections on the sign-off message; beyond this, the list points to the report.
 MAX_LIST_SECTIONS = 40
@@ -67,6 +68,8 @@ def _route(item: ReviewItem) -> str:
 def describe(item: ReviewItem) -> str:
     """One line naming the person, the access and how they have it."""
     who = f"*{_esc(item.name)}* ({_esc(item.user)})" if item.name else f"*{_esc(item.user)}*"
+    if item.kind == HR_RECORD:
+        return f"{who} · *No HR record* (flag for HR; no ticket)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
@@ -78,7 +81,10 @@ def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
     lines += [f"• :warning: {_esc(c)}" for c in item.concerns] or ["• Nothing flagged."]
     if ticket:
         lines.append(f"• :ticket: Leaver ticket {ticket_link(ticket)}")
-    lines.append(f"*Proposed: {LABEL[item.proposed]}.* {_esc(item.reason)}")
+    if item.kind == HR_RECORD:
+        lines.append(f"*Acknowledge to confirm you will raise this with HR.* {_esc(item.reason)}")
+    else:
+        lines.append(f"*Proposed: {LABEL[item.proposed]}.* {_esc(item.reason)}")
     return lines
 
 
@@ -90,9 +96,16 @@ def item_blocks(run: str, item: ReviewItem, chunk: int, decided: dict | None,
     if decided:
         why = f" · _{_esc(decided['reason'])}_" if decided.get("reason") else ""
         mark = ":white_check_mark:" if decided["decision"] == KEEP else ":no_entry:"
+        label = "Acknowledged" if item.kind == HR_RECORD else LABEL[decided["decision"]]
         return [section, {"type": "context", "elements": [{
             "type": "mrkdwn",
-            "text": _clip(f"{mark} *{LABEL[decided['decision']]}* by <@{decided['decided_by']}>{why}"),
+            "text": _clip(f"{mark} *{label}* by <@{decided['decided_by']}>{why}"),
+        }]}]
+    if item.kind == HR_RECORD:
+        # One button: acknowledging is recorded as keep, and nothing else is accepted for this item.
+        return [section, {"type": "actions", "block_id": f"a:{item.key}", "elements": [{
+            "type": "button", "action_id": f"decide:{KEEP}", "style": "primary",
+            "text": {"type": "plain_text", "text": "Acknowledge"}, "value": value(r=run, k=item.key, c=chunk),
         }]}]
     buttons = []
     for decision in (KEEP, REVOKE):
@@ -157,10 +170,13 @@ def summary_message(run: str, items: list[ReviewItem], final: dict[str, dict], d
 
 def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str, list[str]]:
     """Every decision as one line, grouped by outcome, for the sign-off message."""
-    grouped: dict[str, list[str]] = {REVOKE: [], KEEP: []}
+    grouped: dict[str, list[str]] = {REVOKE: [], KEEP: [], FLAGGED: []}
     for item in sorted(items, key=lambda i: (i.user.lower(), i.kind, i.target, i.via)):
         d = final.get(item.key)
         if not d:
+            continue
+        if item.kind == HR_RECORD:
+            grouped[FLAGGED].append(f"• {describe(item)} — acknowledged, to be raised with HR")
             continue
         lines = [f"• {describe(item)}"]
         for fact in item.facts:
@@ -199,19 +215,24 @@ def approve_message(run: str, items: list[ReviewItem], final: dict[str, dict], p
                     revoke_days: int = 7) -> dict:
     """Everything the CISO is signing off, in one place: each decision, the
     ticket, the manifest hash, and the button (or who signed, once done)."""
+    grouped = decision_lines(items, final)
+    flagged = len(grouped[FLAGGED])
     head = [
         f":white_check_mark: *Every item in access review `{run}` has a decision.* Please check them and sign off.",
-        f"{progress['total']} items: *{progress['revoke']} revoke*, {progress['keep']} keep."
+        f"{progress['total']} items: *{progress['revoke']} revoke*, {progress['keep'] - flagged} keep"
+        + (f", {flagged} flagged for HR" if flagged else "") + "."
         + (f" Tracking ticket {ticket_link(parent)}." if parent else ""),
-        f"Approving opens one Jira ticket per revoke, due in {revoke_days} days.",
+        f"Approving opens one Jira ticket per revoke, due in {revoke_days} days."
+        + (" Accounts with no HR record get no ticket: raise them with HR." if flagged else ""),
     ]
     blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(head)}}]
-    grouped = decision_lines(items, final)
     listed: list[dict] = []
     if grouped[REVOKE]:
         listed += _sections(f":no_entry: Revoke ({len(grouped[REVOKE])})", grouped[REVOKE])
     if grouped[KEEP]:
         listed += _sections(f":white_check_mark: Keep ({len(grouped[KEEP])})", grouped[KEEP])
+    if grouped[FLAGGED]:
+        listed += _sections(f":triangular_flag_on_post: Flagged for HR ({flagged}), no ticket", grouped[FLAGGED])
     if len(listed) > MAX_LIST_SECTIONS:
         listed = listed[:MAX_LIST_SECTIONS] + [{"type": "section", "text": {
             "type": "mrkdwn", "text": "…the list continues in the report PDF in this thread."}}]
@@ -287,7 +308,8 @@ SEVERITY_EMOJI = {"critical": ":red_circle:", "high": ":large_orange_circle:", "
 
 
 def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str, str, int]], attestation: dict,
-                     keeps: int, revokes: int, parent: Ticket | None, revoke_days: int, fixes: int = 0) -> dict:
+                     keeps: int, revokes: int, parent: Ticket | None, revoke_days: int, fixes: int = 0,
+                     flagged: int = 0) -> dict:
     """attestation is the signoff record; its manifest_sha256 is the hash shown."""
     """The finished review, for the channel: counts, check titles and links only."""
     counts = manifest.get("finding_counts") or {}
@@ -303,7 +325,9 @@ def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str
     order = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     for check_id, title, severity, n in sorted(check_counts, key=lambda c: (order.get(c[2], 9), c[0])):
         lines.append(f"{SEVERITY_EMOJI.get(severity, '•')}  `{check_id}` {_esc(title)} ×{n}")
-    lines.append(f"*Decisions:* {keeps} keep, {revokes} revoke.")
+    lines.append(f"*Decisions:* {keeps} keep, {revokes} revoke."
+                 + (f" {flagged} account(s) with no HR record acknowledged and flagged for HR; no ticket is "
+                    f"opened for those." if flagged else ""))
     if revokes or fixes:
         lines.append(f"*Tickets:* {revokes} to remove access and {fixes} to fix findings, under "
                      f"{ticket_link(parent) or '-'}, due in {revoke_days} days. The action list is in the "
@@ -320,20 +344,24 @@ def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str
 
 def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> dict:
     """What has to happen before the tracking ticket can close. Each entry is
-    {"ticket": Ticket, "todo": str, "due": str, "verified": str | None}; the
-    daily check ticks entries off as it confirms them in Okta."""
+    {"ticket": Ticket, "todo": str, "due": str, "verified": str | None, "accepted": bool};
+    the daily check ticks entries off as it confirms them in Okta, or, for
+    judgement calls (accepted), as soon as their ticket is resolved."""
     done = sum(1 for e in entries if e.get("verified"))
     lines = [f":clipboard: *To close {ticket_link(parent) or 'the tracking ticket'}* "
              f"({done} of {len(entries)} done)"]
     for e in sorted(entries, key=lambda e: (bool(e.get("verified")), e.get("due") or "", e["ticket"][0])):
         link = ticket_link(e["ticket"])
         if e.get("verified"):
-            lines.append(f":white_check_mark: {link} {_esc(e['todo'])} — verified {e['verified']}")
+            word = "resolved" if e.get("accepted") else "verified"
+            lines.append(f":white_check_mark: {link} {_esc(e['todo'])} — {word} {e['verified']}")
         else:
             lines.append(f":white_large_square: {link} {_esc(e['todo'])} — due {e.get('due') or '?'}")
     if entries:
         how = ("How: make each change in Okta, then resolve its ticket in JSM. The daily check (07:00) "
-               "confirms it in Okta and ticks it off here. When every line is ticked, "
+               "confirms it in Okta and ticks it off here. Tickets that ask for a decision (inactive or "
+               "unused accounts, contractor exceptions, API client scopes) are ticked off as "
+               f"soon as they are resolved. When every line is ticked, "
                f"{ticket_link(parent) or 'the tracking ticket'} closes automatically.")
     else:
         how = f"Nothing to fix. {ticket_link(parent) or 'The tracking ticket'} closes at the next daily check."

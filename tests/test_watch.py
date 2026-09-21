@@ -153,7 +153,7 @@ def test_remediation_follows_the_signed_decisions(world):
     deps, run, items, _, jira, _ = world
     out = finish_review(deps, run, items)
     # 7 revokes, plus a fix ticket for each finding that isn't an access decision.
-    assert out["revoke_tickets"] == 7 and out["fix_tickets"] == 8 and out["opened_now"] == 15
+    assert out["revoke_tickets"] == 7 and out["fix_tickets"] == 7 and out["opened_now"] == 14
     parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
     assert any(k == parent and "Signed off in Slack" in body for k, body in jira.comments)
     # Tampering with the signed decisions stops remediation.
@@ -222,7 +222,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
     [(channel, checklist, _)] = [(c, p, ts) for c, p, ts in deps.bot.posts if "To close" in json.dumps(p)]
     text = json.dumps(checklist)
     assert checklist["thread_ts"] == state["approve"]["ts"]  # in the approval message's thread
-    assert "0 of 18 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
+    assert "0 of 17 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
     assert any(k == state["parent_issue"] and "To close this ticket" in body for k, body in jira.comments)
 
     lee = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
@@ -235,7 +235,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
 
     ts = state["checklist"]["ts"] if "checklist" in state else load_state(deps.s3, "work", run)[0]["checklist"]["ts"]
     updated = [p for c, t, p in deps.bot.updates if t == ts][-1]
-    assert "1 of 18 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
+    assert "1 of 17 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
 
 
 def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):
@@ -324,3 +324,26 @@ def test_resolved_tickets_are_found_however_many_the_project_holds(world):
 
     assert watch.daily(deps, jira, fresh, leavers(fresh))["verified"] == 1
     assert asked and all("labels in (" in jql for jql in asked)  # by label, never the whole project
+
+
+def test_a_judgement_call_ticket_is_taken_as_done_when_resolved(world):
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    scopes = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+                  if r["kind"] == "finding" and r["check_id"] == "AR-10")
+    assert scopes["verify"] == "reviewer"
+    jira.issues[scopes["issue"]]["done"] = True
+    # The reviewer decided the client's scopes are fine, so the finding is still reported.
+    still = {("AR-10", scopes["subject"].lower())}
+
+    assert watch.daily(deps, jira, snapshot, leavers(snapshot), current=still) == {"verified": 1, "still_present": 0}
+
+    [(name, rec)] = store.list_records(deps.s3, "evidence", run, "verifications")
+    assert name == f"{scopes['label']}-verified.json" and rec["result"] == "accepted"
+    assert any(k == scopes["issue"] and "taken as done" in body for k, body in jira.comments)
+    assert not any("Okta still shows the problem" in dm for dm in dms_to(deps, R.ciso))
+    checklist = [p for c, t, p in deps.bot.updates if "To close" in json.dumps(p)][-1]
+    assert f"resolved {rec['checked_at'][:10]}" in json.dumps(checklist)
+    # Ticket records from before the "verify" field existed go by their check.
+    assert watch._verify_mode({"kind": "finding", "check_id": "AR-05"}) == "reviewer"
+    assert watch._verify_mode({"kind": "finding", "check_id": "AR-04"}) == "okta"
