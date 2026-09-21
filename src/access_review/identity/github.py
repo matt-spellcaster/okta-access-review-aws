@@ -1,0 +1,498 @@
+"""The GitHub source adapter: its own snapshot shape, and the projection of
+that shape into the identity graph.
+
+Model and projection live together here, unlike Okta's, because nothing else
+reads a GitHub snapshot. `Snapshot` (models.py) sits on its own because
+fourteen checks read it directly; this one is read only by `project_github`,
+and it can move out the day a second reader exists.
+
+**The shape here is the shape GitHub actually returns.** That constraint is
+load-bearing for a fixture-first project: a hand-written fixture that invents
+fields produces checks validated against data no collector could ever supply.
+Each collection maps to a real endpoint:
+
+- `members` -- `GET /orgs/{org}/members` joined with the GraphQL
+  `membersWithRole` edges (for `role` and `state`) and `externalIdentities`
+  (for the SAML identity). Owner-level credentials are needed for all three.
+  There is no per-member "last active" anywhere in the API; it exists only in
+  the audit log, so this snapshot does not carry one and a member's principal
+  has no last_used.
+- `credentials` -- `GET /orgs/{org}/credential-authorizations`, which is the
+  only org-level view of members' classic PATs and SSH keys. It requires SAML
+  SSO, is keyed by **login** rather than node id, and states no credential
+  name and no creation date: `authorizedAt` is when the credential was
+  authorized for SSO, not when it was made.
+- `fineGrainedTokens` -- `GET /orgs/{org}/personal-access-tokens`, which
+  reports `permissions` rather than classic scopes.
+
+The join is the point of this module. Where the org is behind SSO, GitHub
+states each member's SAML external identity, and that is an authoritative join
+to the IdP rather than a guess about a name. But a SAML NameID is frequently
+an opaque persistent GUID, so this projection joins on whichever stated
+attribute is actually an address and links nothing when none is -- a GUID
+cannot be matched to an Okta identity keyed on email, and pretending otherwise
+would be the false link the layer exists to prevent.
+
+Fields are defined here as an explicit allowlist. No raw GitHub payload passes
+through this module yet, because no collector exists: the allowlist is the
+requirement the collector must meet, projecting raw responses onto exactly
+these fields and nothing else, for the reason `ActivityEvent.from_okta` gives.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from ..models import format_time, parse_time
+from .graph import (
+    Credential,
+    CredentialKind,
+    Grant,
+    GrantKind,
+    IdentityGraph,
+    Link,
+    LinkMethod,
+    Principal,
+    PrincipalKind,
+    SourceMeta,
+    Status,
+)
+
+# A classic OAuth scope that only reads. Everything else -- repo, workflow,
+# gist, delete_repo, admin:*, write:* -- can change something.
+READ_SCOPE_PREFIX = "read:"
+# Fine-grained permission values that can change something.
+WRITE_PERMISSIONS = {"write", "admin"}
+# GitHub's own word for each credential type in a credential authorization.
+PAT_CREDENTIAL = "personal access token"
+SSH_CREDENTIAL = "SSH key"
+
+MEMBER_STATUSES = {"active": Status.ACTIVE, "suspended": Status.DISABLED, "pending": Status.UNKNOWN}
+
+
+def source_name(org: str) -> str:
+    """The graph's id for one GitHub org.
+
+    Sources are named per org because two orgs are two estates and a principal
+    id is only unique within one. The result is opaque: nothing parses it back,
+    and the org is recovered from `SourceMeta.org`.
+    """
+    return f"github:{org}"
+
+
+def _joinable(value: str) -> str:
+    """An identity key other sources can join on, or "".
+
+    Okta keys identities on an email address, so only an address is joinable.
+    A persistent NameID GUID identifies the same person perfectly well and is
+    still useless here, and saying so is better than inventing a match.
+    """
+    cleaned = (value or "").strip().lower()
+    return cleaned if "@" in cleaned else ""
+
+
+@dataclass
+class SamlIdentity:
+    """GitHub's `ExternalIdentitySamlAttributes`. Three separate attributes,
+    any of which may be the address and any of which may be a GUID."""
+
+    name_id: str = ""
+    username: str = ""
+    emails: list[str] = field(default_factory=list)
+
+    def joinable(self) -> tuple[str, str]:
+        """The first attribute that is an address, with the attribute's name."""
+        for attribute, value in (("emails", self.emails[0] if self.emails else ""),
+                                 ("username", self.username), ("nameId", self.name_id)):
+            found = _joinable(value)
+            if found:
+                return found, attribute
+        return "", ""
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> SamlIdentity | None:
+        if not d:
+            return None
+        return cls(
+            name_id=d.get("nameId", ""),
+            username=d.get("username", ""),
+            emails=list(d.get("emails", [])),
+        )
+
+    def to_dict(self) -> dict:
+        return {"nameId": self.name_id, "username": self.username, "emails": self.emails}
+
+
+@dataclass
+class Member:
+    """One org member. `saml_identity` is None when the org has no SSO or the
+    member has not linked. `verified_emails` are addresses GitHub itself
+    verified against a domain the org owns -- not the self-asserted profile
+    email, which proves nothing. It is a list, because a member can have
+    several."""
+
+    id: str
+    login: str
+    state: str = "active"  # active | pending | suspended
+    role: str = "member"  # member | admin | billing_manager
+    saml_identity: SamlIdentity | None = None
+    verified_emails: list[str] = field(default_factory=list)
+    # GitHub's account creation date, NOT the org join date -- GitHub exposes
+    # no join date outside the audit log, and a contractor's personal account
+    # can predate the engagement by a decade.
+    account_created: datetime | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Member:
+        return cls(
+            id=d["id"],
+            login=d["login"],
+            state=d.get("state", "active"),
+            role=d.get("role", "member"),
+            saml_identity=SamlIdentity.from_dict(d.get("samlIdentity")),
+            verified_emails=[e.strip().lower() for e in d.get("verifiedEmails", [])],
+            account_created=parse_time(d.get("accountCreatedAt")),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "login": self.login,
+            "state": self.state,
+            "role": self.role,
+            "samlIdentity": self.saml_identity.to_dict() if self.saml_identity else None,
+            "verifiedEmails": self.verified_emails,
+            "accountCreatedAt": format_time(self.account_created),
+        }
+
+
+@dataclass
+class Team:
+    id: str
+    slug: str
+    name: str
+    members: set[str] = field(default_factory=set)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Team:
+        return cls(id=d["id"], slug=d.get("slug", ""), name=d["name"], members=set(d.get("members", [])))
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "slug": self.slug, "name": self.name, "members": sorted(self.members)}
+
+
+@dataclass
+class CredentialAuthorization:
+    """One SSO-authorized credential, as `credential-authorizations` reports
+    it. Keyed by login, with no name and no creation date: `authorized_at` is
+    when it was authorized for SSO, which is not when it was made."""
+
+    credential_id: int
+    login: str
+    credential_type: str
+    token_last_eight: str = ""
+    scopes: list[str] = field(default_factory=list)
+    authorized_at: datetime | None = None
+    accessed_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    def label(self) -> str:
+        """There is no name, so identify it the way GitHub's own UI does."""
+        return f"{self.credential_type} …{self.token_last_eight}" if self.token_last_eight else self.credential_type
+
+    @classmethod
+    def from_dict(cls, d: dict) -> CredentialAuthorization:
+        return cls(
+            credential_id=d["credentialId"],
+            login=d["login"],
+            credential_type=d["credentialType"],
+            token_last_eight=d.get("tokenLastEight", ""),
+            scopes=list(d.get("scopes", [])),
+            authorized_at=parse_time(d.get("authorizedAt")),
+            accessed_at=parse_time(d.get("accessedAt")),
+            expires_at=parse_time(d.get("expiresAt")),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "credentialId": self.credential_id,
+            "login": self.login,
+            "credentialType": self.credential_type,
+            "tokenLastEight": self.token_last_eight,
+            "scopes": sorted(self.scopes),
+            "authorizedAt": format_time(self.authorized_at),
+            "accessedAt": format_time(self.accessed_at),
+            "expiresAt": format_time(self.expires_at),
+        }
+
+
+@dataclass
+class FineGrainedToken:
+    """A fine-grained PAT from the org's PAT policy endpoint. Carries a
+    permissions map rather than classic scopes, so the write test is different
+    -- a fine-grained token with no scopes is not a token with no access."""
+
+    id: int
+    owner_login: str
+    repository_selection: str = ""
+    permissions: dict[str, dict[str, str]] = field(default_factory=dict)
+    granted_at: datetime | None = None
+    last_used: datetime | None = None
+    expires_at: datetime | None = None
+
+    def label(self) -> str:
+        where = f" on {self.repository_selection} repositories" if self.repository_selection else ""
+        return f"fine-grained token {self.id}{where}"
+
+    @classmethod
+    def from_dict(cls, d: dict) -> FineGrainedToken:
+        return cls(
+            id=d["id"],
+            owner_login=d["ownerLogin"],
+            repository_selection=d.get("repositorySelection", ""),
+            permissions={k: dict(v) for k, v in (d.get("permissions") or {}).items()},
+            granted_at=parse_time(d.get("accessGrantedAt")),
+            last_used=parse_time(d.get("lastUsedAt")),
+            expires_at=parse_time(d.get("expiresAt")),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "ownerLogin": self.owner_login,
+            "repositorySelection": self.repository_selection,
+            "permissions": self.permissions,
+            "accessGrantedAt": format_time(self.granted_at),
+            "lastUsedAt": format_time(self.last_used),
+            "expiresAt": format_time(self.expires_at),
+        }
+
+
+@dataclass
+class GitHubSnapshot:
+    org: str
+    collected_at: datetime
+    members: list[Member] = field(default_factory=list)
+    teams: list[Team] = field(default_factory=list)
+    credentials: list[CredentialAuthorization] = field(default_factory=list)
+    fine_grained_tokens: list[FineGrainedToken] = field(default_factory=list)
+    # False when the org is not behind SSO. Then credential-authorizations does
+    # not exist, so no member credential can be seen at all.
+    sso_enabled: bool = True
+    # False when the credential reads did not run or were cut short, so a
+    # credential's absence is not evidence that it is not there. The analogue
+    # of Snapshot.app_usage_complete.
+    credentials_complete: bool = True
+    gaps: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GitHubSnapshot:
+        return cls(
+            org=d["org"],
+            collected_at=parse_time(d["collected_at"]),
+            members=[Member.from_dict(x) for x in d.get("members", [])],
+            teams=[Team.from_dict(x) for x in d.get("teams", [])],
+            credentials=[CredentialAuthorization.from_dict(x) for x in d.get("credentials", [])],
+            fine_grained_tokens=[FineGrainedToken.from_dict(x) for x in d.get("fineGrainedTokens", [])],
+            sso_enabled=d.get("sso_enabled", True),
+            credentials_complete=d.get("credentials_complete", True),
+            gaps=list(d.get("gaps", [])),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "org": self.org,
+            "collected_at": format_time(self.collected_at),
+            "sso_enabled": self.sso_enabled,
+            "credentials_complete": self.credentials_complete,
+            "gaps": self.gaps,
+            "members": [x.to_dict() for x in self.members],
+            "teams": [x.to_dict() for x in self.teams],
+            "credentials": [x.to_dict() for x in self.credentials],
+            "fineGrainedTokens": [x.to_dict() for x in self.fine_grained_tokens],
+        }
+
+
+def _scope_write_access(scopes: list[str], read_complete: bool) -> bool | None:
+    """Classic PAT scopes. An empty list is not evidence of no access: a
+    fine-grained token reports no scopes at all, and a failed read reports
+    none either."""
+    if any(not s.startswith(READ_SCOPE_PREFIX) for s in scopes):
+        return True
+    if not scopes:
+        return None
+    return False if read_complete else None
+
+
+def _permission_write_access(permissions: dict[str, dict[str, str]], read_complete: bool) -> bool | None:
+    """Fine-grained permissions. `{}` means the permissions were not read, not
+    that the token can do nothing."""
+    values = [v for group in permissions.values() for v in group.values()]
+    if any(v in WRITE_PERMISSIONS for v in values):
+        return True
+    if not values:
+        return None
+    return False if read_complete else None
+
+
+def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None = None) -> IdentityGraph:
+    """Turn a GitHub snapshot into a one-source graph.
+
+    `declared_services` is the register of logins someone has declared are not
+    people, the same role `Config.service_accounts` plays for Okta. Nothing
+    else makes a member a service account: personhood is not implied by having
+    an SSO link, because a machine user can be provisioned in the IdP too.
+    """
+    source = source_name(snapshot.org)
+    declared = {s.lower() for s in declared_services or []}
+    principals: list[Principal] = []
+    credentials: list[Credential] = []
+    grants: list[Grant] = []
+    links: list[Link] = []
+    gaps = list(snapshot.gaps)
+
+    if not snapshot.sso_enabled:
+        gaps.append(
+            f"The {snapshot.org} org is not behind SSO, so GitHub states no SAML identity for anyone "
+            f"and credential-authorizations does not exist. Members can only be joined by a verified "
+            f"email, their credentials cannot be read at all, and both are unknown rather than absent."
+        )
+    # Scoped to the reads that actually feed a write-access judgement. The
+    # identity gaps this projection goes on to record (an unjoinable SAML
+    # attribute, an ambiguous verified email) say nothing about whether the
+    # scopes were read, and letting them suppress every credential answer
+    # org-wide would make the signal dead in any real tenant.
+    read_complete = snapshot.sso_enabled and snapshot.credentials_complete and not snapshot.gaps
+
+    by_login = {m.login: m for m in snapshot.members}
+    known_ids = {m.id for m in snapshot.members}
+
+    for member in snapshot.members:
+        key = (source, member.id)
+        service = member.login.lower() in declared
+        principals.append(
+            Principal(
+                source=source,
+                id=member.id,
+                label=member.login,
+                # Declared or not. An SSO link proves the IdP knows this
+                # account, not that a person is behind it.
+                kind=PrincipalKind.SERVICE if service else PrincipalKind.HUMAN,
+                status=MEMBER_STATUSES.get(member.state, Status.UNKNOWN),
+                source_status=member.state,
+                email=member.verified_emails[0] if len(member.verified_emails) == 1 else "",
+                created=member.account_created,
+                # GitHub exposes no per-member activity outside the audit log,
+                # so there is nothing honest to put here.
+                last_used=None,
+            )
+        )
+        if service:
+            links.append(Link(key, LinkMethod.DECLARED, "", "declared a service account in the review register"))
+        elif member.saml_identity:
+            identity, attribute = member.saml_identity.joinable()
+            if identity:
+                links.append(Link(
+                    key, LinkMethod.SSO_IDENTITY, identity,
+                    f"SAML {attribute} for {member.login} in the {snapshot.org} org",
+                ))
+            else:
+                gaps.append(
+                    f"{member.login} has a SAML identity whose attributes are all opaque identifiers, "
+                    f"so it cannot be joined to an identity keyed on an email address."
+                )
+        elif len(member.verified_emails) == 1:
+            links.append(Link(
+                key, LinkMethod.VERIFIED_EMAIL, member.verified_emails[0],
+                f"email verified by GitHub against an org-owned domain for {member.login}",
+            ))
+        elif len(member.verified_emails) > 1:
+            # Picking one would be a coin flip between two people's worth of
+            # accountability. Unlinked is the honest answer.
+            gaps.append(
+                f"{member.login} has {len(member.verified_emails)} verified emails and no SAML "
+                f"identity, so which person holds this account is not evidenced."
+            )
+        grants.append(Grant(source, member.id, GrantKind.ORG, snapshot.org, snapshot.org))
+        if member.role != "member":
+            grants.append(Grant(source, member.id, GrantKind.ROLE, member.role, member.role))
+
+    # Access granted to an id or login the member read never returned would
+    # otherwise be access held by nobody: invisible to unlinked(), uncounted by
+    # coverage(). Each becomes a principal we know nothing about, plus a gap.
+    unknown: dict[str, str] = {}
+
+    def note(principal_id: str, how: str) -> str:
+        if principal_id not in known_ids:
+            unknown[principal_id] = how
+        return principal_id
+
+    for team in snapshot.teams:
+        for member_id in sorted(team.members):
+            grants.append(Grant(source, note(member_id, "team membership"), GrantKind.TEAM, team.id, team.name))
+
+    for authorization in snapshot.credentials:
+        member = by_login.get(authorization.login)
+        holder = member.id if member else note(authorization.login, "an SSO-authorized credential")
+        ssh = authorization.credential_type == SSH_CREDENTIAL
+        credentials.append(Credential(
+            source=source,
+            id=str(authorization.credential_id),
+            kind=CredentialKind.SSH_KEY if ssh else CredentialKind.GITHUB_PAT,
+            label=authorization.label(),
+            holder=holder,
+            # No creation date exists; authorized_at is the nearest thing and
+            # means something different, so it is not put in `created`.
+            created=None,
+            last_used=authorization.accessed_at,
+            expires=authorization.expires_at,
+            # An account SSH key can always push. GitHub's read-only flag is a
+            # deploy-key property and is not readable for a member's own key.
+            write_access=True if ssh else _scope_write_access(authorization.scopes, read_complete),
+        ))
+
+    for token in snapshot.fine_grained_tokens:
+        member = by_login.get(token.owner_login)
+        holder = member.id if member else note(token.owner_login, "a fine-grained token")
+        credentials.append(Credential(
+            source=source,
+            id=f"fg-{token.id}",
+            kind=CredentialKind.GITHUB_PAT,
+            label=token.label(),
+            holder=holder,
+            created=token.granted_at,
+            last_used=token.last_used,
+            expires=token.expires_at,
+            write_access=_permission_write_access(token.permissions, read_complete),
+        ))
+
+    for principal_id, how in sorted(unknown.items()):
+        principals.append(Principal(
+            source=source, id=principal_id, label=principal_id,
+            kind=PrincipalKind.UNKNOWN, status=Status.UNKNOWN,
+        ))
+        gaps.append(
+            f"{principal_id} holds {how} in the {snapshot.org} org but was not returned by the "
+            f"member read. It is counted as unlinked."
+        )
+
+    meta = SourceMeta(
+        source=source,
+        org=snapshot.org,
+        collected_at=snapshot.collected_at,
+        gaps=gaps,
+        # GitHub reports a last-accessed time per credential rather than over a
+        # window, so there is no span to record here. activity_complete, not
+        # this field, is what a dormancy judgement reads.
+        activity_since=None,
+        # Only believable when the reads that record use actually ran.
+        activity_complete=read_complete,
+    )
+    return IdentityGraph(
+        sources=[meta],
+        principals=principals,
+        credentials=credentials,
+        grants=grants,
+        links=links,
+    )

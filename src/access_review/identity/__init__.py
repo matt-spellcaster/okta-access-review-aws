@@ -2,7 +2,7 @@
 evidenced links between them. See model.py for why it composes above
 `Snapshot` rather than replacing or extending it."""
 
-from .model import (
+from .graph import (
     METHOD_ORDER,
     Coverage,
     Credential,
@@ -19,6 +19,7 @@ from .model import (
     SourceMeta,
     Status,
 )
+from .github import GitHubSnapshot, project_github, source_name
 from .okta import OKTA, project_snapshot
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Coverage",
     "Credential",
     "CredentialKind",
+    "GitHubSnapshot",
     "Grant",
     "GrantKind",
     "Identity",
@@ -37,6 +39,8 @@ __all__ = [
     "PrincipalKey",
     "PrincipalKind",
     "SourceMeta",
+    "source_name",
     "Status",
+    "project_github",
     "project_snapshot",
 ]

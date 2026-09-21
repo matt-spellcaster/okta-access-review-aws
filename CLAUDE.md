@@ -56,6 +56,17 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   by name or email similarity, because a false link marks a credential as accounted for when nobody
   is. Completeness is per source (`SourceMeta`): a read that failed is "incomplete", never "nothing
   found".
+- A new source adapter in `identity/` needs: its own snapshot shape with `from_dict`/`to_dict`, a
+  hand-written fixture in `fixtures/` with one planted case per thing a check will find, a
+  projection into `IdentityGraph`, any new `CredentialKind` members it emits, a re-export from
+  `identity/__init__.py`, and tests -- before any collector that talks to the live API. The model
+  and the projection share the adapter module (`identity/github.py`) until a second reader of that
+  snapshot exists; `models.py` is split out only because fourteen checks read it.
+- **A fixture's shape is the shape the real API returns.** Check every field against the vendor's
+  documentation before building on it: a hand-written fixture that invents fields yields checks
+  validated against data no collector can supply. Where the API cannot provide something, the
+  snapshot says so (`sso_enabled`, `credentials_complete`) rather than leaving it blank. The field
+  allowlist here is the requirement the collector must meet, per `ActivityEvent.from_okta`.
 - Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
   "decide" instead.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
