@@ -17,6 +17,7 @@ from .models import (
     CREDENTIAL_EVENTS,
     DISABLED_STATUSES,
     LIVE_STATUSES,
+    READ_ONLY_ROLES,
     SIGN_IN_EVENTS,
     SIGN_IN_STATUSES,
     TOKEN_EVENTS,
@@ -27,8 +28,6 @@ from .models import (
 from .roster import RosterEntry, entry_for
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
-# Built-in roles that can view but not change anything.
-READ_ONLY_ROLES = {"read-only administrator", "report administrator"}
 # The full list is in snapshot.json; the finding shows the most important ones.
 MAX_SCOPES_SHOWN = 5
 # Sign-on modes whose use can't be relied on to show up as SSO sign-in events
