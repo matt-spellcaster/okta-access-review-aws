@@ -26,6 +26,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from types import MappingProxyType
 
 from ..models import format_time
 
@@ -353,7 +354,10 @@ class IdentityGraph:
         put = object.__setattr__  # frozen dataclass: the only way to fill fields
         for name in ("sources", "principals", "credentials", "grants", "links"):
             put(self, name, tuple(getattr(self, name)))
-        put(self, "group_apps", {k: tuple(v) for k, v in dict(self.group_apps).items()})
+        # Read-only, not just copied: this field IS its own index, so unlike
+        # `grants` a write into it changes what a frozen graph reports and
+        # every evidence record derived after it.
+        put(self, "group_apps", MappingProxyType({k: tuple(v) for k, v in dict(self.group_apps).items()}))
 
         by_key: dict[PrincipalKey, Principal] = {}
         for principal in self.principals:
@@ -477,9 +481,12 @@ class IdentityGraph:
         """The app grants a GROUP grant stands for.
 
         `via` is rebuilt from the group grant's own label, which is the group
-        name the projection stored: an evidence bundle and a decision screen
-        both print this string, so it has to come out exactly as it did when
-        every pair was materialised.
+        name the projection stored: `transitions.py` writes this string into a
+        departure bundle the manifest hashes, so it has to come out exactly as
+        it did when every pair was materialised. Nothing on a decision screen
+        reads it -- `Snapshot.apps_for` builds the same `group:<name>` shape
+        independently for that -- so the two formats are kept in step by
+        matching literals and not by a shared helper.
         """
         if grant.kind is not GrantKind.GROUP:
             return
@@ -568,6 +575,14 @@ class IdentityGraph:
         data (the PDF, a JSM ticket, the CISO's DM), never in Step Functions
         input or output and never in a Slack channel post. `Coverage.to_dict`
         is the counts-only shape for those.
+
+        This is the one place the whole grant set is materialised, and it is
+        not sized for the collect Lambda: at 5000 users over one org-wide group
+        of 250 apps it builds 1.25M dicts and peaks at about 508 MB against a
+        1024 MB limit, which is the cost `group_apps` exists to avoid. Nothing
+        in `src/` calls it today. A caller that needs the graph in a Lambda
+        should serialise `grants` and `group_apps` separately and expand on the
+        way out.
         """
         return {
             "sources": [x.to_dict() for x in self.sources],

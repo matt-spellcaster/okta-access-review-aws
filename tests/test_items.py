@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -304,11 +305,10 @@ def test_nothing_is_matched_on_a_login_or_a_label(demo_graph):
     reaching him, rather than falling back to the names looking alike."""
     findings, _ = run_checks(demo_graph)
     graph = demo_graph.graph
-    stripped = IdentityGraph(
-        sources=graph.sources, principals=graph.principals, credentials=graph.credentials,
-        grants=graph.grants, group_apps=graph.group_apps,
-        links=tuple(x for x in graph.links if x.principal[0] == "okta"),
-    )
+    # replace(), not a hand-built IdentityGraph: every field this does not name
+    # comes across on its own. Listing them by hand is how a derived graph ends
+    # up without `group_apps` and quietly short of everyone's app access.
+    stripped = replace(graph, links=tuple(x for x in graph.links if x.principal[0] == "okta"))
     ctx = ReviewContext(demo_graph.snapshot, demo_graph.roster, demo_graph.config, AS_OF, graph=stripped)
     items = build_items(ctx, findings)
     assert not any(graph_concerns(i) for i in items)

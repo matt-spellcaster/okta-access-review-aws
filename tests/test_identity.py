@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -330,6 +331,83 @@ def test_app_via_group_access_is_not_one_grant_per_member_and_app():
     assert {(g.target_label, g.via) for g in held if g.kind.value == "app"} == {
         (f"App {i}", "group:Everyone") for i in range(20)
     }
+
+
+def test_a_graph_derived_from_another_keeps_the_app_access_it_held():
+    """Rebuilding a graph by naming its fields is how app-via-group access
+    disappears: `group_apps` defaults to empty, so a graph built with
+    `grants=` alone answers `grants_for` with less than it holds -- no error,
+    no gap, and `incomplete_sources()` still clean. `replace` carries every
+    field nobody named, which is why callers derive a graph with it.
+    """
+    groups = [Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u1"})]
+    app = App(id="a1", label="GitHub", status="ACTIVE", groups={"g1"})
+    graph = project_snapshot(snapshot(users=[person("u1", "a@acme.example")], groups=groups, apps=[app]))
+    held = [(g.target_label, g.via) for g in graph.grants_for((OKTA, "u1"))]
+    assert ("GitHub", "group:Eng") in held
+
+    derived = replace(graph, links=())
+    assert [(g.target_label, g.via) for g in derived.grants_for((OKTA, "u1"))] == held
+    # And the trap itself, so the reason for `replace` is on the record: the
+    # hand-built graph loses the app silently and still reports itself complete.
+    by_hand = IdentityGraph(sources=graph.sources, principals=graph.principals, grants=graph.grants)
+    assert ("GitHub", "group:Eng") not in [(g.target_label, g.via) for g in by_hand.grants_for((OKTA, "u1"))]
+    assert by_hand.incomplete_sources() == []
+
+
+def test_the_compressed_group_access_cannot_be_written_to_after_construction():
+    """`group_apps` is the one field that is its own index, so a write into it
+    changes what a frozen graph reports -- and every evidence record derived
+    after that point, mid-run, with the manifest signing whatever came last."""
+    groups = [Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u1"})]
+    app = App(id="a1", label="GitHub", status="ACTIVE", groups={"g1"})
+    graph = project_snapshot(snapshot(users=[person("u1", "a@acme.example")], groups=groups, apps=[app]))
+    before = [(g.target, g.via) for g in graph.grants_for((OKTA, "u1"))]
+    with pytest.raises(Exception):
+        graph.group_apps[(OKTA, "g1")] = (("aX", "Phantom"),)
+    assert [(g.target, g.via) for g in graph.grants_for((OKTA, "u1"))] == before
+
+    # Nor through the mapping the caller handed in.
+    source = {(OKTA, "g1"): [("a1", "GitHub")]}
+    built = IdentityGraph(group_apps=source)
+    source[(OKTA, "g1")].append(("a2", "Extra"))
+    source[(OKTA, "g2")] = [("a3", "Also")]
+    assert dict(built.group_apps) == {(OKTA, "g1"): (("a1", "GitHub"),)}
+
+
+def test_only_a_group_grant_expands_into_the_apps_a_group_reaches():
+    """The expansion is keyed on (source, target), and a ROLE grant's target is
+    a bare role name while an APP grant's is an app id. Without the kind guard
+    any of them could collide with a group id and fabricate app access nobody
+    granted -- straight into a hashed departure bundle."""
+    graph = IdentityGraph(
+        sources=[SourceMeta(source=OKTA, org="x", collected_at=NOW)],
+        principals=[Principal(source=OKTA, id="u1", label="u1", kind=PrincipalKind.HUMAN)],
+        grants=[
+            Grant(OKTA, "u1", GrantKind.ROLE, "g1", "Super Administrator"),
+            Grant(OKTA, "u1", GrantKind.APP, "g1", "Some App"),
+        ],
+        group_apps={(OKTA, "g1"): (("a1", "GitHub"),)},
+    )
+    held = graph.grants_for((OKTA, "u1"))
+    assert [(g.kind.value, g.target_label, g.via) for g in held] == [
+        ("role", "Super Administrator", "direct"),
+        ("app", "Some App", "direct"),
+    ]
+
+
+def test_expanded_group_access_comes_after_what_the_source_stated():
+    """Both orderings are written into `transitions.json`, which the manifest
+    hashes and `attest` re-verifies, so they are evidence and not an
+    implementation detail: a reshuffle changes signed bytes."""
+    users = [person(f"u{i}", f"u{i}@acme.example") for i in range(3)]
+    everyone = Group(id="g1", name="Everyone", type="BUILT_IN", members={u.id for u in users})
+    apps = [App(id=f"a{i}", label=f"App {i}", status="ACTIVE", groups={"g1"}) for i in range(4)]
+    graph = project_snapshot(snapshot(users=users, groups=[everyone], apps=apps))
+
+    assert [g.kind.value for g in graph.grants_for((OKTA, "u1"))] == ["group"] + ["app"] * len(apps)
+    # And the whole view keeps each group grant next to the apps it stands for.
+    assert [g.kind.value for g in graph.all_grants()] == (["group"] + ["app"] * len(apps)) * len(users)
 
 
 def test_composing_a_graph_carries_its_compressed_group_access():

@@ -94,12 +94,23 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   reading `.grants` for either is short by every app anyone reaches through a group, and `compose`
   carries both fields or a second source empties the first one's app access. The expanded grant's
   `via` is rebuilt from the group grant's own label so it stays byte-identical to the materialised
-  form, which `transitions.py` writes into evidence and `items.py` prints.
+  form, which `transitions.py` writes into the hashed departure bundle. `items.py` never reads a
+  graph grant: its `via` comes from `Snapshot.apps_for`, which builds the same `group:<name>` shape
+  independently, so the two formats must not drift.
   `test_grants_holds_only_what_the_source_stated_and_all_grants_holds_everything` pins the split.
+  Derive a graph from another with `dataclasses.replace`, never by naming its fields: `group_apps`
+  defaults to empty, so a hand-built `IdentityGraph(grants=..., links=...)` is short of everyone's
+  app-via-group access while `incomplete_sources()` still reads clean -- silence as absence, in the
+  bundle an auditor reads. `grants_for` now pays the expansion on every call rather than once at
+  projection, so a whole-graph walk is O(principals x groups x apps): call `all_grants()` once
+  instead of looping `grants_for` over every principal.
 - A new source adapter in `identity/` needs: its own snapshot shape with `from_dict`/`to_dict`, a
   hand-written fixture in `fixtures/` with one planted case per thing a check will find, a
   projection into `IdentityGraph`, any new `CredentialKind` members it emits, a re-export from
-  `identity/__init__.py`, and tests -- before any collector that talks to the live API. The model
+  `identity/__init__.py`, and tests -- before any collector that talks to the live API. An adapter
+  that emits `GrantKind.GROUP` grants must also populate `group_apps`, or the apps those groups
+  reach are silently absent with a green suite; the expansion is GROUP -> APP only, so a source
+  whose containers are `TEAM` (GitHub) cannot use it and has to state its grants verbatim. The model
   and the projection share the adapter module (`identity/github.py`) until a second reader of that
   snapshot exists; `models.py` is split out only because fourteen checks read it.
 - **A fixture's shape is the shape the real API returns.** Check every field against the vendor's
