@@ -295,6 +295,59 @@ def test_two_distinct_groups_with_the_same_name_keep_both_access_paths():
     assert rows.count(("app", "a1", "group:Eng")) == 2
 
 
+def test_grants_holds_only_what_the_source_stated_and_all_grants_holds_everything(graph):
+    """`grants` is the stored part, not the whole set.
+
+    App-via-group access lives compressed in `group_apps`, so anything reading
+    `graph.grants` for an answer about who can reach what is short by every app
+    anyone reaches through a group. This is the trap the split creates, and the
+    reason the complete view has a name of its own.
+    """
+    stored = [g.to_dict() for g in graph.grants]
+    whole = [g.to_dict() for g in graph.all_grants()]
+    assert len(stored) < len(whole)
+    missing = [g for g in whole if g not in stored]
+    assert missing and all(g["kind"] == "app" and g["via"].startswith("group:") for g in missing)
+    # And the expanded ones really are absent from the stored field, rather
+    # than the two views merely differing in length.
+    assert not any(g["via"].startswith("group:") for g in stored)
+
+
+def test_app_via_group_access_is_not_one_grant_per_member_and_app():
+    """The reason for the split: one org-wide group over 250 apps is 1.25M
+    grants materialised, which does not fit the collect Lambda. Stored per
+    group it is one entry per app, and each member's own group grant is what
+    says they are in it -- so the answer per principal is unchanged."""
+    users = [person(f"u{i}", f"u{i}@acme.example") for i in range(50)]
+    everyone = Group(id="g1", name="Everyone", type="BUILT_IN", members={u.id for u in users})
+    apps = [App(id=f"a{i}", label=f"App {i}", status="ACTIVE", groups={"g1"}) for i in range(20)]
+    graph = project_snapshot(snapshot(users=users, groups=[everyone], apps=apps))
+
+    assert len(graph.grants) == len(users)  # one group grant each, and nothing else
+    assert len(list(graph.all_grants())) == len(users) * (len(apps) + 1)
+    held = graph.grants_for((OKTA, "u7"))
+    assert len(held) == len(apps) + 1
+    assert {(g.target_label, g.via) for g in held if g.kind.value == "app"} == {
+        (f"App {i}", "group:Everyone") for i in range(20)
+    }
+
+
+def test_composing_a_graph_carries_its_compressed_group_access():
+    """A composed graph answers for every source in it. Dropping `group_apps`
+    in `compose` would empty an Okta user's app access the moment a second
+    source was read -- with a green suite, because the Okta-only graph is fine.
+    """
+    groups = [Group(id="g1", name="Eng", type="OKTA_GROUP", members={"u1"})]
+    app = App(id="a1", label="GitHub", status="ACTIVE", groups={"g1"})
+    okta_graph = project_snapshot(snapshot(users=[person("u1", "a@acme.example")], groups=groups, apps=[app]))
+    other = IdentityGraph(sources=[SourceMeta(source="github", org="acme", collected_at=NOW)])
+
+    composed = IdentityGraph.compose(okta_graph, other)
+    assert [(g.target_label, g.via) for g in composed.grants_for((OKTA, "u1")) if g.kind.value == "app"] == [
+        ("GitHub", "group:Eng")
+    ]
+
+
 def test_access_held_by_an_account_the_user_read_missed_is_not_invisible():
     # A capped or filtered user read leaves group members with no principal.
     # Left bare that is access held by nobody: uncounted, and unfindable.

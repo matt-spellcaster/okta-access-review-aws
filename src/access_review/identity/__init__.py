@@ -4,11 +4,13 @@ evidenced links between them. See model.py for why it composes above
 
 from .graph import (
     METHOD_ORDER,
+    AppRef,
     Coverage,
     Credential,
     CredentialKind,
     Grant,
     GrantKind,
+    GroupKey,
     Identity,
     IdentityGraph,
     Link,
@@ -25,12 +27,14 @@ from .okta import OKTA, identity_key, project_snapshot
 __all__ = [
     "METHOD_ORDER",
     "OKTA",
+    "AppRef",
     "Coverage",
     "Credential",
     "CredentialKind",
     "GitHubSnapshot",
     "Grant",
     "GrantKind",
+    "GroupKey",
     "Identity",
     "IdentityGraph",
     "Link",

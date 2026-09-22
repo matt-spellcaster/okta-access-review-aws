@@ -306,7 +306,8 @@ def test_nothing_is_matched_on_a_login_or_a_label(demo_graph):
     graph = demo_graph.graph
     stripped = IdentityGraph(
         sources=graph.sources, principals=graph.principals, credentials=graph.credentials,
-        grants=graph.grants, links=tuple(x for x in graph.links if x.principal[0] == "okta"),
+        grants=graph.grants, group_apps=graph.group_apps,
+        links=tuple(x for x in graph.links if x.principal[0] == "okta"),
     )
     ctx = ReviewContext(demo_graph.snapshot, demo_graph.roster, demo_graph.config, AS_OF, graph=stripped)
     items = build_items(ctx, findings)

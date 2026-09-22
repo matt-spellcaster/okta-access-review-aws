@@ -22,6 +22,7 @@ coverage number can never disagree with the principals behind it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -31,6 +32,13 @@ from ..models import format_time
 # A principal is only unique within its source: two sources can both have an
 # "alice", and an AWS key and a GitHub PAT are different things with the same id.
 PrincipalKey = tuple[str, str]
+
+# A group, in the source that holds it: (source, group id). Same shape as
+# PrincipalKey and deliberately not the same alias -- a group is not a principal.
+GroupKey = tuple[str, str]
+
+# An app a group reaches: (app id, app label).
+AppRef = tuple[str, str]
 
 
 class PrincipalKind(StrEnum):
@@ -320,6 +328,16 @@ class IdentityGraph:
     `compose`. Frozen, because every lookup is indexed on construction: a graph
     that could be appended to after the fact would answer `principal()` with
     None for a principal it contains, and no test would catch it.
+
+    `grants` is what a source stated verbatim; it is NOT every grant in the
+    graph. App-via-group access is held compressed in `group_apps` -- the apps
+    a group reaches, once per group rather than once per (member, app) pair --
+    and expanded on read by `grants_for`. One org-wide group over 250 apps is
+    1.25M grants materialised against a 1024 MB Lambda; stored this way it is
+    250 entries and the members' own GROUP grants. Ask `grants_for` for one
+    principal's access and `all_grants()` for the whole set. Reading `grants`
+    directly gets an answer that is short by every app anyone reaches through a
+    group.
     """
 
     sources: tuple[SourceMeta, ...] = ()
@@ -327,11 +345,15 @@ class IdentityGraph:
     credentials: tuple[Credential, ...] = ()
     grants: tuple[Grant, ...] = ()
     links: tuple[Link, ...] = ()
+    # (source, group id) -> the apps that group reaches. Expanded against a
+    # principal's own GROUP grants, which are what say who is in the group.
+    group_apps: Mapping[GroupKey, tuple[AppRef, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         put = object.__setattr__  # frozen dataclass: the only way to fill fields
         for name in ("sources", "principals", "credentials", "grants", "links"):
             put(self, name, tuple(getattr(self, name)))
+        put(self, "group_apps", {k: tuple(v) for k, v in dict(self.group_apps).items()})
 
         by_key: dict[PrincipalKey, Principal] = {}
         for principal in self.principals:
@@ -414,6 +436,9 @@ class IdentityGraph:
             credentials=tuple(c for g in graphs for c in g.credentials),
             grants=tuple(x for g in graphs for x in g.grants),
             links=tuple(x for g in graphs for x in g.links),
+            # Keys carry their source and compose rejects a source appearing
+            # twice, so there is nothing to collide.
+            group_apps={k: v for g in graphs for k, v in g.group_apps.items()},
         )
 
     def principal(self, key: PrincipalKey) -> Principal | None:
@@ -448,8 +473,46 @@ class IdentityGraph:
         # to it and change what a frozen graph reports.
         return list(self._credentials.get(key, ()))
 
+    def _via_group(self, grant: Grant) -> Iterator[Grant]:
+        """The app grants a GROUP grant stands for.
+
+        `via` is rebuilt from the group grant's own label, which is the group
+        name the projection stored: an evidence bundle and a decision screen
+        both print this string, so it has to come out exactly as it did when
+        every pair was materialised.
+        """
+        if grant.kind is not GrantKind.GROUP:
+            return
+        for app_id, app_label in self.group_apps.get((grant.source, grant.target), ()):
+            yield Grant(
+                grant.source,
+                grant.principal,
+                GrantKind.APP,
+                app_id,
+                app_label,
+                f"group:{grant.target_label}",
+            )
+
     def grants_for(self, key: PrincipalKey) -> list[Grant]:
-        return list(self._grants.get(key, ()))
+        """Everything this principal can reach: what the source stated, plus
+        the apps its groups reach.
+
+        A new list each call, and the expanded grants come last -- they are
+        built here, not stored, so nothing can hold a reference to one.
+        """
+        stored = self._grants.get(key, ())
+        out = list(stored)
+        if self.group_apps:
+            for grant in stored:
+                out.extend(self._via_group(grant))
+        return out
+
+    def all_grants(self) -> Iterator[Grant]:
+        """Every grant in the graph, expanded. This is the complete set;
+        `grants` is only the part stored verbatim."""
+        for grant in self.grants:
+            yield grant
+            yield from self._via_group(grant)
 
     def principals_of(self, identity: str) -> list[Principal]:
         """Everything this person holds, across sources -- including principals
@@ -510,6 +573,6 @@ class IdentityGraph:
             "sources": [x.to_dict() for x in self.sources],
             "principals": [x.to_dict() for x in self.principals],
             "credentials": [x.to_dict() for x in self.credentials],
-            "grants": [x.to_dict() for x in self.grants],
+            "grants": [x.to_dict() for x in self.all_grants()],
             "links": [x.to_dict() for x in self.links],
         }

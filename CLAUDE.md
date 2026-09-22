@@ -87,6 +87,15 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   by name or email similarity, because a false link marks a credential as accounted for when nobody
   is. Completeness is per source (`SourceMeta`): a read that failed is "incomplete", never "nothing
   found".
+- `IdentityGraph.grants` is only what a source stated verbatim, never the whole set. App-via-group
+  access is stored once per group (`group_apps`) and expanded on read, because one org-wide group
+  over 250 apps materialises 1.25M grants and 535 MB RSS against a 1024 MB collect Lambda. Ask
+  `grants_for(key)` for one principal's access and `all_grants()` for every grant in the graph;
+  reading `.grants` for either is short by every app anyone reaches through a group, and `compose`
+  carries both fields or a second source empties the first one's app access. The expanded grant's
+  `via` is rebuilt from the group grant's own label so it stays byte-identical to the materialised
+  form, which `transitions.py` writes into evidence and `items.py` prints.
+  `test_grants_holds_only_what_the_source_stated_and_all_grants_holds_everything` pins the split.
 - A new source adapter in `identity/` needs: its own snapshot shape with `from_dict`/`to_dict`, a
   hand-written fixture in `fixtures/` with one planted case per thing a check will find, a
   projection into `IdentityGraph`, any new `CredentialKind` members it emits, a re-export from
