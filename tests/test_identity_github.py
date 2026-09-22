@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -337,6 +338,12 @@ def test_unread_organization_roles_are_a_gap_not_an_absence():
     assert snapshot.roles_complete is False
     graph = project_github(snapshot)
     assert any("Organization roles" in g for g in graph.sources[0].gaps)
+    # And as a flag on the source, not only as prose in the gaps. AR-17 and
+    # AR-18 grade on the role list, and a gap string is not something a
+    # severity expression can be asked to parse -- the same reason
+    # `activity_complete` exists beside the credential gap.
+    assert graph.sources[0].roles_complete is False
+    assert project_github(replace(snapshot, roles_complete=True)).sources[0].roles_complete is True
 
 
 def test_team_access_held_by_an_account_the_member_read_missed_is_not_invisible(graph):

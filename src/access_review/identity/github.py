@@ -650,6 +650,11 @@ def project_github(snapshot: GitHubSnapshot, register: Register | None = None) -
         activity_since=None,
         # Only believable when the reads that record use actually ran.
         activity_complete=read_complete,
+        # Its own read again, and its own answer: the gap above says the
+        # organization roles were never fetched, and this is what a check
+        # grading on roles reads so that an empty list is not taken for an
+        # ordinary member.
+        roles_complete=snapshot.roles_complete,
     )
     return IdentityGraph(
         sources=[meta],

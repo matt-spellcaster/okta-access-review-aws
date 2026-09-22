@@ -455,7 +455,7 @@ LEFT = "marcus.lee@acme.example"
 
 def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
           kind=PrincipalKind.SERVICE, method=LinkMethod.DECLARED, identity=LEFT,
-          credentials=True, activity_complete=True):
+          credentials=True, activity_complete=True, roles_complete=True):
     """The demo graph with one more service account on it, owned by a leaver.
 
     The demo fixture's own two cases are Okta API clients, which is the shape
@@ -481,7 +481,8 @@ def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
         grants=(*graph.grants, *(Grant(GH, "bot-1", GrantKind.ROLE, r.lower(), r) for r in roles)),
         links=(*graph.links, Link((GH, "bot-1"), method, identity,
                                   "declared a service account in the review register")),
-        sources=tuple(replace(m, activity_complete=activity_complete) if m.source == GH else m
+        sources=tuple(replace(m, activity_complete=activity_complete, roles_complete=roles_complete)
+                      if m.source == GH else m
                       for m in graph.sources),
     )
     return [f for f in run_checks(demo)[0] if f.subject == f"{GH}/bot-1"]
@@ -590,6 +591,60 @@ def test_a_leavers_service_account_whose_credential_read_failed_is_not_ranked_cl
     [complete] = _owns(demo, credentials=False, activity_complete=True)
     assert complete.severity == "high"
     assert "did not complete" not in complete.detail
+
+
+def test_a_leavers_service_account_whose_role_read_did_not_complete_is_critical(demo):
+    """The roles half of the same rule the credential half already follows.
+
+    `_elevated_roles` reads ROLE grants, and a source whose role read never ran
+    emits none -- identical to a client that genuinely holds nothing. Graded
+    together, an account that could be an organization owner or a Super
+    Administrator dropped a rung because a call failed, which is the milder
+    answer derived from a read that did not happen.
+
+    `write_access=False` is what makes this a test of the roles branch alone:
+    the credential is known read-only, so `critical` can only come from the
+    unread roles. Delete `not roles_known` from the severity and only this
+    case and its AR-17 twin move.
+    """
+    [found] = _owns(demo, write_access=False, roles_complete=False)
+    assert found.check_id == "AR-18"
+    assert found.severity == "critical", "an unread role list is not the read-only case"
+    # And the finding says why, next to the credential sentence: "holds pat
+    # ...aa11" reads as the whole of what the account can do otherwise.
+    assert "role read did not complete" in found.detail
+
+
+def test_a_leavers_own_access_is_critical_when_the_role_read_did_not_complete(demo):
+    """AR-17's half of it, kept in step with AR-18's by being fixed alongside.
+
+    The two checks grade the same silence, so the same mutation kills them
+    separately: this one is the departed person's own account rather than a
+    service account they owned, and it reaches the other expression.
+    """
+    [found] = _owns(demo, write_access=False, kind=PrincipalKind.HUMAN, roles_complete=False)
+    assert found.check_id == "AR-17"
+    assert found.severity == "critical", "an unread role list is not the read-only case"
+    assert "role read did not complete" in found.detail
+
+
+def test_a_role_read_that_completed_and_found_nothing_grades_on_write_access_alone(demo):
+    """The control for both, and the half that keeps this from being a
+    constant. Emptiness IS evidence once the read that would have said so ran,
+    so an account with no roles and a credential known to be read-only is
+    `high` -- work, because nobody is accountable for a live credential, but
+    not an investigation. Grade every empty role list critical and only this
+    case moves, in both checks at once.
+    """
+    original = demo.graph
+    [service] = _owns(demo, write_access=False, roles_complete=True)
+    assert (service.check_id, service.severity) == ("AR-18", "high")
+    assert "role read" not in service.detail
+
+    demo.graph = original  # `_owns` adds to the graph it is handed
+    [person] = _owns(demo, write_access=False, kind=PrincipalKind.HUMAN, roles_complete=True)
+    assert (person.check_id, person.severity) == ("AR-17", "high")
+    assert "role read" not in person.detail
 
 
 def test_one_leaver_with_two_okta_accounts_owns_their_service_account_once(demo):

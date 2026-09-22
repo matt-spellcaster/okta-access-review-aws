@@ -551,5 +551,6 @@
     }
   ],
   "app_usage_since": "2026-06-17T00:00:00Z",
-  "app_usage_complete": true
+  "app_usage_complete": true,
+  "roles_complete": true
 }

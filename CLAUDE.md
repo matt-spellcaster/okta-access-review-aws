@@ -54,6 +54,9 @@ that area.
   `ReviewRun.gaps` / `.complete`, never `snapshot.gaps`.
 - `watch.still_present` returns `None` when the data behind a ticket wasn't read; each branch needs
   its own signal (`admin_roles is None`, `apps_complete`, `snapshot.gaps`, `leavers is None`).
+- Credentials and roles each have their own completeness signal (`activity_complete`,
+  `roles_complete`). A check grading on either asks `_credential_evidence_complete` /
+  `_roles_evidence_complete` first; an unread list grades as the worse case.
 - `items.py` never proposes Revoke on missing or truncated data; the item becomes "decide".
 - `history.py` and `attest` never write outside the report folder, never change a hashed file,
   never send anything, and never count a review they couldn't verify. `reopened` is never set

@@ -387,6 +387,12 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
         # credentials of, which is per credential and so not this flag's to say:
         # `Credential.usage_read` carries it.
         activity_complete=snapshot.activity_since is not None and snapshot.app_usage_complete,
+        # The admin role read is optional and refused on its own (`okta.roles.
+        # read`), and a refusal leaves every service client's `admin_roles`
+        # empty rather than None -- an App has no tri-state the way a User
+        # does. Without this, a client holding Super Administrator reads as
+        # holding no role at all.
+        roles_complete=snapshot.roles_complete,
     )
     return IdentityGraph(
         sources=[meta],

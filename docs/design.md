@@ -55,7 +55,8 @@ emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`)
 because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.
 `checks._elevated_roles` reads every ROLE grant and AR-17 grades critical on it, so an ordinary
 member appearing there makes every departure critical. A role the adapter does not recognise is
-treated as elevated. Roles the snapshot never read are a gap (`roles_complete`), not an absence.
+treated as elevated. Roles the snapshot never read are a gap (`roles_complete`), not an absence --
+and a gap the severity itself reads, not only one the report prints: see Completeness.
 
 ## Completeness
 
@@ -67,6 +68,21 @@ Emptiness is only evidence when the read that would have said so ran. A check re
 asks `_credential_evidence_complete` first (`SourceMeta.activity_complete`, not `.complete` --
 identity gaps say nothing about whether the scopes were read), and `_write_access` returns None,
 not False, when they were not. Unknown is never ranked as the milder case.
+
+The same holds for roles, through a **third** completeness signal: a check grading on a role list
+asks `_roles_evidence_complete` (`SourceMeta.roles_complete`) first. `.complete` is identity,
+`.activity_complete` is credential activity, and roles are their own optional read that fails on
+its own -- `okta.roles.read` in Okta, the organization-roles endpoints in GitHub -- and both
+sources hand back an empty list when it does. `_elevated_roles` therefore cannot tell "holds no
+elevated role" from "nobody read the roles", so AR-17 and AR-18 grade `critical` on an unread list
+exactly as they do on unknown write access, and say so in the detail (`_roles_unread_note`). The
+half-fixed version of this shipped: the write half already read None as the worse case while the
+roles half beside it read `[]` as the milder one, so a departed organization owner whose roles
+were never fetched graded `high` with a detail naming only a read-only token. Both adapters
+populate the flag -- `Snapshot.roles_complete` comes off `roles_api.allowed` in `collect`, because
+`User.admin_roles` has a None for this and `App.admin_roles` does not -- and each wiring point has
+a test that kills its removal, since a projection that drops the field falls back to the
+permissive default and the whole fix goes silently inert.
 
 An empty `outside_okta` is three different answers and `items.outside_okta_gap` says which:
 no source but Okta was read, a source was read but did not complete, or a complete read found

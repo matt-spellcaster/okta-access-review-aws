@@ -308,6 +308,14 @@ class Snapshot:
     app_usage: dict[tuple[str, str], datetime] = field(default_factory=dict)
     app_usage_since: datetime | None = None
     app_usage_complete: bool = True
+    # False when the admin role assignment read was refused, so every user's
+    # and every service client's role list came back empty because nobody read
+    # it. `User.admin_roles` is None per user for the same reason, but an App
+    # has no such tri-state and a service client's empty list is otherwise
+    # indistinguishable from "holds no role" -- which is the severity judgement
+    # AR-18 makes. Separate from apps_complete and app_usage_complete: three
+    # optional reads that fail independently.
+    roles_complete: bool = True
     # False when the admin role running the collection was hiding apps, so
     # `apps` and every app's assignment list are a subset of the estate. A
     # missing assignment then means "not visible", not "not assigned", and
@@ -358,6 +366,7 @@ class Snapshot:
             },
             app_usage_since=parse_time(d.get("app_usage_since")),
             app_usage_complete=d.get("app_usage_complete", True),
+            roles_complete=d.get("roles_complete", True),
             apps_complete=d.get("apps_complete", True),
         )
 
@@ -379,5 +388,6 @@ class Snapshot:
             ],
             "app_usage_since": format_time(self.app_usage_since),
             "app_usage_complete": self.app_usage_complete,
+            "roles_complete": self.roles_complete,
             "apps_complete": self.apps_complete,
         }

@@ -365,5 +365,9 @@ def collect(
         app_usage=usage,
         app_usage_since=usage_since,
         app_usage_complete=usage_complete,
+        # The roles read is shared between a user's own assignments and a
+        # service client's, and a refusal leaves both as empty lists. Recorded
+        # here so a check can tell "holds no admin role" from "nobody looked".
+        roles_complete=roles_api.allowed,
         apps_complete=apps_complete,
     )

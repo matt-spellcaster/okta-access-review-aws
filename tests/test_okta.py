@@ -242,6 +242,13 @@ def test_collect_marks_roles_unknown_and_skips_grants_when_forbidden(keypair, ca
     # And it survives being written and read back, which is how every consumer
     # after the collector gets it.
     assert Snapshot.from_dict(snap.to_dict()).apps_complete is False
+    # The roles read is the same shape of problem and needs the same flag.
+    # `User.admin_roles` is None above, but an App has no tri-state: a service
+    # client whose roles were refused carries `[]`, exactly as one holding none
+    # does, and AR-18 grades on that list. Without this, the refusal is visible
+    # only as prose in `gaps`.
+    assert snap.roles_complete is False
+    assert Snapshot.from_dict(snap.to_dict()).roles_complete is False
 
 
 def test_no_gap_when_review_app_is_visible(keypair):
@@ -250,6 +257,10 @@ def test_no_gap_when_review_app_is_visible(keypair):
     assert snap.gaps == []
     assert snap.apps_complete is True
     assert Snapshot.from_dict(snap.to_dict()).apps_complete is True
+    # The control: a read that ran says so, or the flag would be a constant and
+    # every review would report its roles as unknown.
+    assert snap.roles_complete is True
+    assert Snapshot.from_dict(snap.to_dict()).roles_complete is True
 
 
 def test_get_capped_stops_at_the_limit(keypair):
