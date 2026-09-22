@@ -154,7 +154,7 @@ def test_remediation_follows_the_signed_decisions(world):
     deps, run, items, _, jira, _ = world
     out = finish_review(deps, run, items)
     # 7 revokes, plus a fix ticket for each finding that isn't an access decision.
-    assert out["revoke_tickets"] == 7 and out["fix_tickets"] == 7 and out["opened_now"] == 14
+    assert out["revoke_tickets"] == 7 and out["fix_tickets"] == 9 and out["opened_now"] == 16
     parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
     assert any(k == parent and "Signed off in Slack" in body for k, body in jira.comments)
     # Tampering with the signed decisions stops remediation.
@@ -253,11 +253,11 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     # in Okta" covered four tickets (AR-05/06/07/10) that settled on the
     # reviewer's word, and that sentence is the one an auditor reads.
     assert "13 verified against a fresh Okta snapshot" in last
-    assert "4 resolved on the reviewer's word" in last
+    assert "6 resolved on the reviewer's word" in last  # AR-18's two among them
     assert "verified in Okta" not in last
     closing = [b for k, b in jira.comments if k == parent][-1]
     assert "13 verified against a fresh Okta snapshot" in closing
-    assert "4 resolved on the reviewer's word" in closing
+    assert "6 resolved on the reviewer's word" in closing
     assert "Everything under this review was verified in Okta" not in closing
     # 13 + 4 accounts for all 17, so "every ticket" is a claim the counts support.
     assert "Every ticket under this review is settled" in closing
@@ -270,7 +270,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
     [(channel, checklist, _)] = [(c, p, ts) for c, p, ts in deps.bot.posts if "To close" in json.dumps(p)]
     text = json.dumps(checklist)
     assert checklist["thread_ts"] == state["approve"]["ts"]  # in the approval message's thread
-    assert "0 of 17 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
+    assert "0 of 19 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
     assert any(k == state["parent_issue"] and "To close this ticket" in body for k, body in jira.comments)
 
     lee = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
@@ -283,7 +283,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
 
     ts = state["checklist"]["ts"] if "checklist" in state else load_state(deps.s3, "work", run)[0]["checklist"]["ts"]
     updated = [p for c, t, p in deps.bot.updates if t == ts][-1]
-    assert "1 of 17 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
+    assert "1 of 19 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
 
 
 def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):

@@ -134,12 +134,21 @@ def test_the_checklist_says_which_lines_the_daily_check_will_not_confirm():
     assert not any("taken on your word" in ln for ln in checklist_lines([okta]))
 
 
-def test_the_checklist_explanation_names_access_in_another_source():
+def test_the_checklist_explanation_covers_every_kind_taken_on_the_reviewers_word():
     """It enumerated the judgement calls (inactive accounts, contractor
     exceptions, API client scopes) and stopped there, so a GitHub ticket sat
-    ticked among Okta-verified ones with the text implying Okta had confirmed it."""
+    ticked among Okta-verified ones with the text implying Okta had confirmed it.
+
+    AR-18 is the third kind and fits neither: a service account handed to a new
+    owner, which can be an Okta API client, so "in another source" would be as
+    wrong for it as the original enumeration was for GitHub. What the line may
+    claim is the one thing true of all of them -- this review does not look
+    again -- and it must not imply Okta cannot see the change.
+    """
     how = json.dumps(checklist_message("run-1", ("UAR-1", None), [entry(verify="reviewer")]))
-    assert "another source" in how and "cannot re-read" in how
+    assert "another source" in how and "service account" in how
+    assert "does not re-read it" in how
+    assert "cannot be checked in Okta" not in how
 
 
 def test_the_checklist_still_distinguishes_them_after_ticking():
@@ -158,3 +167,36 @@ def test_the_signoff_list_says_which_concerns_the_decision_did_not_settle():
     assert "not changed by this decision:" in line
     assert "AR-17" in line.split("not changed by this decision:")[1]
     assert f":warning: {CONCERN}" in line
+
+
+def test_none_of_the_wording_claims_the_finding_is_outside_okta():
+    """What every other test here pins is placement, not the claim.
+
+    They all read the heading off `OUTSIDE`, which is right -- one wording in
+    three places, and a test spelling it again would pass while two of them
+    drifted -- but it means reverting the constant to "Access outside Okta"
+    leaves the suite green. That sentence is false for the case the block now
+    exists for: AR-18's two demo subjects are Okta API clients, in Okta, which
+    deactivating their owner's account does not touch. The card, the item
+    written into the signed review_items.json and the ticket paragraph all have
+    to say what is not settled, never where the account lives.
+    """
+    from access_review.items import CROSS_SOURCE_REASON, CROSS_SOURCE_TARGET
+    from access_review.tickets import _scope_to_okta
+
+    # An AR-18 concern, not AR-17's: the payload here is a finding about an Okta
+    # API client, so anything the framing adds about "outside Okta" is the
+    # review's own false claim rather than a check title quoted verbatim.
+    owned = ("Terraform Automation: Marcus Lee left 2026-08-29 (AR-18 Service account owned by "
+             "someone who left; declared a service account in the review register)")
+    written = [OUTSIDE, CROSS_SOURCE_TARGET, CROSS_SOURCE_REASON]
+    written += card_lines(item(outside_okta=(owned,)))
+    cross = item(kind=CROSS_SOURCE, proposed=DECIDE)
+    written += decision_lines([cross], {cross.key: {"decision": KEEP, "reason": ""}})
+    written += _scope_to_okta((owned,), "", "Closing their way in through Okta")
+
+    for text in written:
+        assert "outside okta" not in json.dumps(text).lower(), text
+    # And the heading and the stored target are the same words, so a reword
+    # cannot land on the card and miss the file an auditor reads.
+    assert CROSS_SOURCE_TARGET == OUTSIDE

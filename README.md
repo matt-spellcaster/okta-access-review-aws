@@ -127,7 +127,7 @@ those and nothing else.
 | AR-09 | Suspended or deprovisioned, but still in groups or apps | medium | SOC 2 CC6.2 · ISO A.5.18 |
 | AR-10 | Service app with write scopes or an admin role that can make changes (high if Super Administrator) | medium | SOC 2 CC6.3 · ISO A.8.2 |
 | AR-11 | Admin user, for the reviewer to confirm | info | SOC 2 CC6.3 · ISO A.8.2 |
-| AR-12 | Leaver still holds an API token, or an API client they set up | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
+| AR-12 | Leaver still holds a working API token | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
 | AR-13 | Signed in, or used a credential, after their last working day | critical | SOC 2 CC6.2, CC7.2 · ISO A.5.18, A.8.16 |
 | AR-14 | Directly assigned app with no sign-in to it for 90+ days (skipped if the System Log can't be read in full) | medium | SOC 2 CC6.2 · ISO A.5.18 |
 
@@ -136,9 +136,11 @@ and passed in with `--roster` (there's no live HR integration yet). Without it t
 the report says so. Thresholds and group names are configurable.
 
 AR-12 and AR-13 are about the leaver cases an account status doesn't show. An Okta API token keeps
-working after the account is deactivated, and so does an API client the leaver set up, on its own
-credentials. AR-13 reads the System Log to say whether any of it was actually used after their last
-working day. Okta keeps 90 days of log data, so a termination older than that is reported as a gap
+working after the account is deactivated, and so does an API client the leaver set up. The token is
+AR-12's; the client is AR-18's, because the answer to it is a new owner rather than a revocation,
+and one account with both findings would be two tickets contradicting each other. AR-13 reads the
+System Log to say whether any of it was actually used after their last working day, the client
+included. Okta keeps 90 days of log data, so a termination older than that is reported as a gap
 rather than as nothing to see.
 
 ## Evidence produced
@@ -152,7 +154,7 @@ Each run writes a folder named after its collection time:
 | `findings.csv` | Tracking remediation, with how long each finding has been open |
 | `snapshot.json` | The exact Okta data the checks ran on |
 | `github_snapshot.json` | The GitHub data, when `--github` was given: the cross-source findings rest on it |
-| `transitions.json` | One bundle per departure (with `--github`): everything that person still holds across sources, the evidence linking each account to them, and every finding about them |
+| `transitions.json` | One bundle per departure (with `--github`): everything that person still holds across sources, the evidence linking each account to them, and every finding about them. A departure bundle needs a second estate to be worth writing, so an Okta-only run produces none |
 | `roster.csv` | A copy of the HR roster export the review compared against |
 | `manifest.json` | Config, roster name, row count and hash, completeness, the earlier reviews history was read from, and a SHA-256 hash of every file |
 | `attestations.json` | Added by `access-review attest <folder> --decision approved --reviewer NAME`: sign-offs tied to the manifest's hash ([details](docs/configuration.md#sign-off-attest)) |

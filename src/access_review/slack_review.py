@@ -385,10 +385,10 @@ def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> d
     """What has to happen before the tracking ticket can close. Each entry is
     {"ticket": Ticket, "todo": str, "due": str, "verified": str | None,
      "accepted": bool, "verify": "okta" | "reviewer"};
-    the daily check ticks entries off as it confirms them in Okta, or, for
-    judgement calls and findings in another source (`verify` "reviewer"), as soon
-    as their ticket is resolved. `verify` is what will happen, `accepted` what
-    did, so a line says which it is before anyone has ticked it."""
+    the daily check ticks entries off as it confirms them in Okta, or, for the
+    ones it does not re-read (`verify` "reviewer"), as soon as their ticket is
+    resolved. `verify` is what will happen, `accepted` what did, so a line says
+    which it is before anyone has ticked it."""
     done = sum(1 for e in entries if e.get("verified"))
     lines = [f":clipboard: *To close {ticket_link(parent) or 'the tracking ticket'}* "
              f"({done} of {len(entries)} done)"]
@@ -407,9 +407,10 @@ def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> d
         how = ("How: make each change in Okta, then resolve its ticket in JSM. The daily check (07:00) "
                "confirms it in Okta and ticks it off here. The lines marked *taken on your word* are "
                "ticked off as soon as they are resolved, without Okta being consulted: they ask for a "
-               "decision (inactive or unused accounts, contractor exceptions, API client scopes), or they "
-               "concern access in another source, which this review can read but cannot re-read to confirm "
-               f"a fix. When every line is ticked, {ticket_link(parent) or 'the tracking ticket'} closes "
+               "decision (inactive or unused accounts, contractor exceptions, API client scopes), for a "
+               "service account to be handed over, or for a change in another source. This review reads "
+               f"each of those once and does not re-read it to confirm a fix. When every line is ticked, "
+               f"{ticket_link(parent) or 'the tracking ticket'} closes "
                f"automatically.")
     else:
         how = f"Nothing to fix. {ticket_link(parent) or 'The tracking ticket'} closes at the next daily check."

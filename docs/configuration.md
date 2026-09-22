@@ -92,7 +92,9 @@ What each field changes:
   sees the person is gone, and reports the account as one nothing and nobody is now accountable for.
   The fix is to name a new owner here, or to decommission the account — not to revoke it, because
   something is presumably still calling it. An Okta API client is the case this exists for:
-  deactivating the person who owned it does not touch it, so no other check in this review sees it.
+  deactivating the person who owned it does not touch it, and no other check asks who is now
+  accountable for it. AR-12 used to report the same client under the leaver's own ticket, which
+  asked for the opposite; it now covers the tokens a person held and leaves the account here.
   A `reviewed` date on the entry is what tells the reviewer how old the claim they are replacing is.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.

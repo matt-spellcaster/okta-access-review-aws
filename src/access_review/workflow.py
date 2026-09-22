@@ -449,8 +449,12 @@ def how_settled(in_okta: int, on_word: int, unaccounted: int = 0) -> str:
     if in_okta:
         parts.append(f"{in_okta} verified against a fresh Okta snapshot")
     if on_word:
-        parts.append(f"{on_word} resolved on the reviewer's word (a decision, or access in a source "
-                     f"this review cannot re-read)")
+        # Not "a decision, or access in another source": AR-18 is neither. It
+        # reports a service account whose owner left, which can be an Okta API
+        # client, and it settles this way because the review does not re-read
+        # it -- not because of where it lives or what kind of answer it wants.
+        parts.append(f"{on_word} resolved on the reviewer's word (this review does not re-read "
+                     f"these to confirm the fix)")
     if unaccounted:
         parts.append(f"{unaccounted} with no verification record on file")
     return ", ".join(parts) or "there was nothing to fix"

@@ -166,7 +166,7 @@ class Remediation:
         """One ticket per person, listing every leaver finding about them.
 
         people maps a lowercased login to their Okta user ID, for the link.
-        outside maps a lowercased login to (what they hold in another source, why
+        outside maps a lowercased login to (what this ticket does not settle, why
         that may be unknown), from `items.outside_okta_by_login`. This ticket is
         the headline one for a departure and it closes on a fresh Okta read
         (`watch.still_present` runs LEAVER_ACCESS_CHECKS, all Okta), so without
@@ -201,8 +201,8 @@ class Remediation:
                                                "checks": [r["check_id"] for r in rows], "due": due,
                                                "outside_okta": list(held),
                                                "todo": f"Remove every way in through Okta for leaver "
-                                                       f"{subject} (account, API tokens, API clients "
-                                                       f"they set up)"}, {
+                                                       f"{subject} (account and API tokens; a service "
+                                                       f"account they owned is AR-18's own ticket)"}, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
                 "summary": f"Remove access for leaver {subject}",
@@ -233,7 +233,7 @@ class Remediation:
                     f"Why: {final[key].get('reason') or item.reason}",
                     *[f"Fact: {f}" for f in item.facts],
                     *[f"Concern: {c}" for c in item.concerns],
-                    # Access in another source is named but held outside this
+                    # What this decision does not settle is named but held outside this
                     # ticket's scope. The closing line below promises the daily
                     # check confirms the fix in Okta, and Okta cannot see
                     # whether a GitHub owner role is gone -- so listing these as

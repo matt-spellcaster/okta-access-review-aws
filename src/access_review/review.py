@@ -70,27 +70,35 @@ def run_review(
     With require_items (the AWS review), also the review items for Slack.
 
     github_path adds a second source: the Okta snapshot and it are projected
-    into one IdentityGraph, which is what the cross-source checks read. Without
-    it those checks are skipped rather than run against half an estate.
+    into one IdentityGraph alongside Okta's own projection, which is what the
+    graph checks read.
+
+    The graph is built either way. An estate of one is still an estate: the
+    register declares service accounts in Okta too, and AR-18's whole case --
+    an Okta API client whose accountable owner has left -- is built from the
+    snapshot, the roster and the register, none of which need a second source.
+    Gating the graph on `github_path` meant every graph check was skipped on
+    an Okta-only run, which is every AWS run, so the one check written for
+    Okta's own service clients could not fire where it was meant to. What a
+    second source adds is the other estate, not the graph.
     """
-    graph = None
     # Values are text, or an iterable of chunks for a file too big to hold
     # whole. `write_report` writes either straight into the run folder.
     extra: dict[str, str | Iterable[str]] = {}
+    # The register reaches both projections. It used to reach only Okta, so a
+    # declared GitHub bot was a service account in the config and an unowned
+    # mystery in the graph.
+    projections = [project_snapshot(snapshot, config.service_accounts)]
     if github_path is not None:
         github = _load_github(github_path)
-        # The register reaches both projections. It used to reach only Okta,
-        # so a declared GitHub bot was a service account in the config and an
-        # unowned mystery in the graph.
-        graph = IdentityGraph.compose(
-            project_snapshot(snapshot, config.service_accounts),
-            project_github(github, config.service_accounts),
-        )
+        projections.append(project_github(github, config.service_accounts))
+    graph = IdentityGraph.compose(*projections)
+    if github_path is not None:
         _note_skew(graph, github, snapshot)
-        _note_register(graph, config.service_accounts)
         # The data nine findings rest on, inside the bundle the manifest signs.
         # Without it `attest` can verify the report but not what it was read from.
         extra[GITHUB_SNAPSHOT_FILE] = json.dumps(github.to_dict(), indent=2) + "\n"
+    _note_register(graph, config.service_accounts)
     ctx = ReviewContext(snapshot, roster, config, as_of, graph=graph)
     findings, skipped = run_checks(ctx)
     history = load_history(out_dir, run_dir_name(snapshot), snapshot.org_url, as_of, config.history_reviews)

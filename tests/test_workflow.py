@@ -322,7 +322,10 @@ def test_the_closing_claim_counts_the_two_kinds_of_evidence_apart():
     assert workflow.settled_counts(both) == (2, 1, 1), "the unverified one is neither, and is counted"
     assert workflow.how_settled(2, 1) == (
         "2 verified against a fresh Okta snapshot, 1 resolved on the reviewer's word "
-        "(a decision, or access in a source this review cannot re-read)")
+        "(this review does not re-read these to confirm the fix)")
+    # Not a claim about where the finding lives or what kind of answer it wants:
+    # AR-18 settles this way and can be an Okta API client.
+    assert "another source" not in workflow.how_settled(0, 1)
     # All one kind: say that kind, and nothing about the other.
     assert workflow.how_settled(3, 0) == "3 verified against a fresh Okta snapshot"
     assert "Okta snapshot" not in workflow.how_settled(0, 3)

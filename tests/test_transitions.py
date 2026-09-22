@@ -65,8 +65,13 @@ def test_the_bundle_gathers_what_okta_deactivation_does_not_reach(demo):
     victor = by_login(built(demo))["victor.nguyen"]
     okta = [p for p in victor.principals if p["source"] == OKTA and p["label"].startswith("victor")]
     assert okta and okta[0]["status"] == "disabled"
+    # His Okta service client is in here too, and it is the reason this list is
+    # not "principals in another source": deactivating his account did nothing
+    # to Reporting Bot, which is the question the bundle asks. Counting by
+    # source alone put a leaver who left one behind among the clean departures.
     outside = {p["label"] for p in victor.outside_okta}
-    assert outside == {"victor-nguyen"}
+    assert outside == {"victor-nguyen", "Reporting Bot"}
+    assert "victor.nguyen@acme.example" not in outside, "his own account is what was deactivated"
     held = [p for p in victor.principals if p["label"] == "victor-nguyen"][0]
     assert held["status"] == "active"
     assert len(held["credentials"]) == 2

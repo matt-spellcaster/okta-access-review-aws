@@ -53,7 +53,16 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   `test_demo_findings_are_exactly_the_planted_ones` **and in
   `test_cross_source_findings_carry_the_planted_severities`** (severity is the judgement in these
   checks; asserting subjects alone lets a constant pass). A `needs_graph` check reads `ctx.graph`
-  rather than `ctx.snapshot` and is skipped when no graph was built.
+  rather than `ctx.snapshot`. **The graph is built on every review**, from the Okta projection alone
+  when no second source was given: an estate of one is still an estate, the register declares Okta
+  service accounts too, and gating it on `--github` meant AR-18 -- written for Okta's own API
+  clients -- could not fire on an Okta-only run, which is every AWS run. What a second source adds
+  is the other estate, not the graph. A graph check is therefore only skipped when there is no
+  roster it also needs. The **departure bundle** is the artifact that does need a second source and
+  asks for one directly (`build_transitions` returns None without it): built from Okta alone it
+  would report every leaver's residue elsewhere as empty, which is the silence-as-absence claim the
+  file exists to stop. `_note_register` now runs on every review too, so an entry naming a source
+  this run did not read is a gap rather than a claim nobody checked.
 - A graph finding's subject is `{source}/{principal.id}` (`checks.graph_subject`), never the label.
   Ticket identity is `(check_id, subject)` hashed into a permanent Jira label, and a label is a
   display name: a GitHub login can be renamed and two Okta service clients can share an app label,
@@ -217,7 +226,15 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   depends on it still running, so two findings on one principal would be two tickets whose
   remediations contradict. `_leaver_access_outside_okta` skips `PrincipalKind.SERVICE` and AR-18
   takes it, across **every source and every status** -- a strict superset of what AR-17 drops, which
-  is what makes the skip safe. Okta's own API clients are what AR-17 structurally cannot see (it
+  is what makes the skip safe. **AR-12 is the same partition** and was missed the first time: it
+  reported "API clients they set up" under the leaver's own login, which is in `URGENT_CHECKS` and
+  `LEAVER_ACCESS_CHECKS`, so one assignee got a leaver ticket saying rotate-or-delete and a fix
+  ticket saying hand-it-over, and the leaver ticket closes on an Okta re-read that only deletion
+  satisfies. `_leaver_credentials` now covers the tokens a person held and nothing else; AR-13 still
+  reads the client as their actor, which is attribution rather than a demand. Where the register has
+  since named a different owner the account is that person's, which is the handover AR-18 asks for,
+  and where it names somebody no source evidences it is AR-15's. Anything else that reports an
+  account a leaver was accountable for has to join this partition or inherit the contradiction. Okta's own API clients are what AR-17 structurally cannot see (it
   skips `source == OKTA`), and they are the demo's two planted cases: `okta/a04` declared to
   marcus.lee in the register, `okta/a05` tied to victor.nguyen by nothing but the System Log's record
   of who created it -- so the check reads whatever link the graph chose, not DECLARED alone. DISABLED

@@ -201,7 +201,13 @@ def test_a_leaver_with_no_end_date_is_reported_as_undeterminable():
 
 
 def test_a_client_the_leaver_set_up_carries_their_activity():
-    """The point of the check: the account is gone, the credential is not."""
+    """The point of the check: the account is gone, the credential is not.
+
+    AR-13 still reads the client as the leaver's actor. AR-12 no longer reports
+    the client itself -- that is AR-18's, whose remediation is the opposite of
+    this one -- so the activity is attributed without a second demand to delete
+    the thing AR-18 asks somebody to take over.
+    """
     setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
                           event_type="app.oauth2.credentials.lifecycle.create", actor_id="u02",
                           targets=[{"id": "0oaBOT", "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
@@ -211,11 +217,34 @@ def test_a_client_the_leaver_set_up_carries_their_activity():
                           targets=[{"id": "AT.1", "type": "access_token", "label": "Reporting Bot"}])
     ctx = _ctx(events=[setup, grant], user_status="DEPROVISIONED")
 
-    [credential] = _findings(ctx, "AR-12")
     [activity] = _findings(ctx, "AR-13")
 
-    assert credential.detail == "Left 2026-08-29 but still holds API client they set up: Reporting Bot."
     assert activity.detail == "1 token grant after 2026-08-29; last 2026-09-14 (Reporting Bot)."
+    assert _findings(ctx, "AR-12") == []
+
+
+def test_a_client_the_leaver_set_up_is_never_also_a_credential_to_revoke():
+    """The AR-12/AR-18 partition, in the place it went wrong.
+
+    A client the leaver created is a service account somebody has to take over,
+    which is AR-18's finding and AR-18's ticket. Reported here as well it went
+    into the leaver ticket too -- one assignee, two tickets, "rotate or delete"
+    against "it is still running, hand it over" -- and the leaver ticket closes
+    on an Okta re-read that only deleting it satisfies. The token stays: that is
+    a credential the person held, not an account that outlives them.
+    """
+    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
+                          event_type="app.oauth2.credentials.lifecycle.create", actor_id="u02",
+                          targets=[{"id": "0oaBOT", "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
+    ctx = _ctx(events=[setup], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
+
+    [f] = _findings(ctx, "AR-12")
+
+    assert "Reporting Bot" not in f.detail and "API client" not in f.detail
+    assert "ci-deploy" in f.detail
+    # And with only the client, nothing at all -- not a finding stripped to an
+    # empty list of credentials, which would still open a ticket.
+    assert _findings(_ctx(events=[setup]), "AR-12") == []
 
 
 def test_a_deleted_client_is_not_reported():
@@ -226,16 +255,13 @@ def test_a_deleted_client_is_not_reported():
     assert _findings(_ctx(events=[setup]), "AR-12") == []
 
 
-def test_tokens_and_clients_are_listed_together():
-    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
-                          event_type="app.oauth2.client.read_client_secret", actor_id="u02",
-                          targets=[{"id": "0oaBOT", "type": "OAuth2Client", "label": "Reporting Bot"}])
-    ctx = _ctx(events=[setup], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
+def test_every_token_is_listed_together():
+    ctx = _ctx(tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02"),
+                       ApiToken(id="t2", name="backup-sync", user_id="u02")])
 
     [f] = _findings(ctx, "AR-12")
 
-    assert f.detail == ("Left 2026-08-29 but still holds API token ci-deploy; "
-                        "API client they set up: Reporting Bot.")
+    assert f.detail == "Left 2026-08-29 but still holds API tokens backup-sync, ci-deploy."
 
 
 def test_credentials_are_not_double_reported_as_residual_access():

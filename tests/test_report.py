@@ -63,10 +63,40 @@ def test_report_lists_controls_and_findings(tmp_path):
 
 
 def test_complete_review_has_no_gaps_section(tmp_path):
-    main(DEMO_ARGS + ["--out", str(tmp_path)])
-    d = run_dir(tmp_path)
+    # A register that declares only Okta accounts. The demo config also declares
+    # a GitHub one, which an Okta-only run cannot check and now says so -- see
+    # the test below. Completeness is the claim under test here, so the fixture
+    # is one where it can honestly be true.
+    config = json.loads((FIXTURES / "demo_config.json").read_text())
+    config["service_accounts"] = [
+        e for e in config["service_accounts"]
+        # Entries are a bare id or an object; only the object form names a source.
+        if isinstance(e, str) or not str(e.get("source", "")).startswith("github")
+    ]
+    path = tmp_path / "okta_only_config.json"
+    path.write_text(json.dumps(config))
+    out = tmp_path / "out"
+    main(["--snapshot", str(FIXTURES / "demo_snapshot.json"),
+          "--roster", str(FIXTURES / "demo_roster.csv"),
+          "--config", str(path), "--as-of", "2026-09-15", "--out", str(out)])
+    d = run_dir(out)
     assert "Data gaps" not in (d / "report.md").read_text()
     assert json.loads((d / "manifest.json").read_text())["complete"] is True
+
+
+def test_a_register_entry_for_a_source_this_run_did_not_read_is_a_gap(tmp_path):
+    """The register is a claim about accounts, and a run that read one estate
+    cannot check the entries naming another.
+
+    Invisible until the graph was built on every run: `_note_register` needed a
+    graph, and an Okta-only review had none, so the entries it could not check
+    were silently the ones it said nothing about. The claim that looks like
+    coverage and is not is the whole reason that gap exists.
+    """
+    main(DEMO_ARGS + ["--out", str(tmp_path)])
+    manifest = json.loads((run_dir(tmp_path) / "manifest.json").read_text())
+    assert manifest["complete"] is False
+    assert any("github:acme-eng" in g and "did not read" in g for g in manifest["data_gaps"])
 
 
 def test_data_gaps_are_reported(tmp_path):
@@ -80,7 +110,9 @@ def test_data_gaps_are_reported(tmp_path):
     assert "## ⚠️ Data gaps" in (d / "report.md").read_text()
     manifest = json.loads((d / "manifest.json").read_text())
     assert manifest["complete"] is False
-    assert manifest["data_gaps"] == snap["gaps"]
+    # Named with its source, because `all_gaps` reads the graph's per-source
+    # metadata and every run has a graph now, Okta-only ones included.
+    assert manifest["data_gaps"] == [f"okta: {snap['gaps'][0]}"]
 
 
 def test_pdf_is_reproducible_and_contains_findings(tmp_path):
@@ -306,11 +338,15 @@ def test_a_failed_source_read_makes_the_manifest_incomplete(tmp_path):
 
 
 def test_an_okta_only_run_says_nothing_about_other_sources(tmp_path):
+    """A graph is built either way now, so `sources` is what says whether a
+    second estate was read -- it lists sources beyond Okta and nothing else.
+    The gap here is the register's, naming the GitHub entries this run could
+    not check; it is a statement about what was not read, which is the point."""
     assert main(DEMO_ARGS + ["--out", str(tmp_path)]) == 0
     manifest = json.loads((run_dir(tmp_path) / "manifest.json").read_text())
-    assert manifest["complete"] is True and manifest["data_gaps"] == []
     assert manifest["sources"] == []
     assert "Also read" not in (run_dir(tmp_path) / "report.md").read_text()
+    assert all(g.startswith("okta: ") for g in manifest["data_gaps"])
 
 
 def test_the_github_snapshot_is_hashed_into_the_manifest(tmp_path):
@@ -355,7 +391,10 @@ def test_a_rerun_does_not_inherit_the_previous_run_evidence(tmp_path):
 
     assert main(args) == 0  # same folder, no --github this time
     manifest = json.loads((d / "manifest.json").read_text())
-    assert manifest["sources"] == [] and "AR-17" in manifest["skipped_checks"]
+    # AR-17 is no longer skipped -- it runs against the Okta-only graph and
+    # finds nothing, because it skips Okta principals. `sources` is the claim
+    # that matters here: no second estate was read on the rerun.
+    assert manifest["sources"] == []
     assert not (d / "transitions.json").exists(), "a bundle from the previous run survived"
     assert not (d / "github_snapshot.json").exists()
     assert "transitions.json" not in manifest["files"]

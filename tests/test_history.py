@@ -302,4 +302,4 @@ def test_skipped_checks_are_read_back_from_a_prior_manifest(tmp_path):
     history = load_history(tmp_path / "out", "20260915T140000Z", ORG, date(2026, 9, 15))
     [prior] = history.reviews
     # The Okta-only demo run skips every graph check (and AR-14 at this date).
-    assert prior.skipped == ["AR-14", "AR-15", "AR-16", "AR-17", "AR-18"]
+    assert prior.skipped == ["AR-14"]  # the graph checks run on an Okta-only review now

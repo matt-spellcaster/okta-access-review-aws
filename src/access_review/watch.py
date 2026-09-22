@@ -238,14 +238,17 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
                 continue
             stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             if record_verify_mode(rec) == "reviewer":
-                # A judgement call: resolving the ticket is the answer, and nothing in Okta can confirm it.
+                # Resolving the ticket is the answer. Not "nothing in Okta can
+                # confirm it" -- AR-18's can be an Okta API client and a fresh
+                # snapshot could see it go. What is true of every one of these is
+                # that this review does not look again, which is what it says.
                 store.put_record(deps.s3, deps.evidence_bucket, run, "verifications", f"{label}-verified.json", {
                     "issue": rec["issue"], "label": label, "checked_at": stamp, "result": "accepted",
                     "observed": {"resolved_by": "reviewer"},
                 })
                 jira.add_comment(rec["issue"], adf(
-                    f"Resolved on {now.date()}: this ticket asked for a decision, not a change that can be "
-                    f"checked in Okta, so it is taken as done on the reviewer's word."))
+                    f"Resolved on {now.date()}: this review does not re-read this one to confirm the "
+                    f"fix, so it is taken as done on the reviewer's word."))
                 result["verified"] += 1
                 unverified -= 1
                 continue

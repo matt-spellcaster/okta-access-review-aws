@@ -193,7 +193,7 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     rows = workflow.all_findings(deps, run.run_dir.name)
 
-    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 7
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 9
     assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0  # never twice
     summaries = sorted(f["summary"] for f in session.issues.values())
     assert "Fix: No MFA factor enrolled — lee.chen@acme.example" in summaries
@@ -202,13 +202,17 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                                               or "HR record" in s)
                    for s in summaries)
     records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")]
+    # AR-18 among them on an Okta-only review: its two subjects are Okta API
+    # clients, which is the case it exists for, and each gets its own ticket
+    # rather than being folded into the owner's leaver ticket.
     assert {r["check_id"] for r in records if r["kind"] == "finding"} == {
-        "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10"}
+        "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10", "AR-18"}
     assert all(r.get("todo") for r in records)
     # Which ones the daily check can confirm in Okta, and which are the reviewer's call.
     assert {r["check_id"]: r["verify"] for r in records if r["kind"] == "finding"} == {
         "AR-04": "okta", "AR-05": "reviewer", "AR-06": "reviewer",
-        "AR-07": "reviewer", "AR-08": "okta", "AR-09": "okta", "AR-10": "reviewer"}
+        "AR-07": "reviewer", "AR-08": "okta", "AR-09": "okta", "AR-10": "reviewer",
+        "AR-18": "reviewer"}
 
 
 class TransitionSession(FakeJiraSession):
@@ -335,9 +339,16 @@ def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_revi
 
 
 def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
-    """No graph, so the review has nothing to say about other sources -- which is
-    not the same as saying there is nothing there. Silence would let the assignee
-    read an Okta-only ticket as the whole picture."""
+    """No second source, so the review has nothing to say about other estates --
+    which is not the same as saying there is nothing there. Silence would let the
+    assignee read an Okta-only ticket as the whole picture.
+
+    What it can still list is a finding this decision does not settle inside
+    Okta: AR-18 runs on an Okta-only review and its subjects here are Okta API
+    clients. So both halves have to hold at once -- the unknown about elsewhere,
+    and a named thing that is not elsewhere at all -- which is why none of this
+    wording may say "outside Okta".
+    """
     rem, session, run, _ = signed_review
     items = {i.key: i for i in run.items}
     rem.open_revokes(run.run_dir.name, "UAR-99", items,
@@ -347,8 +358,10 @@ def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
     assert lines
     assert any(ln.startswith("Not part of this ticket") for ln in lines)
     assert any(ln.startswith("Not known: ") and "No source other than Okta" in ln for ln in lines)
-    # And nothing is listed as held, because nothing was read.
-    assert not [ln for ln in lines if ln.startswith("Still open: ")]
+    still_open = [ln for ln in lines if ln.startswith("Still open: ")]
+    assert still_open, "AR-18 fires on this review and must reach the ticket"
+    assert any("service account" in ln for ln in still_open)
+    assert not any("outside Okta" in ln for ln in lines)
 
 
 def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_review):

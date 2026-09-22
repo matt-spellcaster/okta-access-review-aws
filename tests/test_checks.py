@@ -77,7 +77,7 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-09": {"victor.nguyen"},
         "AR-10": {"Terraform Automation"},
         "AR-11": {"priya.shah", "jordan.kim"},
-        "AR-12": {"marcus.lee", "victor.nguyen"},
+        "AR-12": {"marcus.lee"},
         "AR-13": {"marcus.lee", "victor.nguyen"},
         "AR-14": {"lee.chen"},
         # Graph subjects are the source's own id, not the login: see graph_subject.
@@ -318,7 +318,7 @@ def test_cross_source_checks_skipped_without_a_graph(demo):
     demo.graph = None
     findings, skipped = run_checks(demo)
     assert skipped == ["AR-15", "AR-16", "AR-17", "AR-18"]
-    assert not {"AR-15", "AR-16", "AR-17"} & {f.check_id for f in findings}
+    assert not {"AR-15", "AR-16", "AR-17", "AR-18"} & {f.check_id for f in findings}
 
 
 def test_without_roster_contractor_type_comes_from_okta_profile(demo):
@@ -421,7 +421,8 @@ LEFT = "marcus.lee@acme.example"
 
 
 def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
-          kind=PrincipalKind.SERVICE, method=LinkMethod.DECLARED, identity=LEFT):
+          kind=PrincipalKind.SERVICE, method=LinkMethod.DECLARED, identity=LEFT,
+          credentials=True, activity_complete=True):
     """The demo graph with one more service account on it, owned by a leaver.
 
     The demo fixture's own two cases are Okta API clients, which is the shape
@@ -443,10 +444,12 @@ def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
     demo.graph = replace(
         graph,
         principals=(*graph.principals, principal),
-        credentials=(*graph.credentials, credential),
+        credentials=(*graph.credentials, credential) if credentials else graph.credentials,
         grants=(*graph.grants, *(Grant(GH, "bot-1", GrantKind.ROLE, r.lower(), r) for r in roles)),
         links=(*graph.links, Link((GH, "bot-1"), method, identity,
                                   "declared a service account in the review register")),
+        sources=tuple(replace(m, activity_complete=activity_complete) if m.source == GH else m
+                      for m in graph.sources),
     )
     return [f for f in run_checks(demo)[0] if f.subject == f"{GH}/bot-1"]
 
@@ -529,3 +532,55 @@ def test_an_account_nobody_is_named_for_is_left_to_ar15(demo):
     for a person the graph never named."""
     found = _owns(demo, write_access=True, identity="")
     assert [f.check_id for f in found] == ["AR-15"]
+
+
+def test_a_leavers_service_account_whose_credential_read_failed_is_not_ranked_clean(demo):
+    """The branch every other AR-18 test walks past, because the demo graph is
+    complete and every hand-built case here carries a credential.
+
+    An empty credential list is evidence of nothing held only when the read that
+    would have said so ran. With `known` hard-coded True the whole suite stayed
+    green: the account dropped to `high` and the detail stopped saying anything
+    was unknown, which is the milder answer derived from a read that failed --
+    the defect this repo has shipped four times. AR-15 has this guard; this is
+    its AR-18 half.
+    """
+    original = demo.graph
+    [found] = _owns(demo, credentials=False, activity_complete=False)
+
+    assert found.check_id == "AR-18"
+    assert found.severity == "critical", "unknown scopes are not the read-only case"
+    assert "credential read did not complete" in found.detail
+
+    # And with the same absence where the read did finish, the silence means it.
+    demo.graph = original  # `_owns` adds to the graph it is handed
+    [complete] = _owns(demo, credentials=False, activity_complete=True)
+    assert complete.severity == "high"
+    assert "did not complete" not in complete.detail
+
+
+def test_one_leaver_with_two_okta_accounts_owns_their_service_account_once(demo):
+    """Keyed on identity, not on leaver, for the reason AR-17 is. Iterate the
+    roster pairs instead and one person with two Okta logins produces the same
+    service account twice: two rows in findings.csv, two fix tickets, and a
+    critical count that double-reports one bot. AR-17's version of this test
+    duplicates victor, who owns okta/a05, but it filters to AR-17 and so said
+    nothing about this check.
+    """
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    victor = next(u for u in raw["users"] if u["profile"]["email"] == "victor.nguyen@acme.example")
+    second = json.loads(json.dumps(victor))
+    second["id"] = victor["id"] + "-admin"
+    second["login"] = "victor.nguyen.admin@acme.example"
+    raw["users"].append(second)
+    snapshot = Snapshot.from_dict(raw)
+    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    ctx = ReviewContext(snapshot, demo.roster, demo.config, AS_OF, graph=IdentityGraph.compose(
+        project_snapshot(snapshot, demo.config.service_accounts),
+        project_github(github, demo.config.service_accounts),
+    ))
+
+    subjects = [f.subject for f in run_checks(ctx)[0] if f.check_id == "AR-18"]
+
+    assert "okta/a05" in subjects, "victor owns it; this must not pass on an empty list"
+    assert sorted(subjects) == sorted(set(subjects))

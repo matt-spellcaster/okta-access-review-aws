@@ -42,7 +42,7 @@ HR_RECORD = "hr_record"
 HR_REASON = ("No HR record. Raise it with HR: add them to the roster, list them as a service account in the "
              "config, or have the account deactivated. This is handled outside the review, and no ticket is "
              "opened for it.")
-# A person whose only problem is in another source. Review items are built from
+# A person whose only open finding is one this decision cannot settle. Review items are built from
 # Okta access, so someone whose Okta offboarding actually completed has no items
 # at all -- and their cross-source finding, which is exactly what this tool
 # exists to surface, would reach no decision screen. The better the Okta
@@ -53,7 +53,11 @@ CROSS_SOURCE = "cross_source"
 # Okta API client is the case it exists for -- in Okta, and untouched by the
 # deactivation of the person who owned it. What these findings have in common
 # is that this decision does not settle them, not where the account lives.
-CROSS_SOURCE_TARGET = "Access outside this decision"
+# Word for word what `slack_review.OUTSIDE` shows as the card heading. The
+# reword split them and left "Access" here, which is the part AR-18 makes false
+# -- a service account somebody owned is not access they held -- and this string
+# is the one written into the signed review_items.json an auditor reads.
+CROSS_SOURCE_TARGET = "Outside this decision"
 CROSS_SOURCE_REASON = ("They have no Okta access of their own left to decide, but a finding about them is "
                        "still open. This review cannot settle it: acknowledge it here, and the finding's "
                        "own ticket tracks the fix.")
@@ -106,7 +110,7 @@ class ReviewItem:
     name: str = ""
     facts: tuple[str, ...] = ()
     concerns: tuple[str, ...] = ()
-    # Concerns about access in another source, kept apart from `concerns`
+    # Concerns this decision does not settle, kept apart from `concerns`
     # because deciding this item cannot settle any of them. Everything in
     # `concerns` is either about this access or about the person in Okta, so a
     # revoke ticket can carry it and the daily Okta re-check can close it.
@@ -263,7 +267,11 @@ def outside_okta_gap(graph) -> str:
 def outside_okta_concerns(
     user: User, graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None
 ) -> list[str]:
-    """What this person holds in another source entirely.
+    """What is open about this person that deciding this item does not settle.
+
+    Usually another source. Not always: AR-18 reports a service account whose
+    owner left, and an Okta API client is the case it exists for -- in Okta, and
+    untouched by the deactivation this review verifies.
 
     The point of the cross-source checks. A reviewer approving someone's Okta
     access while they still hold a write-capable credential somewhere Okta
@@ -365,7 +373,7 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
 
 
 def outside_okta_by_login(items: list[ReviewItem]) -> dict[str, tuple[tuple[str, ...], str]]:
-    """Per Okta login: what they hold in another source, and why that may be short.
+    """Per Okta login: what this decision does not settle, and why that may be short.
 
     For the ticket builders, which are given findings and logins rather than
     items. Keyed on the lowercased login because that is what a leaver finding's

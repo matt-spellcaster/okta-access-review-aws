@@ -330,12 +330,18 @@ def _leaver_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
         if tokens:
             noun = "API token" if len(tokens) == 1 else "API tokens"
             parts.append(f"{noun} {', '.join(tokens)}")
-        clients = sorted(_clients_set_up_by(ctx.snapshot, user.id).values())
-        if clients:
-            noun = "API client" if len(clients) == 1 else "API clients"
-            parts.append(f"{noun} they set up: {', '.join(clients)}")
         # Groups and apps are AR-09's job; this check is only about credentials
         # that keep working on their own, whatever the account status is.
+        #
+        # A client they set up is AR-18's, not this one's, for the reason AR-17
+        # leaves service accounts alone: this check's remediation is "rotate or
+        # delete", AR-18's is "hand it to somebody, it is still running", and
+        # this one lands in the leaver ticket, which closes on an Okta re-read
+        # that only deletion satisfies. One assignee was getting both. AR-18
+        # covers every status where this covered only ACTIVE, and where the
+        # register has since declared a different owner it is that person's
+        # account now, which is the handover AR-18 asks for -- or, if the name
+        # it declares is one no source evidences, AR-15's.
         if parts:
             out.append(check.finding(user.login, f"{_left_on(entry)} but still holds {'; '.join(parts)}."))
     return out
