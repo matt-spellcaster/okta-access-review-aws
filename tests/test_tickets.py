@@ -327,7 +327,7 @@ def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_revi
         assert any("AR-17" in ln for ln in lines), "the reviewer's evidence must not be dropped"
         # Not as a "Concern:", which is the list this ticket's Okta re-check settles.
         assert not [ln for ln in lines if ln.startswith("Concern: ") and "AR-17" in ln], lines
-        assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+        assert [ln for ln in lines if ln.startswith("Still open: ") and "AR-17" in ln], lines
         assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
         # The closing promise still stands, because it now covers only the Okta change.
         assert any("the next daily check confirms it in Okta" in ln for ln in lines)
@@ -348,7 +348,7 @@ def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
     assert any(ln.startswith("Not part of this ticket") for ln in lines)
     assert any(ln.startswith("Not known: ") and "No source other than Okta" in ln for ln in lines)
     # And nothing is listed as held, because nothing was read.
-    assert not [ln for ln in lines if ln.startswith("Outside Okta: ")]
+    assert not [ln for ln in lines if ln.startswith("Still open: ")]
 
 
 def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_review):
@@ -362,7 +362,7 @@ def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_r
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     named = {c.split("(")[-1].split()[0]
              for i in run.items for c in i.outside_okta}
-    assert named, "no item names anything outside Okta, so this proves nothing"
+    assert named, "no item names anything this decision cannot settle, so this proves nothing"
     rem.open_findings(run.run_dir.name, "UAR-99", workflow.all_findings(deps, run.run_dir.name))
     ticketed = {r["check_id"] for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
                 if r["kind"] == "finding"}
@@ -385,7 +385,7 @@ def test_a_leaver_ticket_does_not_promise_to_close_a_way_in_it_cannot_see(graph_
     marcus = next(f for f in session.issues.values()
                   if f["summary"] == "Remove access for leaver marcus.lee@acme.example")
     lines = _paragraphs(marcus["description"])
-    assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+    assert [ln for ln in lines if ln.startswith("Still open: ") and "AR-17" in ln], lines
     assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
     # The to-do recorded as evidence says Okta, because Okta is what gets checked.
     record = next(r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")

@@ -88,6 +88,12 @@ What each field changes:
   departure bundle if they leave — an ownership claim goes stale the moment the claimant does, so
   the long tail of a departure is not only their own credentials but everything they answered for.
   This is the only thing that stops AR-15 reporting the account.
+- **An owner who has left** is AR-18, and the entry is what finds it: the review reads the HR roster,
+  sees the person is gone, and reports the account as one nothing and nobody is now accountable for.
+  The fix is to name a new owner here, or to decommission the account — not to revoke it, because
+  something is presumably still calling it. An Okta API client is the case this exists for:
+  deactivating the person who owned it does not touch it, so no other check in this review sees it.
+  A `reviewed` date on the entry is what tells the reviewer how old the claim they are replacing is.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.
 - **An owner nobody can be reached at** — a typo, or a person with no account in any source this

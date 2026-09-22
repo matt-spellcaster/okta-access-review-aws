@@ -203,6 +203,31 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   leaver keyed by Okta login, so a graph finding whose subject is `{source}/{principal.id}` would be
   folded into a ticket that never names it. `test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket`
   and `test_everything_named_as_out_of_scope_really_does_get_its_own_ticket` guard both halves.
+  That block is **not a claim about where the account lives**, and its wording must not make one.
+  Most of what lands there is in another source, but AR-18 reports a service account whose owner
+  left, and an Okta API client is the case it exists for: it is in Okta, and the daily re-read of the
+  leaver's own access still cannot see it. So `slack_review.OUTSIDE` (one string, used by the card
+  heading, the item line and the sign-off list), `items.CROSS_SOURCE_TARGET`/`CROSS_SOURCE_REASON`
+  and `tickets._scope_to_okta` all say what the decision and the ticket do not settle, never "outside
+  Okta". The field and the file format keep the name `outside_okta`; the sentences a reviewer reads
+  do not. `items.outside_okta_gap` is the exception and stays as it is -- it is specifically about
+  which other sources were read.
+- A service account a leaver owned is **AR-18's, never AR-17's**. AR-17 asks for a leaver's own
+  access to be revoked; AR-18 asks for the account to be handed to somebody, because something
+  depends on it still running, so two findings on one principal would be two tickets whose
+  remediations contradict. `_leaver_access_outside_okta` skips `PrincipalKind.SERVICE` and AR-18
+  takes it, across **every source and every status** -- a strict superset of what AR-17 drops, which
+  is what makes the skip safe. Okta's own API clients are what AR-17 structurally cannot see (it
+  skips `source == OKTA`), and they are the demo's two planted cases: `okta/a04` declared to
+  marcus.lee in the register, `okta/a05` tied to victor.nguyen by nothing but the System Log's record
+  of who created it -- so the check reads whatever link the graph chose, not DECLARED alone. DISABLED
+  is not an answer here the way it is for AR-17: `CredentialKind` is the set of things that outlive
+  the account they were created under. Severity grades on what the **account** can change, not on it
+  having a role: `_elevated_roles` means "above ordinary membership", which for Okta includes
+  Read-Only Administrator, so AR-18 filters `READ_ONLY_ROLES` out of it and grades critical on an
+  elevated role **or** write access, unknown counting as the worse case. Disjoint from AR-15 by
+  construction, not by a filter -- AR-18 walks `principals_of`, indexed on attested identities, and
+  AR-15 walks the principals whose best link reaches nobody.
 - Every ticket that closes on a fresh Okta read says what it does not cover, through the one helper
   `tickets._scope_to_okta`. That is both the revoke ticket and the **leaver** ticket: `open_urgent`
   asks for "every way in through Okta" rather than "every way in", because `watch.still_present`

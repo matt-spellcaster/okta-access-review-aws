@@ -22,12 +22,19 @@ from .items import ACKNOWLEDGE_ONLY, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REVO
 # Two blocks per item and Slack allows 50 per message, with room for a header.
 CHUNK = 20
 LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
-KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
-        HR_RECORD: "HR record", CROSS_SOURCE: "Outside Okta"}
-FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 # One wording for the thing this review cannot change, used by the card heading,
 # the item line and the sign-off list, so a reword cannot land in only some of them.
-OUTSIDE = "Access outside Okta"
+#
+# Not "outside Okta", although that is what most of it is. AR-18 reports a
+# service account whose owner left, and Okta's own API clients are the case it
+# exists for: they are in Okta, and deactivating the person who owned one does
+# not touch it, so this block reaches them too. What every line under it has in
+# common is that deciding this item does not change it -- which is what the
+# heading now says, rather than making a claim about where the account lives.
+OUTSIDE = "Outside this decision"
+KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
+        HR_RECORD: "HR record", CROSS_SOURCE: OUTSIDE}
+FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 MAX_TEXT = 2900  # Slack's section limit is 3000
 # Sections on the sign-off message; beyond this, the list points to the report.
 MAX_LIST_SECTIONS = 40
@@ -75,14 +82,14 @@ def describe(item: ReviewItem) -> str:
     if item.kind == HR_RECORD:
         return f"{who} · *No HR record* (flag for HR; no ticket)"
     if item.kind == CROSS_SOURCE:
-        return f"{who} · *{OUTSIDE}* (nothing left in Okta itself)"
+        return f"{who} · *{OUTSIDE}* (no Okta access of their own left to decide)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
 def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
     """The facts, then why it could be an issue, then the proposal.
 
-    Access outside Okta gets its own block above the rest. Not buried below it:
+    What this decision cannot change gets its own block above the rest. Not buried below it:
     it is the part of the picture no other screen in this review reaches, and
     it is the part deciding this item cannot change.
     """
@@ -212,7 +219,7 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
             if fact.startswith(("Okta:", "Access:")):
                 lines.append(f"      {_esc(fact)}")
         for concern in item.outside_okta:
-            lines.append(f"      :warning: outside Okta, not changed by this decision: {_esc(concern)}")
+            lines.append(f"      :warning: not changed by this decision: {_esc(concern)}")
         for concern in item.concerns:
             lines.append(f"      :warning: {_esc(concern)}")
         why = []

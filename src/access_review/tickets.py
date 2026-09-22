@@ -36,10 +36,13 @@ LABEL = "access-review"
 # after sign-off. Leaver findings (AR-01/02/12/13) already have leaver tickets,
 # AR-11 and AR-14 are decided as review items, and AR-03 (no HR record) is
 # acknowledged by the CISO as a review item and raised with HR: never a ticket.
-# AR-15..AR-17 are here rather than in workflow.URGENT_CHECKS: the urgent path
+# AR-15..AR-18 are here rather than in workflow.URGENT_CHECKS: the urgent path
 # promises "the next daily check confirms it in Okta", which is exactly what no
-# graph-backed finding can offer until its source has a collector.
-FIX_CHECKS = ("AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10", "AR-15", "AR-16", "AR-17")
+# graph-backed finding can offer until its source has a collector. AR-18 could
+# not go there anyway -- an urgent ticket is one per leaver keyed on their Okta
+# login, and AR-18's subject is a service account, not the person.
+FIX_CHECKS = ("AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10",
+              "AR-15", "AR-16", "AR-17", "AR-18")
 # A finding at this severity says something could not be checked (AR-04 when MFA
 # enrollment can't be read, AR-13 when HR gave no end date), not that something
 # is wrong. It stays in the report; nobody gets a ticket to "fix" it.
@@ -56,8 +59,11 @@ INFO = "info"
 # change Okta can show. AR-17 is not a judgement call -- it asks for access to
 # be removed in another system -- but nothing can confirm that until that
 # system has a collector, and claiming to have verified it would be worse than
-# taking the reviewer's word. See the guard in tests/test_tickets.py.
-REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17")
+# taking the reviewer's word. AR-18 asks for a new owner in the register, or
+# for the account to be taken down: `watch.still_present` re-reads a person's
+# Okta access and has no branch that can see either, and the subject is a
+# service account in any source. See the guard in tests/test_tickets.py.
+REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17", "AR-18")
 # Ticket kinds that ask for a change in Okta, so `watch.still_present` can re-read
 # it there. Everything else settles on the reviewer's word.
 OKTA_VERIFIED_KINDS = frozenset({"leaver", "revoke"})
@@ -286,8 +292,14 @@ def _scope_to_okta(outside: tuple[str, ...] | list[str], gap: str, what: str) ->
     """The paragraphs saying what this ticket does not cover, or none.
 
     `what` names the change this ticket asks for. Shared by the revoke ticket and
-    the leaver ticket because both close on a fresh read of Okta alone, and Okta
-    cannot show whether a role in another source is gone.
+    the leaver ticket because both close on a fresh read of this person's Okta
+    access, which cannot show whether a role in another source is gone.
+
+    What it does not say is that the rest is "outside Okta". Most of it is, but
+    AR-18 reports a service account whose owner left, and an Okta API client is
+    the case that check exists for: it is in Okta, and the daily re-read of the
+    leaver's own access still cannot see it. The claim that holds for every line
+    is the one about this ticket, not one about where the account lives.
 
     A gap with nothing listed still gets the paragraph. Saying nothing would let
     the assignee read the ticket as the whole picture, when the truth is that
@@ -296,10 +308,10 @@ def _scope_to_okta(outside: tuple[str, ...] | list[str], gap: str, what: str) ->
     if not outside and not gap:
         return []
     out: list = [[("Not part of this ticket: ", "strong"),
-                  (f"{what} does not remove access held outside Okta, and the daily check that "
-                   f"closes this ticket cannot see it. Resolve this ticket on the Okta change "
-                   f"alone.", None)]]
-    out += [f"Outside Okta: {c}" for c in outside]
+                  (f"{what} does not settle what is listed below, and the daily check that closes "
+                   f"this ticket -- a fresh read of this person's Okta access -- cannot see it. "
+                   f"Resolve this ticket on the Okta change alone.", None)]]
+    out += [f"Still open: {c}" for c in outside]
     if outside:
         out.append("Each of those is tracked by its own ticket under the same review ticket.")
     if gap:
@@ -321,7 +333,7 @@ def what_to_do(item: ReviewItem) -> str:
         # Never reached today (these settle by acknowledging, so they are never
         # decided REVOKE), but the fallthrough below would otherwise tell someone
         # to remove them from an admin group that does not exist.
-        return f"review {item.user}'s access outside Okta; this review cannot change it."
+        return f"review what is still open about {item.user}; this review cannot change it."
     if item.kind == "app" and item.via == "direct":
         return f"unassign {item.user} from the app {item.target}."
     if item.kind == "app":

@@ -49,9 +49,14 @@ HR_REASON = ("No HR record. Raise it with HR: add them to the roster, list them 
 # hygiene, the more certain the finding is to be invisible. This item exists so
 # that person still appears.
 CROSS_SOURCE = "cross_source"
-CROSS_SOURCE_TARGET = "Access outside Okta"
-CROSS_SOURCE_REASON = ("They hold no access in Okta, but another source still does. This review cannot change "
-                       "access outside Okta: acknowledge it here, and the finding's own ticket tracks the fix.")
+# Not "outside Okta": AR-18 reports a service account whose owner left, and an
+# Okta API client is the case it exists for -- in Okta, and untouched by the
+# deactivation of the person who owned it. What these findings have in common
+# is that this decision does not settle them, not where the account lives.
+CROSS_SOURCE_TARGET = "Access outside this decision"
+CROSS_SOURCE_REASON = ("They have no Okta access of their own left to decide, but a finding about them is "
+                       "still open. This review cannot settle it: acknowledge it here, and the finding's "
+                       "own ticket tracks the fix.")
 # Kinds settled by acknowledging rather than by keep/revoke: the review records
 # that the reviewer saw them, and the work happens elsewhere.
 ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
