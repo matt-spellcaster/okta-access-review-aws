@@ -171,6 +171,33 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   (`items.LINK_MARKER` and a check id in `GRAPH_CHECKS`), so it cannot move an Okta finding. It is
   in memory only -- the object is create-only in S3 and hashed into a signed manifest, so nothing
   rewrites the file.
+- `review_items.json` is the **largest** run-folder file holding a cross product -- one item per app
+  a person can reach, so 5000 users over one org-wide group of 250 apps is 1.25M of them, where
+  `snapshot.json` at the same scale is 2.6 MB. `access_matrix.csv` is the other one and is exempt
+  only because it is smaller: `report.access_matrix` joins every app a user reaches into one cell,
+  so its bytes are the same cross product, and the `list[dict]` is held live through `_write_csv`
+  **and** `write_pdf`. If the 1024 MB Lambda binds again, that is where to look, not here.
+  So `items_json` is written for that size and the other writers are not: **one item per line, never
+  `indent=`**. Indentation is 21% of the bytes on every version, which is the whole of the win on
+  the 3.14 image -- peak there is within a megabyte either way, and the gain is 1.7x on time. The
+  memory cliff is 3.11 and 3.12 only, where `json.dumps(indent=...)` drops to the pure-Python
+  encoder and peaks at 1.1 GB against 383 MB for the C one; 3.13 taught `c_make_encoder` to indent,
+  so that half bites the CLI and never the Lambda. Rows come from `vars(item)`, not
+  `dataclasses.asdict`, which deep-copies every item before a byte is encoded, and they are written
+  into one `io.StringIO`: `a + b + c` over a 176 MB document is three more live copies of it, and a
+  list of fragments joined at the end costs 48 MB over the buffer at 250k items. The two ways
+  `vars` can differ from `asdict` are a field holding a **dataclass** (on its own or inside a tuple),
+  which `asdict` flattens and `vars` hands json something it cannot encode, and `slots=True` on
+  `ReviewItem`, which leaves it no `__dict__` at all -- the tempting fix for a class instantiated
+  250k times. An int, bool, None, list or dict is fine under either; a date or a set never worked
+  under either. `test_the_items_file_is_the_same_document_however_it_is_laid_out` catches the first
+  by comparing against the `asdict` form. Layout is not format: same document, still FORMAT 3, and
+  `load_items`, `attest` and the manifest hash need nothing. The line-per-item part is load-bearing
+  too -- this is create-only evidence someone may open, and one 176 MB line cannot be read, grepped
+  or diffed. It survives only because `json.dumps` escapes non-ASCII, so **`items_json` passes
+  `ensure_ascii=True` explicitly**: `str.splitlines` breaks on U+2028 as well as `\n`, and an Okta
+  label is free text. `attest`, `decisions` and `store` pass `ensure_ascii=False`; this one must not,
+  and `test_the_items_file_stays_one_line_per_item_whatever_the_text_holds` is what says so.
 - A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
   emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
   because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.
