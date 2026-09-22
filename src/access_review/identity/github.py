@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..models import format_time, parse_time
+from ..register import Register, ServiceAccount
 from .graph import (
     Credential,
     CredentialKind,
@@ -428,16 +429,47 @@ def _permission_write_access(permissions: dict[str, dict[str, str]], read_comple
     return False if read_complete else None
 
 
-def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None = None) -> IdentityGraph:
+def _changed_hands(entry: ServiceAccount, member: Member) -> bool:
+    """Whether the account now holding a declared login cannot be the account
+    the entry was written about.
+
+    GitHub frees a login the moment its owner renames it: the old name goes back
+    into the pool and anyone can claim it. An Okta login that changes simply
+    stops matching, and `Register.stale` says so -- here the entry goes on
+    matching, a different account. That is worse than a miss, because a match is
+    not a quiet no-op: it types the account SERVICE, takes the SSO branch away
+    from a real person so their access joins to nobody, and attaches this
+    entry's owner to somebody else's credentials.
+
+    The evidence is the entry's own `reviewed` date against GitHub's account
+    creation date. An account that did not exist when somebody last confirmed
+    the entry is not the account they confirmed. That catches a freed login
+    claimed by a new account, which is the common shape and the one an attacker
+    can arrange; it does not catch a long-lived account renaming into a freed
+    login, and nothing a register keyed by name carries would. An entry with no
+    `reviewed` date has no evidence to check and gets no guard, which is the
+    one thing that date buys beyond being read by a human.
+    """
+    if entry.reviewed is None or member.account_created is None:
+        return False
+    return member.account_created.date() > entry.reviewed
+
+
+def project_github(snapshot: GitHubSnapshot, register: Register | None = None) -> IdentityGraph:
     """Turn a GitHub snapshot into a one-source graph.
 
-    `declared_services` is the register of logins someone has declared are not
-    people, the same role `Config.service_accounts` plays for Okta. Nothing
-    else makes a member a service account: personhood is not implied by having
-    an SSO link, because a machine user can be provisioned in the IdP too.
+    `register` is `Config.service_accounts`, the same register the Okta
+    projection reads. Nothing else makes a member a service account: personhood
+    is not implied by having an SSO link, because a machine user can be
+    provisioned in the IdP too.
+
+    Entries are scoped to this org's source name (`github:<org>`), so declaring
+    an Okta login never declares a GitHub member that happens to share it. Two
+    sources are two estates and a login is only a name within one.
     """
     source = source_name(snapshot.org)
-    declared = {s.lower() for s in declared_services or []}
+    register = Register.from_config(register if register is not None else Register())
+    matched: set[tuple[str, str]] = set()
     principals: list[Principal] = []
     credentials: list[Credential] = []
     grants: list[Grant] = []
@@ -474,7 +506,22 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
 
     for member in snapshot.members:
         key = (source, member.id)
-        service = member.login.lower() in declared
+        entry = register.entry(source, member.login)
+        if entry is not None and _changed_hands(entry, member):
+            # Matched, and not usable: this gap rather than the stale one, and
+            # `entry` is dropped so everything below treats the account as what
+            # it now is -- somebody else's, joined through their own SSO link.
+            matched.add(entry.key)
+            gaps.append(
+                f"The service account register declares {entry.id!r} in {source}, but the account "
+                f"holding that login was created on "
+                f"{member.account_created.date().isoformat()}, after the entry was last reviewed on "
+                f"{entry.reviewed.isoformat()}. A GitHub login returns to the pool when its owner "
+                f"renames, so this is a different account wearing the same name: it is left "
+                f"undeclared, and the entry declares nothing until somebody confirms it."
+            )
+            entry = None
+        service = entry is not None
         principals.append(
             Principal(
                 source=source,
@@ -492,8 +539,12 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
                 last_used=None,
             )
         )
-        if service:
-            links.append(Link(key, LinkMethod.DECLARED, "", "declared a service account in the review register"))
+        if entry is not None:
+            matched.add(entry.key)
+            # Declared accounts take no SSO or verified-email link: those say
+            # the IdP or GitHub knows the address, not that a person answers for
+            # a machine account. The register is the only thing that says who.
+            links.append(Link(key, LinkMethod.DECLARED, entry.owner, entry.evidence()))
         elif member.saml_identity:
             identity, attribute = member.saml_identity.joinable()
             if identity:
@@ -585,6 +636,8 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
             f"{principal_id} holds {how} in the {snapshot.org} org but was not returned by the "
             f"member read. It is counted as unlinked."
         )
+
+    gaps.extend(register.stale(source, matched))
 
     meta = SourceMeta(
         source=source,

@@ -17,6 +17,7 @@ from .history import age_findings, load_history
 from .identity import OKTA, GitHubSnapshot, IdentityGraph, project_github, project_snapshot
 from .items import ITEMS_FILE, ReviewItem, build_items, items_chunks
 from .models import Snapshot
+from .register import Register
 from .report import ReportError, all_gaps, run_dir_name, write_report
 from .roster import RosterEntry
 from .transitions import TRANSITIONS_FILE, Transition, build_transitions, transitions_json
@@ -78,10 +79,15 @@ def run_review(
     extra: dict[str, str | Iterable[str]] = {}
     if github_path is not None:
         github = _load_github(github_path)
+        # The register reaches both projections. It used to reach only Okta,
+        # so a declared GitHub bot was a service account in the config and an
+        # unowned mystery in the graph.
         graph = IdentityGraph.compose(
-            project_snapshot(snapshot, config.service_accounts), project_github(github)
+            project_snapshot(snapshot, config.service_accounts),
+            project_github(github, config.service_accounts),
         )
         _note_skew(graph, github, snapshot)
+        _note_register(graph, config.service_accounts)
         # The data nine findings rest on, inside the bundle the manifest signs.
         # Without it `attest` can verify the report but not what it was read from.
         extra[GITHUB_SNAPSHOT_FILE] = json.dumps(github.to_dict(), indent=2) + "\n"
@@ -109,6 +115,48 @@ def run_review(
     run_dir = write_report(out_dir, snapshot, findings, skipped, config, as_of,
                            roster_path=roster_path, history=history, extra_files=extra or None, graph=graph)
     return ReviewRun(run_dir, findings, skipped, items, gaps, transitions)
+
+
+def _note_register(graph: IdentityGraph, register: Register) -> None:
+    """The two ways a register entry declares nothing that the projections
+    cannot see for themselves, recorded as gaps on the sources they concern.
+
+    After composing, like `_note_skew`, and for the same reason in reverse: both
+    of these need the whole graph. An owner is an identity key, and the estate
+    that evidences a person is usually not the estate holding the account they
+    own -- a GitHub bot owned by someone whose only account is in Okta is the
+    ordinary case, and neither projection can settle it alone. The set of
+    sources actually read is likewise only knowable once they are all in.
+
+    Gaps rather than findings. AR-15 already reports the account itself, at the
+    severity an unowned credential deserves; what these add is the reason, which
+    is that the register is wrong rather than that nobody has claimed the
+    account. One is fixed by finding an owner, the other by correcting a line
+    somebody already wrote, and an auditor reading `all_gaps` should be able to
+    tell which review they are holding.
+    """
+    for principal, owner in graph.unattested_owners():
+        meta = graph.source(principal.source)
+        if meta is None:  # a principal naming an undeclared source cannot exist
+            continue
+        meta.gaps.append(
+            f"The service account register declares {principal.label!r} is owned by {owner!r}, "
+            f"which no source evidences as a person: no account in any estate this review read "
+            f"belongs to them. The account is reported as unowned, because an owner who cannot be "
+            f"reached is not accountable for it. Correct the owner, or remove it and say so."
+        )
+    read = {m.source for m in graph.sources}
+    unread = [s for s in register.sources() if s.lower() not in {r.lower() for r in read}]
+    if unread:
+        # On Okta's metadata because every review has one and this is a
+        # statement about the review rather than about any source in it.
+        meta = graph.source(OKTA)
+        if meta is not None:
+            meta.gaps.append(
+                f"The service account register declares accounts in {len(unread)} source(s) this "
+                f"review did not read: {', '.join(sorted(unread))}. Those entries declare nothing "
+                f"here, and nothing in this review checked them."
+            )
 
 
 def _load_github(path: Path) -> GitHubSnapshot:

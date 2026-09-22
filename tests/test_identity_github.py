@@ -18,6 +18,7 @@ from access_review.identity import (
 )
 from access_review.identity.github import Member, SamlIdentity, source_name
 from access_review.models import Snapshot
+from access_review.register import Register
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 GITHUB = "github:acme-eng"
@@ -141,10 +142,20 @@ def test_members_github_states_nothing_about_are_unlinked(graph):
 
 
 def test_a_declared_service_account_is_declared_not_a_person(github_snapshot):
-    graph = project_github(github_snapshot, ["acme-ci-bot"])
+    graph = project_github(github_snapshot, Register.from_config([{"source": GITHUB, "id": "acme-ci-bot"}]))
     bot = graph.principal((GITHUB, "U_kgDOBq1kh6"))
     assert bot.kind is PrincipalKind.SERVICE
     assert graph.link_for(bot.key).method is LinkMethod.DECLARED
+
+
+def test_an_okta_entry_does_not_declare_a_github_member_with_the_same_login(github_snapshot):
+    """Entries are scoped to a source. Two sources are two estates and a login
+    is only a name within one, so the flat list this register grew out of would
+    have declared a GitHub bot because an Okta account happened to match."""
+    unscoped = project_github(github_snapshot, Register.from_config(["acme-ci-bot"]))
+    assert unscoped.link_for((GITHUB, "U_kgDOBq1kh6")) is None
+    assert unscoped.principal((GITHUB, "U_kgDOBq1kh6")).kind is PrincipalKind.HUMAN
+    assert gaps_mentioning(unscoped, "acme-ci-bot") == [], "an okta entry is not this source's problem"
 
 
 def test_an_sso_link_does_not_make_a_principal_a_person(graph):
@@ -364,12 +375,18 @@ def test_composed_coverage_spans_both_sources(both):
     assert coverage.total == 13 + 13
     assert coverage.by_method["sso_identity"] == 10 + 5
     assert coverage.by_method["verified_email"] == 1
-    assert coverage.unlinked == 1 + 7
+    # 0 unlinked in Okta: the register declares its one unlinked principal.
+    assert coverage.unlinked == 0 + 7
 
 
 def test_nothing_joins_two_sources_by_a_similar_login(both):
     marcus = both.principals_of("marcus.lee@acme.example")
-    assert {p.label for p in marcus} == {"marcus.lee@acme.example", "marcus-lee"}
+    # Terraform Automation is his because the register says so, which is
+    # evidence someone signed; the GitHub account is his because SAML says so.
+    # Neither is his because "marcus-lee" looks like "marcus.lee" -- which is
+    # what the second half of this test takes away.
+    assert {p.label for p in marcus} == {
+        "marcus.lee@acme.example", "marcus-lee", "Terraform Automation"}
 
     stripped = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
     for member in stripped.members:

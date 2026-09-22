@@ -9,7 +9,18 @@
     "Okta Administrators"
   ],
   "service_accounts": [
-    "svc-ci@acme.example"
+    "svc-ci@acme.example",
+    {
+      "id": "Terraform Automation",
+      "owner": "marcus.lee@acme.example",
+      "purpose": "Applies infrastructure changes from CI",
+      "reviewed": "2026-07-01"
+    },
+    {
+      "source": "github:acme-eng",
+      "id": "acme-ci-bot",
+      "purpose": "Publishes release artifacts"
+    }
   ],
   "branding": {
     "name": "Acme",

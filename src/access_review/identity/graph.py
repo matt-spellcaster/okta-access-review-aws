@@ -370,19 +370,45 @@ class IdentityGraph:
             by_key[principal.key] = principal
         put(self, "_principals", by_key)
 
+        # Identities some source actually evidenced: an account exists in an
+        # estate we read, and this is the person holding it. Every method but
+        # DECLARED is a source speaking about its own data, so each one attests
+        # the person it names. DECLARED is the register, which is a person
+        # typing an address into a config file -- it can name somebody who does
+        # not exist, and an owner nobody can be reached at is not attribution.
+        attested = {link.identity for link in self.links
+                    if link.identity and link.method is not LinkMethod.DECLARED}
+        put(self, "_attested", frozenset(attested))
+
         # Strongest link wins. Two equally strong links naming different people
         # do NOT resolve to whichever adapter appended first -- the principal is
         # contested, which means unlinked, which means a finding.
+        #
+        # A link that names somebody outranks one that does not, whatever the
+        # method: a register entry with no owner is DECLARED and beats CREATOR
+        # on rank, so without this, declaring an account someone is recorded as
+        # having created would *remove* the only attribution there was. Rank
+        # orders evidence about who; a nameless link carries none.
+        #
+        # "Names somebody" is attested, not merely non-empty. A register entry
+        # whose owner is a typo or a person who never existed carries exactly as
+        # much evidence about who as one naming nobody, and must be worth
+        # exactly as little -- otherwise a misspelling outranks the audit log's
+        # "priya built this" and clears the finding that a nameless entry only
+        # downgrades, which makes a typo the quietest thing a config can say.
+        def strength(link: Link) -> tuple[int, int]:
+            return (0 if link.identity in attested else 1, link.method.rank)
+
         best: dict[PrincipalKey, Link] = {}
         contested: set[PrincipalKey] = set()
         for link in self.links:
             current = best.get(link.principal)
             if current is None:
                 best[link.principal] = link
-            elif link.method.rank < current.method.rank:
+            elif strength(link) < strength(current):
                 best[link.principal] = link
                 contested.discard(link.principal)
-            elif link.method.rank == current.method.rank and link.identity != current.identity:
+            elif strength(link) == strength(current) and link.identity != current.identity:
                 contested.add(link.principal)
         for key in contested:
             best.pop(key, None)
@@ -406,7 +432,12 @@ class IdentityGraph:
 
         by_identity: dict[str, list[PrincipalKey]] = {}
         for key, link in best.items():
-            if link.identity:
+            # Attested, not merely named: indexing an unattested owner would
+            # invent a person. `identities()` reads this, so a misspelled owner
+            # would appear in the report as somebody holding one service
+            # account, and the account would look reviewed by a person who does
+            # not exist rather than unowned.
+            if link.identity in attested:
                 by_identity.setdefault(link.identity, []).append(key)
         put(self, "_by_identity", by_identity)
 
@@ -465,6 +496,45 @@ class IdentityGraph:
         """Principals two equally strong links disagree about. Worse than
         unlinked: something claims to know who owns this, twice, differently."""
         return [p for p in self.principals if p.key in self._contested]
+
+    def unattributed(self) -> list[Principal]:
+        """Principals whose only evidence reaches nobody.
+
+        A register entry with no owner is the case: someone declared the account
+        is not a person's, which is why it is not in `unlinked()`, and named no
+        one to answer for it, which is why it reaches no identity and appears on
+        no one's review. Between the two, and reported as its own thing -- a
+        declaration that clears a finding while leaving nobody accountable is
+        the register being used to make the tool quieter.
+
+        An entry naming an owner no source evidences is the same answer reached
+        a different way, and is here for the same reason. `marcus.lee@acme.
+        exmaple` is not a milder version of naming nobody: it reads as ownership
+        on every screen, joins to no person, and puts the account in no
+        departure bundle. Left out of this list it would clear the finding
+        outright, making a typo quieter than an honest blank -- the exact
+        inversion this check exists to prevent.
+        """
+        return [p for p in self.principals
+                if (link := self._best.get(p.key)) is not None
+                and link.identity not in self._attested]
+
+    def unattested_owners(self) -> list[tuple[Principal, str]]:
+        """Principals declared as owned by somebody no source evidences, with
+        the name that was written down.
+
+        Separated from the rest of `unattributed()` because the remediation is
+        different and the register is the only thing that can be wrong: nobody
+        needs to find an owner for these, somebody needs to correct one that is
+        already there. Read by `review` to record it as a gap -- a register that
+        has drifted says so rather than quietly vouching.
+        """
+        out = []
+        for principal in self.unattributed():
+            link = self._best.get(principal.key)
+            if link is not None and link.identity:
+                out.append((principal, link.identity))
+        return out
 
     def holder_of(self, credential: Credential) -> Principal | None:
         """The principal holding a credential, or None when the source names a

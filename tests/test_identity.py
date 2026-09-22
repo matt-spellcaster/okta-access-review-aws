@@ -256,7 +256,12 @@ def test_a_client_created_by_someone_no_longer_in_okta_is_unlinked():
     assert labels(graph.unlinked()) == {"Bot"}
 
 
-def test_api_client_nobody_set_up_in_the_log_is_unlinked(graph):
+def test_api_client_nobody_set_up_in_the_log_is_unlinked(demo_snapshot):
+    """Built with an empty register on purpose. The demo config declares
+    Terraform Automation with an owner, which is the other half of this and has
+    its own tests -- what this one pins is that an API client the audit log
+    cannot attribute and nobody declared reaches nobody."""
+    graph = project_snapshot(demo_snapshot)
     assert labels(graph.unlinked()) == {"Terraform Automation"}
 
 
@@ -522,8 +527,11 @@ def test_nothing_is_linked_by_name_similarity():
 def test_coverage_counts_every_principal_once(graph):
     coverage = graph.coverage()
     assert coverage.total == len(graph.principals)
-    assert coverage.by_method == {"sso_identity": 10, "verified_email": 0, "declared": 1, "creator": 1}
-    assert (coverage.unlinked, coverage.contested) == (1, 0)
+    # declared is 2: svc-ci (a bare login, nobody named) and Terraform
+    # Automation (an owner). unlinked is 0 because the second of those used to
+    # be the one unlinked principal in this source.
+    assert coverage.by_method == {"sso_identity": 10, "verified_email": 0, "declared": 2, "creator": 1}
+    assert (coverage.unlinked, coverage.contested) == (0, 0)
     assert coverage.reliable
 
 
