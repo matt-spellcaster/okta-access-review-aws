@@ -35,10 +35,12 @@ from ..models import (
     User,
 )
 from .graph import (
+    AppRef,
     Credential,
     CredentialKind,
     Grant,
     GrantKind,
+    GroupKey,
     IdentityGraph,
     Link,
     LinkMethod,
@@ -203,20 +205,25 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
         for member in sorted(group.members):
             grants.append(Grant(OKTA, note(member), GrantKind.GROUP, group.id, group.name))
 
-    members_of = {g.id: (g.name, sorted(g.members)) for g in snapshot.groups}
+    # App-via-group access is recorded once per group, not once per (member,
+    # app) pair: an org-wide group over 250 apps is 250 entries here and 1.25M
+    # grants materialised, which is the difference between fitting in the
+    # collect Lambda and not. `grants_for` expands it against each member's own
+    # GROUP grant, which is emitted above and is what says who is in the group.
+    names_of = {g.id: g.name for g in snapshot.groups}
+    group_apps: dict[GroupKey, list[AppRef]] = {}
     for app in snapshot.apps:
         for user_id in sorted(app.users):
             grants.append(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label))
         for group_id in sorted(app.groups):
-            name, members = members_of.get(group_id, ("", []))
+            name = names_of.get(group_id, "")
             if not name:
                 gaps.append(
                     f"App {app.label!r} is assigned to group {group_id}, which the group read did "
                     f"not return. Who reaches it through that group is unknown."
                 )
                 continue
-            for user_id in members:
-                grants.append(Grant(OKTA, note(user_id), GrantKind.APP, app.id, app.label, f"group:{name}"))
+            group_apps.setdefault((OKTA, group_id), []).append((app.id, app.label))
 
     for user_id in sorted(unknown_ids):
         principals.append(
@@ -306,4 +313,5 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
         credentials=credentials,
         grants=grants,
         links=links,
+        group_apps=group_apps,
     )
