@@ -51,6 +51,7 @@ from .items import (
     summary,
 )
 from .state import CLOSED, OPEN, SIGNED_OFF, create_state, load_state, update_state
+from .tickets import record_verify_mode
 
 # Findings that mean someone who has left can still get in: a ticket is opened
 # for these as soon as the review opens, without waiting for sign-off.
@@ -417,10 +418,57 @@ def checklist_entries(deps: Deps, run: str) -> list[dict]:
     return [
         {"ticket": _ticket(deps, rec["issue"]), "todo": rec.get("todo") or rec.get("kind", "ticket"),
          "due": rec.get("due"), "verified": verified.get(rec["label"], ("", ""))[0] or None,
-         "accepted": verified.get(rec["label"], ("", ""))[1] == "accepted", "label": rec["label"]}
+         "accepted": verified.get(rec["label"], ("", ""))[1] == "accepted", "label": rec["label"],
+         # How this one will settle, known before it does. A checklist that only
+         # says so after the fact leaves the reader to assume the daily check
+         # will look in Okta for every line, and for some it never will.
+         "verify": record_verify_mode(rec)}
         for _, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets")
         if rec.get("kind") in ("leaver", "revoke", "finding")
     ]
+
+
+def settled_counts(entries: list[dict]) -> tuple[int, int, int]:
+    """(verified against Okta, taken on the reviewer's word, neither).
+
+    What the closing claim is worded from. The first two are not the same
+    evidence and a single count cannot say which happened. The third exists
+    because the close decision is made elsewhere, over the tickets that had no
+    verification record yet, while these counts are over every ticket on file --
+    so the two can disagree, and a sentence saying "every ticket is settled"
+    must not be printed from numbers that do not add up to every ticket.
+    """
+    done = [e for e in entries if e.get("verified")]
+    on_word = sum(1 for e in done if e.get("accepted"))
+    return len(done) - on_word, on_word, len(entries) - len(done)
+
+
+def how_settled(in_okta: int, on_word: int, unaccounted: int = 0) -> str:
+    """One clause naming what settled a review's tickets, counts only."""
+    parts = []
+    if in_okta:
+        parts.append(f"{in_okta} verified against a fresh Okta snapshot")
+    if on_word:
+        parts.append(f"{on_word} resolved on the reviewer's word (a decision, or access in a source "
+                     f"this review cannot re-read)")
+    if unaccounted:
+        parts.append(f"{unaccounted} with no verification record on file")
+    return ", ".join(parts) or "there was nothing to fix"
+
+
+def closing_claim(entries: list[dict], on_date) -> str:
+    """The sentence a closing review puts on its tracking ticket, counts only.
+
+    The whole sentence in one place because the part that matters is which
+    lead-in the counts justify. "Every ticket is settled" is a claim about all of
+    them, and the close decision is made elsewhere, over the tickets that were
+    still pending -- so it is only printed when the counts do add up to all of
+    them.
+    """
+    in_okta, on_word, unaccounted = settled_counts(entries)
+    lead = ("Every ticket under this review is settled as of" if not unaccounted
+            else "This review is closing as of")
+    return f"{lead} {on_date}: {how_settled(in_okta, on_word, unaccounted)}."
 
 
 def post_checklist(deps: Deps, run: str) -> None:
@@ -436,11 +484,20 @@ def post_checklist(deps: Deps, run: str) -> None:
         update_state(deps.s3, deps.work_bucket, run,
                      lambda s: s.update(checklist={"channel": approve_msg["channel"], "ts": ts}))
     if state.get("parent_issue") and deps.tickets is not None:
+        # Not "each of these must be done and verified in Okta": some of them
+        # never are. A decision, or access in a source with no collector, settles
+        # on the reviewer's word, and saying otherwise makes this comment assert
+        # a check that will not happen.
         deps.tickets.jira.add_comment(state["parent_issue"], adf(
-            "To close this ticket, each of these must be done and verified in Okta:",
-            *[[(f"{e['ticket'][0]}: ", "strong"), (f"{e['todo']} (due {e.get('due')})", None)] for e in entries],
-            "Resolve each sub-ticket once its change is made; the daily check verifies it and this ticket "
-            "closes automatically when all are verified.",
+            "To close this ticket, each of these must be done and its own ticket resolved:",
+            *[[(f"{e['ticket'][0]}: ", "strong"),
+               (f"{e['todo']} (due {e.get('due')})"
+                + (" -- taken on your word, not re-read in Okta" if e["verify"] == "reviewer" else ""), None)]
+              for e in entries],
+            "Resolve each sub-ticket once its change is made. The daily check re-reads Okta and ticks off "
+            "what it can see there; the lines marked above ask for a decision, or concern a source this "
+            "review cannot re-read, so resolving them is the answer. This ticket closes automatically once "
+            "every line is settled.",
         ))
 
 

@@ -58,11 +58,31 @@ INFO = "info"
 # system has a collector, and claiming to have verified it would be worse than
 # taking the reviewer's word. See the guard in tests/test_tickets.py.
 REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17")
+# Ticket kinds that ask for a change in Okta, so `watch.still_present` can re-read
+# it there. Everything else settles on the reviewer's word.
+OKTA_VERIFIED_KINDS = frozenset({"leaver", "revoke"})
 
 
 def verify_mode(check_id: str) -> str:
     """How the daily check settles a fix ticket: "okta" or "reviewer"."""
     return "reviewer" if check_id in REVIEW_CHECKS else "okta"
+
+
+def record_verify_mode(record: dict) -> str:
+    """How the daily check settles one ticket record: "okta" or "reviewer".
+
+    The single answer, because three places word a claim off it: the daily
+    check, the checklist in Slack and the checklist on the tracking ticket. Only
+    a fix ticket can be a judgement call -- a revoke or leaver ticket asks for a
+    change in Okta and is re-read there. Records written before the `verify`
+    field existed go by their check.
+    """
+    if record.get("kind") == "finding":
+        return record.get("verify") or verify_mode(record.get("check_id", ""))
+    # Listed, not defaulted. "okta" is the claim that something re-read the
+    # estate and confirmed the fix, so a ticket kind added later must say so
+    # deliberately rather than inherit it.
+    return "okta" if record.get("kind") in OKTA_VERIFIED_KINDS else "reviewer"
 
 
 def quarter(review_date: str) -> str:

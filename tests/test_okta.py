@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from access_review.collect import collect
+from access_review.models import Snapshot
 from access_review.okta import OktaClient, OktaError
 
 ORG = "https://example.okta.com"
@@ -234,11 +235,21 @@ def test_collect_marks_roles_unknown_and_skips_grants_when_forbidden(keypair, ca
     assert len(snap.gaps) == 3
     assert "AR-10 and AR-11" in snap.gaps[0]
     assert "hiding apps" in snap.gaps[2]
+    # As a flag, not only as prose: watch.still_present reads it to refuse to
+    # verify a revoke from a read that could not see the app, and a gap string is
+    # not something that function can be asked to parse.
+    assert snap.apps_complete is False
+    # And it survives being written and read back, which is how every consumer
+    # after the collector gets it.
+    assert Snapshot.from_dict(snap.to_dict()).apps_complete is False
 
 
 def test_no_gap_when_review_app_is_visible(keypair):
     session = FakeSession({"/api/v1/apps": [{"id": "client123", "label": "Access Review"}]})
-    assert collect(client(session, keypair)).gaps == []
+    snap = collect(client(session, keypair))
+    assert snap.gaps == []
+    assert snap.apps_complete is True
+    assert Snapshot.from_dict(snap.to_dict()).apps_complete is True
 
 
 def test_get_capped_stops_at_the_limit(keypair):

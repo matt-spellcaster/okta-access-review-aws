@@ -289,6 +289,12 @@ class Snapshot:
     app_usage: dict[tuple[str, str], datetime] = field(default_factory=dict)
     app_usage_since: datetime | None = None
     app_usage_complete: bool = True
+    # False when the admin role running the collection was hiding apps, so
+    # `apps` and every app's assignment list are a subset of the estate. A
+    # missing assignment then means "not visible", not "not assigned", and
+    # nothing may report it as removed. Separate from app_usage_complete, which
+    # is about the sign-in log rather than the assignments themselves.
+    apps_complete: bool = True
 
     def last_app_sign_in(self, user_id: str, app_id: str) -> datetime | None:
         return self.app_usage.get((user_id, app_id))
@@ -332,6 +338,7 @@ class Snapshot:
             },
             app_usage_since=parse_time(d.get("app_usage_since")),
             app_usage_complete=d.get("app_usage_complete", True),
+            apps_complete=d.get("apps_complete", True),
         )
 
     def to_dict(self) -> dict:
@@ -351,4 +358,5 @@ class Snapshot:
             ],
             "app_usage_since": format_time(self.app_usage_since),
             "app_usage_complete": self.app_usage_complete,
+            "apps_complete": self.apps_complete,
         }

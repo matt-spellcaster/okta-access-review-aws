@@ -274,6 +274,29 @@ def graph_env(tmp_path):
     return deps, run.run_dir.name, {i.key: i for i in run.items}
 
 
+def test_a_cross_source_fix_ticket_is_marked_as_taken_on_your_word(graph_env):
+    """The case the whole chain exists for, and the one the fixtures without a
+    graph cannot reach. AR-15..AR-17 ask for a change in a source this review
+    cannot re-read, so they settle on the reviewer's word -- and if they were
+    ever counted as Okta-verified the closing claim would be back to asserting a
+    check that never ran."""
+    deps, run, items = graph_env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    workflow.remediate(deps, run)
+    entries = workflow.checklist_entries(deps, run)
+    cross = [e for e in entries if "(AR-17)" in e["todo"]]
+    assert cross, [e["todo"] for e in entries]
+    assert all(e["verify"] == "reviewer" for e in cross), cross
+    parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
+    checklist = [b for k, b in deps.tickets.jira.comments if k == parent and "To close" in b][-1]
+    for e in cross:
+        line = next(p for p in json.loads(checklist)["content"]
+                    if e["ticket"][0] in json.dumps(p))
+        assert "taken on your word" in json.dumps(line), line
+
+
 def test_opening_a_review_tells_the_leaver_ticket_what_it_cannot_close(graph_env):
     """open_review builds the leaver tickets, and only it has the items that know
     what each person holds elsewhere. Wire that up wrong and the ticket goes back
@@ -286,6 +309,73 @@ def test_opening_a_review_tells_the_leaver_ticket_what_it_cannot_close(graph_env
     body = json.dumps(marcus["description"])
     assert "Not part of this ticket" in body, body
     assert "AR-17" in body, "the leaver ticket never names what it cannot close"
+
+
+def test_the_closing_claim_counts_the_two_kinds_of_evidence_apart():
+    """The sentence an auditor reads when a review closes. "Verified in Okta" and
+    "the reviewer said so" are not the same evidence, and a single count cannot
+    say which happened."""
+    def e(verified, accepted):
+        return {"verified": verified, "accepted": accepted}
+
+    both = [e("2026-09-18", False), e("2026-09-18", False), e("2026-09-18", True), e(None, False)]
+    assert workflow.settled_counts(both) == (2, 1, 1), "the unverified one is neither, and is counted"
+    assert workflow.how_settled(2, 1) == (
+        "2 verified against a fresh Okta snapshot, 1 resolved on the reviewer's word "
+        "(a decision, or access in a source this review cannot re-read)")
+    # All one kind: say that kind, and nothing about the other.
+    assert workflow.how_settled(3, 0) == "3 verified against a fresh Okta snapshot"
+    assert "Okta snapshot" not in workflow.how_settled(0, 3)
+    assert workflow.how_settled(0, 3).startswith("3 resolved on the reviewer's word")
+    # A review with nothing to fix must not report zero verifications as a check.
+    assert workflow.how_settled(0, 0) == "there was nothing to fix"
+    # A ticket with no verification record is named, not absorbed into either
+    # count: the close decision is made over pending tickets, these counts are
+    # over all of them, and the two can disagree.
+    assert workflow.how_settled(2, 1, 1).endswith("1 with no verification record on file")
+    assert workflow.how_settled(0, 0, 2) == "2 with no verification record on file"
+    # "Every ticket is settled" is a claim about all of them, so it is printed
+    # only when the counts add up to all of them.
+    every = workflow.closing_claim([e("2026-09-18", False), e("2026-09-18", True)], "2026-09-18")
+    assert every.startswith("Every ticket under this review is settled as of 2026-09-18:")
+    short = workflow.closing_claim([e("2026-09-18", False), e(None, False)], "2026-09-18")
+    assert short.startswith("This review is closing as of")
+    assert "1 with no verification record on file" in short
+    assert "Every ticket" not in short
+
+
+def test_the_finished_post_does_not_say_every_ticket_ends_up_verified(env):
+    """The widest audience of the four: the review channel. It said the tracking
+    ticket "closes once all are verified" over a count that includes the fix
+    tickets Okta is never consulted for."""
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    workflow.remediate(deps, run)
+    finished = [p for c, p, _ in deps.bot.posts if c == deps.channel][-1]
+    text = json.dumps(finished)
+    assert "closes once all are verified" not in text
+    assert "resolved on the reviewer's word" in text and "settled" in text
+
+
+def test_the_tracking_ticket_does_not_say_every_line_is_verified_in_okta(env):
+    """post_checklist opened with "each of these must be done and verified in
+    Okta" over a list that includes tickets Okta is never consulted for."""
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    workflow.remediate(deps, run)
+    parent = load_state(deps.s3, "work", run)[0]["parent_issue"]
+    checklist = [b for k, b in deps.tickets.jira.comments if k == parent and "To close" in b][-1]
+    assert "verified in Okta" not in checklist
+    assert "its own ticket resolved" in checklist
+    assert "taken on your word, not re-read in Okta" in checklist
+    entries = workflow.checklist_entries(deps, run)
+    assert {e["verify"] for e in entries} == {"okta", "reviewer"}, "both kinds in this run"
+    # A revoke or leaver ticket asks for a change in Okta, so it is re-read there.
+    assert all(e["verify"] == "okta" for e in entries if "Unassign" in e["todo"])
 
 
 def test_item_cards_show_facts_then_why(env):
