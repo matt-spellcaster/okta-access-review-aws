@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 from .checks import Config, Finding, ReviewContext, run_checks
 from .history import age_findings, load_history
 from .identity import OKTA, GitHubSnapshot, IdentityGraph, project_github, project_snapshot
-from .items import ITEMS_FILE, ReviewItem, build_items, items_json
+from .items import ITEMS_FILE, ReviewItem, build_items, items_chunks
 from .models import Snapshot
 from .report import ReportError, all_gaps, run_dir_name, write_report
 from .roster import RosterEntry
@@ -72,7 +73,9 @@ def run_review(
     it those checks are skipped rather than run against half an estate.
     """
     graph = None
-    extra: dict[str, str] = {}
+    # Values are text, or an iterable of chunks for a file too big to hold
+    # whole. `write_report` writes either straight into the run folder.
+    extra: dict[str, str | Iterable[str]] = {}
     if github_path is not None:
         github = _load_github(github_path)
         graph = IdentityGraph.compose(
@@ -88,7 +91,10 @@ def run_review(
     age_findings(findings, history, as_of)
     items = build_items(ctx, findings) if require_items else None
     if items is not None:
-        extra[ITEMS_FILE] = items_json(items, as_of, config.app_unused_days)
+        # The chunks, not the document: this is the one file in the folder
+        # whose size is a cross product, and holding it here keeps it live
+        # through the access matrix, the PDF and the manifest.
+        extra[ITEMS_FILE] = items_chunks(items, as_of, config.app_unused_days)
     # Computed once and handed to the bundles rather than recomputed there: the
     # answer about completeness has one owner, and a bundle is now a seventh
     # place that states it.

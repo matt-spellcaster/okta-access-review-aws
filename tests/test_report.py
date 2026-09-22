@@ -391,3 +391,92 @@ def test_a_malformed_github_snapshot_is_a_clean_error(tmp_path, capsys):
     assert main(DEMO_ARGS + ["--github", str(bad), "--out", str(tmp_path / "out")]) == 1
     err = capsys.readouterr().err
     assert "not a readable GitHub snapshot" in err and "Traceback" not in err
+
+
+def test_an_extra_file_written_from_chunks_is_the_same_bytes_and_the_same_hash(tmp_path):
+    """`review_items.json` arrives as an iterator so that the largest file in
+    the folder is never a string anyone holds. The evidence must not notice:
+    same bytes on disk, same SHA-256 in the signed manifest.
+
+    Deliberately many chunks and larger than one read block. A writer that took
+    only the first chunk, or a hash that read only the first block, both pass on
+    a file small enough to arrive in one piece.
+    """
+    from access_review.report import write_report
+
+    snapshot, findings, skipped, config, as_of = _demo_inputs()
+    rows = [json.dumps({"key": f"app:{i:05d}", "target": "Application " * 20}) for i in range(1200)]
+    chunks = ['{"items": ['] + [("\n" if i == 0 else ",\n") + r for i, r in enumerate(rows)] + ["\n]}\n"]
+    text = "".join(chunks)
+    assert len(text) > (1 << 18), "smaller than a read block would prove nothing"
+
+    d = write_report(tmp_path, snapshot, findings, skipped, config, as_of,
+                     extra_files={"review_items.json": iter(chunks)})
+    written = (d / "review_items.json").read_bytes()
+    assert written == text.encode()
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert manifest["files"]["review_items.json"] == hashlib.sha256(written).hexdigest()
+
+
+def test_a_review_hands_the_items_file_over_as_chunks_not_as_a_document(tmp_path, monkeypatch):
+    """The saving is in `review.py`, not only in `items.py`.
+
+    `items_json` here instead of `items_chunks` rebuilds the whole document and
+    keeps it live in `extra` through the access matrix, the PDF and the manifest
+    -- 243 MB of peak at 250k items against 15 MB -- and nothing else in this
+    suite would say a word, because the file written at the end is identical.
+    """
+    from datetime import date
+
+    from access_review import review as review_module
+    from access_review.checks import Config
+    from access_review.items import ITEMS_FILE
+    from access_review.models import Snapshot
+    from access_review.roster import load_roster
+
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    config = Config.load(FIXTURES / "demo_config.json")
+    roster_path = FIXTURES / "demo_roster.csv"
+    handed: dict = {}
+    real = review_module.write_report
+
+    def spy(*args, **kwargs):
+        handed.update(kwargs.get("extra_files") or {})
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(review_module, "write_report", spy)
+    run = review_module.run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path,
+                                   config, date(2026, 9, 15), tmp_path, require_items=True)
+    assert run.items, "the fixture has items to write"
+    assert not isinstance(handed[ITEMS_FILE], str), "the document, where the chunks were the point"
+
+
+def test_a_chunked_extra_file_reaches_the_disk_before_the_last_chunk_is_asked_for(tmp_path):
+    """Written a chunk at a time, not joined and then written.
+
+    `"".join(chunks)` inside the writer is byte-identical, passes every other
+    test in this file, and puts the whole document back in memory -- the one
+    thing handing over an iterator was for. The only place the difference shows
+    is from inside the iterator: by the time the second chunk is asked for, the
+    first is already on disk.
+    """
+    import io
+
+    from access_review.report import _write_text
+
+    path = tmp_path / "review_items.json"
+    on_disk = []
+    # Twice the buffer the text layer flushes at, so the first chunk really
+    # reaches the file rather than sitting in the buffer -- sized off the
+    # constant rather than a literal, because it is 8 KB on some filesystems
+    # and 128 KB on others.
+    block = "x" * (io.DEFAULT_BUFFER_SIZE * 2)
+
+    def chunks():
+        yield block
+        on_disk.append(path.stat().st_size if path.exists() else -1)
+        yield block
+
+    _write_text(path, chunks())
+    assert on_disk and on_disk[0] >= io.DEFAULT_BUFFER_SIZE, "nothing reached the file until the end"
+    assert path.read_bytes() == (block * 2).encode()

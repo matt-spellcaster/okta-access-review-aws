@@ -177,27 +177,41 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   only because it is smaller: `report.access_matrix` joins every app a user reaches into one cell,
   so its bytes are the same cross product, and the `list[dict]` is held live through `_write_csv`
   **and** `write_pdf`. If the 1024 MB Lambda binds again, that is where to look, not here.
-  So `items_json` is written for that size and the other writers are not: **one item per line, never
-  `indent=`**. Indentation is 21% of the bytes on every version, which is the whole of the win on
-  the 3.14 image -- peak there is within a megabyte either way, and the gain is 1.7x on time. The
-  memory cliff is 3.11 and 3.12 only, where `json.dumps(indent=...)` drops to the pure-Python
-  encoder and peaks at 1.1 GB against 383 MB for the C one; 3.13 taught `c_make_encoder` to indent,
-  so that half bites the CLI and never the Lambda. Rows come from `vars(item)`, not
-  `dataclasses.asdict`, which deep-copies every item before a byte is encoded, and they are written
-  into one `io.StringIO`: `a + b + c` over a 176 MB document is three more live copies of it, and a
-  list of fragments joined at the end costs 48 MB over the buffer at 250k items. The two ways
-  `vars` can differ from `asdict` are a field holding a **dataclass** (on its own or inside a tuple),
-  which `asdict` flattens and `vars` hands json something it cannot encode, and `slots=True` on
-  `ReviewItem`, which leaves it no `__dict__` at all -- the tempting fix for a class instantiated
-  250k times. An int, bool, None, list or dict is fine under either; a date or a set never worked
-  under either. `test_the_items_file_is_the_same_document_however_it_is_laid_out` catches the first
-  by comparing against the `asdict` form. Layout is not format: same document, still FORMAT 3, and
-  `load_items`, `attest` and the manifest hash need nothing. The line-per-item part is load-bearing
-  too -- this is create-only evidence someone may open, and one 176 MB line cannot be read, grepped
-  or diffed. It survives only because `json.dumps` escapes non-ASCII, so **`items_json` passes
-  `ensure_ascii=True` explicitly**: `str.splitlines` breaks on U+2028 as well as `\n`, and an Okta
-  label is free text. `attest`, `decisions` and `store` pass `ensure_ascii=False`; this one must not,
-  and `test_the_items_file_stays_one_line_per_item_whatever_the_text_holds` is what says so.
+  So this file is **never materialised**. `items.items_chunks` yields the envelope and then one
+  chunk per item; `review.py` puts that iterator into `extra_files`; `report._write_text` writes it
+  a chunk at a time; `report._sha256` hashes the result with `hashlib.file_digest` rather than
+  `read_bytes`, because writing it incrementally buys nothing if the manifest then reads all of it
+  back. Measured at 250k items: 15 MB of peak above the items themselves against 243 MB, 220 MB
+  against 448 MB overall, byte-identical output in the same wall time. `items_json` is the reader's
+  join over the same chunks -- `load_items` and every test take text -- and uses one `io.StringIO`,
+  never `"".join`, which costs 48 MB more at that size; nothing that writes a review calls it.
+  Each of the three halves has a test that kills its own mutant, because all three regressions are
+  byte-identical on disk and silent everywhere else:
+  `test_the_items_file_is_yielded_a_row_at_a_time_and_never_whole` (a writer that batches rows),
+  `test_a_chunked_extra_file_reaches_the_disk_before_the_last_chunk_is_asked_for` (a `"".join`
+  inside `_write_text`), and `test_a_review_hands_the_items_file_over_as_chunks_not_as_a_document`
+  (`review.py` handing over the document again).
+  The layout is **one item per line, never `indent=`**. Indentation is 21% of the bytes on every
+  version, which is the whole of the win on the 3.14 image -- peak there is within a megabyte either
+  way, and the gain is 1.7x on time. The memory cliff is 3.11 and 3.12 only, where
+  `json.dumps(indent=...)` drops to the pure-Python encoder and peaks at 1.1 GB against 383 MB for
+  the C one; 3.13 taught `c_make_encoder` to indent, so that half bites the CLI and never the
+  Lambda. The row separator **leads** each row rather than trailing it, so the empty file needs no
+  branch and no lookahead -- which a lazy writer could not do anyway. Rows come from `vars(item)`,
+  not `dataclasses.asdict`, which deep-copies every item before a byte is encoded. The two ways
+  `vars` can differ from `asdict` are a field holding a **dataclass** (on its own or inside a
+  tuple), which `asdict` flattens and `vars` hands json something it cannot encode, and
+  `slots=True` on `ReviewItem`, which leaves it no `__dict__` at all -- the tempting fix for a class
+  instantiated 250k times. An int, bool, None, list or dict is fine under either; a date or a set
+  never worked under either. `test_the_items_file_is_the_same_document_however_it_is_laid_out`
+  catches the first by comparing against the `asdict` form. Layout is not format: same document,
+  still FORMAT 3, and `load_items`, `attest` and the manifest hash need nothing. The line-per-item
+  part is load-bearing too -- this is create-only evidence someone may open, and one 176 MB line
+  cannot be read, grepped or diffed. It survives only because `json.dumps` escapes non-ASCII, so
+  **`items_chunks` passes `ensure_ascii=True` explicitly**: `str.splitlines` breaks on U+2028 as
+  well as `\n`, and an Okta label is free text. `attest`, `decisions` and `store` pass
+  `ensure_ascii=False`; this one must not, and
+  `test_the_items_file_stays_one_line_per_item_whatever_the_text_holds` is what says so.
 - A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
   emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
   because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.

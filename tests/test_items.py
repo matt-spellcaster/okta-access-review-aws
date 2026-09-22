@@ -35,6 +35,7 @@ from access_review.items import (
     LINK_MARKER,
     ItemsError,
     build_items,
+    items_chunks,
     items_json,
     load_items,
     outside_okta_concerns,
@@ -520,3 +521,28 @@ def test_the_items_file_records_the_review_date_and_threshold_it_was_written_wit
     assert data["review_date"] == "2025-03-31"
     assert data["app_unused_days"] == 30
     assert data["format"] == 3, "the literal `load_items` and `attest` read, not whatever FORMAT is"
+
+
+def test_the_items_file_is_yielded_a_row_at_a_time_and_never_whole(demo):
+    """`write_report` streams this file straight to disk, and that only works
+    while the chunks stay rows.
+
+    The mutation this catches is the tidy-up: `yield items_json(...)`. Every
+    other test here passes under it, because the joined document is
+    byte-identical -- and the whole document is back in memory at exactly the
+    point the report, the access matrix and the PDF are all live, which is the
+    whole reason this function is separate from `items_json` at all.
+    """
+    built = build_items(demo)
+    chunks = list(items_chunks(built, AS_OF, 90))
+    assert "".join(chunks) == items_json(built, AS_OF, 90), "same document either way"
+    assert len(chunks) == len(built) + 2, "the envelope, one chunk per item, the closing brace"
+    for chunk, item in zip(chunks[1:-1], built, strict=True):
+        # Only the separator may ride along: a chunk carrying two items is a
+        # writer that has started batching, and the peak comes back with it.
+        assert chunk.lstrip(",\n") == json.dumps(vars(item), ensure_ascii=True)
+
+    # The empty file is the branch with no loop to carry it: no items, no
+    # newline after the bracket, and the document is one line.
+    empty = ('{"format": 3, "review_date": "2026-09-15", "app_unused_days": 90, "items": [', "]}\n")
+    assert list(items_chunks([], AS_OF, 90)) == list(empty)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -372,13 +373,18 @@ def outside_okta_by_login(items: list[ReviewItem]) -> dict[str, tuple[tuple[str,
     return out
 
 
-def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
-    """The items file: the same JSON document as before, encoded one item per line.
+def items_chunks(items: list[ReviewItem], as_of: date, unused_days: int) -> Iterator[str]:
+    """The items file, a piece at a time: the envelope, then one chunk per item.
 
-    Not `indent=2`. This is the largest file a review writes -- one item per app
-    a person can reach, so an org-wide group over 250 apps is a quarter of a
-    million of them -- and indentation costs 21% of its bytes for nothing an
-    auditor gains. It also costs the C encoder on Python 3.11 and 3.12, where
+    Written lazily because this is by a wide margin the largest file a review
+    produces -- one item per app a person can reach, so an org-wide group over
+    250 apps is a quarter of a million of them -- and the whole point is that
+    no caller ever holds the finished document. `write_report` writes these
+    straight to the file, so the peak is one item, not the document. Joining
+    them is `items_json`, which the tests and `load_items` round-trip through.
+
+    Not `indent=2`. Indentation costs 21% of the bytes for nothing an auditor
+    gains. It also costs the C encoder on Python 3.11 and 3.12, where
     `json.dumps(indent=...)` falls back to the pure-Python encoder and runs 4-6x
     slower; 3.13 taught `c_make_encoder` to indent and the Lambda image is 3.14,
     so that half only bites someone running the CLI on an older interpreter.
@@ -415,19 +421,32 @@ def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
     # `ensure_ascii=False`; this is the one writer here that must not.
     envelope = json.dumps({"format": FORMAT, "review_date": as_of.isoformat(),
                            "app_unused_days": unused_days}, ensure_ascii=True)
-    # One buffer, never `a + b + c`: each `+` copies the whole document again,
-    # and at a quarter of a million items that is four live copies of a 176 MB
-    # string in a Lambda sized for one. A StringIO rather than a list of
-    # fragments joined at the end -- same bytes, same time, 48 MB less peak at
-    # 250k items, because the list holds half a million live str objects at the
-    # moment the joined result is allocated beside them.
-    buf = io.StringIO()
-    buf.write(envelope[:-1])
-    buf.write(', "items": [')
+    yield envelope[:-1] + ', "items": ['
+    # The separator leads the row rather than trailing it, so the empty case
+    # needs no branch of its own: no items, no newline, and the file is the one
+    # line `{...,"items": []}`. A trailing-comma form would have to look ahead
+    # to know which row is last, which is the one thing a lazy writer cannot do.
     for n, item in enumerate(items):
-        buf.write("\n" if n == 0 else ",\n")
-        buf.write(json.dumps(vars(item), ensure_ascii=True))
-    buf.write("\n]}\n" if items else "]}\n")
+        yield ("\n" if n == 0 else ",\n") + json.dumps(vars(item), ensure_ascii=True)
+    yield "\n]}\n" if items else "]}\n"
+
+
+def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
+    """The whole items file as one string. `items_chunks` is the layout.
+
+    The reader's form: `load_items` takes text, and so does every test here.
+    Nothing that writes a review uses it -- `write_report` takes the chunks --
+    so the document is only ever materialised when something has already
+    decided to hold it.
+
+    One `io.StringIO`, never `"".join(...)`: join builds a list of every
+    fragment first, which at 250k items is half a million live `str` objects at
+    the moment the joined result is allocated beside them, and costs 48 MB over
+    the buffer for byte-identical output in the same time.
+    """
+    buf = io.StringIO()
+    for chunk in items_chunks(items, as_of, unused_days):
+        buf.write(chunk)
     return buf.getvalue()
 
 
