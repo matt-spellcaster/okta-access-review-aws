@@ -391,3 +391,180 @@ def test_a_malformed_github_snapshot_is_a_clean_error(tmp_path, capsys):
     assert main(DEMO_ARGS + ["--github", str(bad), "--out", str(tmp_path / "out")]) == 1
     err = capsys.readouterr().err
     assert "not a readable GitHub snapshot" in err and "Traceback" not in err
+
+
+def test_an_extra_file_written_from_chunks_is_the_same_bytes_and_the_same_hash(tmp_path):
+    """`review_items.json` arrives as an iterator so that the largest file in
+    the folder is never a string anyone holds. The evidence must not notice:
+    same bytes on disk, same SHA-256 in the signed manifest.
+
+    Deliberately many chunks and larger than one read block. A writer that took
+    only the first chunk, or a hash that read only the first block, both pass on
+    a file small enough to arrive in one piece.
+    """
+    from access_review.report import write_report
+
+    snapshot, findings, skipped, config, as_of = _demo_inputs()
+    rows = [json.dumps({"key": f"app:{i:05d}", "target": "Application " * 20}) for i in range(1200)]
+    chunks = ['{"items": ['] + [("\n" if i == 0 else ",\n") + r for i, r in enumerate(rows)] + ["\n]}\n"]
+    text = "".join(chunks)
+    assert len(text) > (1 << 18), "smaller than a read block would prove nothing"
+
+    d = write_report(tmp_path, snapshot, findings, skipped, config, as_of,
+                     extra_files={"review_items.json": iter(chunks)})
+    written = (d / "review_items.json").read_bytes()
+    assert written == text.encode()
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert manifest["files"]["review_items.json"] == hashlib.sha256(written).hexdigest()
+
+
+def test_a_review_hands_the_items_file_over_as_chunks_not_as_a_document(tmp_path, monkeypatch):
+    """The saving is in `review.py`, not only in `items.py`.
+
+    `items_json` here instead of `items_chunks` rebuilds the whole document and
+    keeps it live in `extra` through the access matrix, the PDF and the manifest
+    -- 243 MB of peak at 250k items against 15 MB -- and nothing else in this
+    suite would say a word, because the file written at the end is identical.
+    """
+    import inspect
+    from datetime import date
+
+    from access_review import review as review_module
+    from access_review.checks import Config
+    from access_review.items import ITEMS_FILE
+    from access_review.models import Snapshot
+    from access_review.roster import load_roster
+
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    config = Config.load(FIXTURES / "demo_config.json")
+    roster_path = FIXTURES / "demo_roster.csv"
+    seen: list[str] = []
+    real = review_module.write_report
+
+    def spy(*args, **kwargs):
+        extra = kwargs["extra_files"]
+        stream = extra[ITEMS_FILE]
+        # Not `not isinstance(stream, str)`: a list of rows, or a one-element
+        # list holding the whole document, are both not-a-str and both put the
+        # peak straight back. An unstarted generator is the only thing that
+        # cannot already be holding it.
+        assert inspect.isgenerator(stream), f"{type(stream).__name__}, where a stream was the point"
+        assert inspect.getgeneratorstate(stream) == inspect.GEN_CREATED, "already run"
+
+        def counted():
+            for chunk in stream:
+                seen.append(chunk)
+                yield chunk
+
+        extra[ITEMS_FILE] = counted()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(review_module, "write_report", spy)
+    run = review_module.run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path,
+                                   config, date(2026, 9, 15), tmp_path, require_items=True)
+    assert run.items, "the fixture has items to write"
+    assert len(seen) == len(run.items) + 2, "the envelope, one chunk per item, the closing brace"
+
+
+def test_a_chunked_extra_file_reaches_the_disk_before_the_last_chunk_is_asked_for(tmp_path):
+    """Written a chunk at a time, not joined and then written.
+
+    `"".join(chunks)` inside the writer is byte-identical, passes every other
+    test in this file, and puts the whole document back in memory -- the one
+    thing handing over an iterator was for. The only place the difference shows
+    is from inside the iterator: by the time the second chunk is asked for, the
+    first is already on disk.
+    """
+    import io
+    import os
+
+    from access_review.report import _write_text
+
+    path = tmp_path / "review_items.json"
+    on_disk = []
+    # Twice the buffer the text layer actually flushes at, so the first chunk
+    # really reaches the file rather than sitting in it. `open` takes that from
+    # the filesystem's `st_blksize` and falls back to `DEFAULT_BUFFER_SIZE`,
+    # which is itself 8 KB before 3.14 and 128 KB from it -- so neither number
+    # alone is the buffer, and a literal would make this test fail on a correct
+    # writer somewhere else.
+    block = "x" * (max(io.DEFAULT_BUFFER_SIZE, os.stat(tmp_path).st_blksize) * 2)
+
+    def chunks():
+        yield block
+        on_disk.append(path.stat().st_size if path.exists() else -1)
+        yield block
+
+    _write_text(path, chunks())
+    assert on_disk and on_disk[0] > 0, "nothing reached the file until the last chunk"
+    assert path.read_bytes() == (block * 2).encode()
+
+
+def test_the_manifest_hash_never_reads_the_file_whole(tmp_path, monkeypatch):
+    """Writing the largest file a chunk at a time buys nothing if the manifest
+    then reads all of it back, so the hash has its own half of the invariant.
+
+    `hashlib.sha256(path.read_bytes()).hexdigest()` is the mutation: same digest
+    for every file, every other test in this suite green, and the full copy of
+    `review_items.json` back in memory at the point the manifest is built. The
+    only thing that separates the two is which call is made, so that is what
+    this forbids.
+    """
+    from access_review.report import _sha256
+
+    big = tmp_path / "review_items.json"
+    big.write_bytes((b"x" * 4096 + b"\n") * 200)  # several read blocks
+    empty = tmp_path / "github_snapshot.json"
+    empty.write_bytes(b"")
+
+    def refuse(self):
+        raise AssertionError("the manifest read the whole file back into memory")
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    assert _sha256(big) == hashlib.sha256((b"x" * 4096 + b"\n") * 200).hexdigest()
+    assert _sha256(empty) == hashlib.sha256(b"").hexdigest(), "an empty file still hashes"
+
+
+def test_a_string_extra_file_reaches_the_file_in_one_write_and_a_rewrite_truncates(tmp_path, monkeypatch):
+    """The two ways `_write_text` can be tidied up without changing a byte.
+
+    Dropping the `isinstance` branch (`fh.writelines(content)` for everything)
+    is byte-identical, because a str is an iterable of str -- and it writes
+    `github_snapshot.json` one character at a time. Opening `"a"` instead of
+    `"w"` is byte-identical on a folder that does not exist yet, and on a rerun
+    into one that does it leaves the previous review's bytes in front of this
+    one's, inside a file the manifest then signs.
+    """
+    from access_review.report import _write_text
+
+    calls: list[int] = []
+    real_open = Path.open
+
+    class Counting:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def write(self, s):
+            calls.append(len(s))
+            return self._fh.write(s)
+
+        def writelines(self, chunks):
+            for chunk in chunks:
+                self.write(chunk)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+            return False
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **kw: Counting(real_open(self, *a, **kw)))
+    _write_text(tmp_path / "github_snapshot.json", "x" * 5000)
+    assert calls == [5000], "a str handed to writelines is written one character per call"
+    monkeypatch.undo()
+
+    rewritten = tmp_path / "review_items.json"
+    _write_text(rewritten, "y" * 100)
+    _write_text(rewritten, iter(["z" * 10]))
+    assert rewritten.read_text() == "z" * 10, "append mode keeps the previous run's bytes"

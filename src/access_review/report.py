@@ -8,6 +8,7 @@ import hashlib
 import json
 import shutil
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -245,6 +246,44 @@ def _write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:
         writer.writerows({k: cell(v) for k, v in row.items()} for row in rows)
 
 
+def _write_text(path: Path, content: str | Iterable[str]) -> None:
+    """Write an evidence file that may arrive as a stream of chunks.
+
+    `review_items.json` is handed over as an iterator (`items.items_chunks`),
+    so the largest file in the folder is never a string anybody holds.
+    `Path.write_text` costs the document twice over -- once for the string the
+    caller built and once for the encoded copy it makes -- at the point in the
+    run where the access matrix is still bound, on the peak the PDF has just
+    set. Measured at 250k
+    items, that write plus the manifest's read-back peaks 243 MB above the
+    items themselves; a chunk at a time and a blockwise hash peak 15 MB, for
+    the same bytes in the same wall time.
+
+    Text mode with no `encoding=`, exactly as `Path.write_text` had it: these
+    bytes go into a signed manifest and are read back by `attest`, so the codec
+    and the newline translation must stay what they were. `items_chunks` passes
+    `ensure_ascii=True`, which is what makes that safe for the one file here
+    big enough to care.
+    """
+    with path.open("w") as fh:
+        # A str is itself an iterable of str, and `writelines` would take it
+        # one character at a time.
+        fh.write(content) if isinstance(content, str) else fh.writelines(content)
+
+
+def _sha256(path: Path) -> str:
+    """The manifest hash of one file, read in blocks rather than whole.
+
+    `read_bytes` on `review_items.json` is another full copy of the largest
+    file in the folder, held for the one line that hashes it, and it lands
+    while the access matrix is still bound. This is
+    the other half of not materialising the file: writing it a chunk at a time
+    buys nothing if the manifest then reads all of it back.
+    """
+    with path.open("rb") as fh:
+        return hashlib.file_digest(fh, "sha256").hexdigest()
+
+
 def roster_record(roster_path: Path | None) -> dict | None:
     """What the review compared against: the roster's file name, row count and hash."""
     if roster_path is None:
@@ -272,11 +311,13 @@ def write_report(
     as_of: date,
     roster_path: Path | None = None,
     history: History | None = None,
-    extra_files: dict[str, str] | None = None,
+    extra_files: dict[str, str | Iterable[str]] | None = None,
     graph: IdentityGraph | None = None,
 ) -> Path:
     """extra_files are {name: text} written into the run folder before the
-    manifest, so they are hashed with everything else (e.g. review_items.json)."""
+    manifest, so they are hashed with everything else (e.g. review_items.json).
+    A value may instead be an iterable of chunks, which is written a chunk at a
+    time and never held whole -- see `_write_text`."""
     extra_files = extra_files or {}
     for name in extra_files:
         if name in RESERVED_FILES or Path(name).name != name or name.startswith("."):
@@ -314,8 +355,8 @@ def write_report(
               history_note=HISTORY_NOTE if history and history.reviews else "",
               gaps=gaps, sources=sources)
     (run_dir / "snapshot.json").write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n")
-    for name, text in extra_files.items():
-        (run_dir / name).write_text(text)
+    for name, content in extra_files.items():
+        _write_text(run_dir / name, content)
     # An optional evidence file this run did not produce must not survive into
     # its manifest. Re-running into the same folder without --github otherwise
     # leaves the previous run's github_snapshot.json and transitions.json in
@@ -347,7 +388,7 @@ def write_report(
         "sources": [s._asdict() for s in sources],
         "history": history.manifest_block() if history is not None else None,
         "files": {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            p.name: _sha256(p)
             for p in sorted(run_dir.iterdir())
             if p.name not in UNHASHED and p.is_file() and not p.is_symlink()
         },
