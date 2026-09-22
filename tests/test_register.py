@@ -97,8 +97,37 @@ def test_one_account_cannot_have_two_owners():
     with pytest.raises(RegisterError, match="one account has one owner"):
         Register.from_config([{"id": "bot", "owner": "a@x.example"},
                               {"id": "BOT", "owner": "b@x.example"}])
+    # The source half of the key too. Compared exactly, `Okta` and `okta` are
+    # two accounts, so the register would accept two owners for one bot and the
+    # check that exists to remove that ambiguity would be bypassed by a capital.
+    with pytest.raises(RegisterError, match="one account has one owner"):
+        Register.from_config([{"source": "OKTA", "id": "bot", "owner": "a@x.example"},
+                              {"source": "okta", "id": "bot", "owner": "b@x.example"}])
     # Same name in two sources is two accounts, and must still be allowed.
     assert len(Register.from_config([{"id": "bot"}, {"source": GITHUB, "id": "bot"}])) == 2
+
+
+def test_a_source_is_matched_however_it_is_capitalised():
+    """A GitHub org login displays in the casing it was created with, so
+    `github:Acme-Eng` is what somebody copies out of the browser while
+    `source_name` builds `github:acme-eng` from the API.
+
+    Compared exactly, that entry matches nothing and -- unlike a misspelled id,
+    which `stale` reports -- says nothing either, because `stale` only walks the
+    entries whose source it was called for and is never called for a source no
+    projection recognised. A register line that looks like a declaration and is
+    silently inert is the claim-that-looks-like-coverage this file exists to
+    prevent, so the casing must not be load-bearing.
+    """
+    subject = f"{GITHUB}/U_kgDOBq1kh6"
+    for source in ("github:Acme-Eng", "GITHUB:ACME-ENG"):
+        register = Register.from_config([{"source": source, "id": "acme-ci-bot"}])
+        found = ar15(context(register))
+        assert subject in found, f"{source} declares the bot, so it is reported as declared"
+        detail = {f.subject: f.detail for f in run_checks(context(register))[0]}[subject]
+        assert "register declares this account" in detail
+    # And the same for the default source spelled loudly.
+    assert Register.from_config([{"source": "Okta", "id": "x"}]).entry(OKTA, "X") is not None
 
 
 @pytest.mark.parametrize("entry, message", [
@@ -180,11 +209,85 @@ def test_declaring_an_account_with_no_owner_downgrades_the_finding_and_never_rem
 
 def test_an_owner_is_the_one_thing_that_clears_it():
     """The other half: the remediation is worth following. Same entry, same
-    account, an owner added -- and only then does the finding go."""
+    account, an owner added -- and only then does the finding go.
+
+    The owner has to be a real person, and this says so, because "an owner
+    clears it" is also true of an owner nobody has. See the test below for why
+    that distinction is the whole of it.
+    """
     entry = {"source": GITHUB, "id": "dev-contractor-42"}
     subject = "github:acme-eng/U_kgDOBq1jg5"
     assert subject in ar15(context(Register.from_config([entry])))
     assert subject not in ar15(context(Register.from_config([{**entry, "owner": "priya.shah@acme.example"}])))
+
+
+def test_an_owner_nobody_can_be_reached_at_never_clears_the_finding():
+    """A typo in `owner` must not be quieter than an honest blank.
+
+    The register writes whatever is typed into `Link.identity`, and a non-empty
+    identity used to be the whole test for "somebody is accountable". So
+    `marcus.lee@acme.exmaple` -- one transposition -- read as ownership on every
+    screen, joined to no person, reached no departure bundle, and *removed* the
+    finding that naming nobody only downgrades. The register's one rule, that an
+    entry which makes nobody accountable may not remove a finding, was defeated
+    by a misspelling, and the incentive ran the wrong way: whoever wanted the
+    finding gone was better off getting the address wrong than leaving it out.
+
+    Parametrised over the two ways to be unreachable, and pinned to the severity
+    of the blank-owner case rather than to "some finding exists": reporting a
+    phantom owner *more* mildly than no owner would be the same inversion, one
+    rung smaller, and an assertion on presence alone would pass through it.
+    """
+    entry = {"source": GITHUB, "id": "dev-contractor-42"}
+    subject = "github:acme-eng/U_kgDOBq1jg5"
+    nameless = ar15(context(Register.from_config([entry])))[subject]
+    for owner in ("priya.shah@acme.exmaple",  # a transposition in a real person's address
+                  "someone.who.never.existed@acme.example"):
+        found = ar15(context(Register.from_config([{**entry, "owner": owner}])))
+        assert found.get(subject) == nameless, (
+            f"owner {owner!r} is evidenced by no source, so it is worth exactly what naming "
+            f"nobody is worth -- and never less"
+        )
+
+
+def test_a_phantom_owner_does_not_invent_the_person_it_names():
+    """The other half of the silence: an unreachable owner must not become a
+    person in the report.
+
+    `_by_identity` is built from the best link's identity, and `identities()`
+    reads it -- so an unattested owner would appear as somebody holding one
+    service account, and the account would read as reviewed by a person who does
+    not exist. Worse than the missing finding, because it is a positive claim.
+    """
+    entry = {"source": GITHUB, "id": "dev-contractor-42", "owner": "priya.shah@acme.exmaple"}
+    graph = context(Register.from_config([entry])).graph
+    assert graph.principals_of("priya.shah@acme.exmaple") == []
+    assert "priya.shah@acme.exmaple" not in {i.key for i in graph.identities()}
+    # And the real person is untouched: the typo took nothing away from her.
+    assert graph.principals_of("priya.shah@acme.example")
+
+
+def test_a_phantom_owner_does_not_erase_who_created_it():
+    """`strength` ranks a link that names somebody above one that does not, and
+    an unattested name is not somebody.
+
+    Without that, a misspelled owner -- DECLARED, so stronger on rank than
+    CREATOR -- would outrank the audit log's "priya built this" and replace the
+    only real attribution there was with one that reaches nobody. The ownerless
+    form of this is already guarded; this is the same hazard wearing a name.
+    """
+    key = (OKTA, "a1")
+    graph = IdentityGraph(
+        sources=[SourceMeta(source=OKTA)],
+        principals=[Principal(source=OKTA, id="a1", label="Bot", kind=PrincipalKind.SERVICE)],
+        links=[
+            Link(key, LinkMethod.DECLARED, "nobody@acme.exmaple", "declared, owner misspelled"),
+            Link(key, LinkMethod.CREATOR, "priya.shah@acme.example", "created it"),
+        ],
+    )
+    assert graph.link_for(key).method is LinkMethod.CREATOR
+    assert graph.principals_of("priya.shah@acme.example") == list(graph.principals)
+    assert graph.unattributed() == [], "the creator link reaches a person, so this is attributed"
 
 
 def test_unlinked_and_unattributed_are_two_lists_and_never_the_same_principal():
@@ -342,3 +445,162 @@ def test_a_review_hands_the_register_to_every_source_it_projects(tmp_path):
     assert "register declares this account" in declared[0].detail, (
         "the review composed a graph that had never seen the register"
     )
+
+
+def test_a_register_entry_the_review_could_not_check_is_a_gap(tmp_path):
+    """Two entries that declare nothing, reported through `run_review` because
+    neither is visible to a single projection.
+
+    An owner no source evidences: the projection that reads the entry cannot
+    know whether the name reaches a person, since the estate holding the account
+    is usually not the estate the owner has an account in -- a GitHub bot owned
+    by an Okta-only employee is the ordinary case. And a source the review never
+    read: `stale` is called per source, so an entry for an org nobody projected
+    is the one dead entry it structurally cannot see.
+
+    Both are gaps rather than findings. AR-15 already reports the account; what
+    these add is that the register is wrong rather than that nobody has claimed
+    it, which is a different thing to go and fix.
+    """
+    config = Config.load(FIXTURES / "demo_config.json")
+    config.service_accounts = Register.from_config([
+        {"id": "Terraform Automation", "owner": "marcus.lee@acme.exmaple"},
+        {"source": "github:a-repo-org-we-never-read", "id": "ghost-bot"},
+    ])
+    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    roster_path = FIXTURES / "demo_roster.csv"
+    run = run_review(snapshot, load_roster(roster_path, config.timezone()), roster_path, config,
+                     AS_OF, tmp_path, github_path=FIXTURES / "demo_github.json")
+
+    [owner_gap] = [g for g in run.gaps if "owned by" in g]
+    assert "marcus.lee@acme.exmaple" in owner_gap and "Terraform Automation" in owner_gap
+    [unread_gap] = [g for g in run.gaps if "did not read" in g]
+    assert "github:a-repo-org-we-never-read" in unread_gap
+    # A gap is not a substitute for the finding: the account is still reported.
+    assert any(f.check_id == "AR-15" and f.subject == f"{OKTA}/a04" for f in run.findings)
+    assert not run.complete, "a register nothing checked is not a complete review"
+
+
+def _twinned_status(original_status="ACTIVE", twin_status="INACTIVE"):
+    """The demo snapshot with a second client under the same label, and a status
+    on each. The realistic shape: a client replaced by one with the same name."""
+    raw = _twinned()
+    for app in raw["apps"]:
+        if app["label"] == "Terraform Automation":
+            app["status"] = twin_status if app["id"].endswith("-twin") else original_status
+    return raw
+
+
+def test_a_label_the_client_it_replaced_left_behind_still_declares_the_live_one():
+    """`collect` reads the apps endpoint with no status filter (the user read
+    filters ACTIVE, that one does not), so a deactivated client is in the
+    snapshot with its label and its client id intact. The ordinary way two
+    clients share a label is exactly that -- switch the old one off, build the
+    new one beside it -- and counting the dead one made a correct entry declare
+    neither, so the live client came back at full severity for being undeclared
+    while somebody had declared it and named an owner."""
+    ctx = context(Register.from_config([{"id": "Terraform Automation", "owner": "priya.shah@acme.example"}]),
+                  snapshot_raw=_twinned_status())
+    assert ctx.graph.link_for((OKTA, "a04")).identity == "priya.shah@acme.example"
+    assert "okta/a04" not in ar15(ctx)
+    assert [g for g in ctx.graph.source(OKTA).gaps if "Terraform Automation" in g] == []
+    # The one that was switched off is a different account and nobody declared
+    # it, so it is still reported. Deactivated is not deleted.
+    assert "okta/a04-twin" in ar15(ctx)
+
+
+def test_a_label_an_unreadable_status_shares_declares_neither():
+    """The other direction, and the one that matters more. `_app_status` refuses
+    to read a status it does not recognise as disabled, because a service client
+    is a live credential and retiring one on paper is how it keeps working
+    unwatched. The same refusal belongs here: a client that may still be running
+    keeps the label ambiguous rather than letting the entry vouch for a client
+    nobody meant."""
+    ctx = context(Register.from_config([{"id": "Terraform Automation", "owner": "priya.shah@acme.example"}]),
+                  snapshot_raw=_twinned_status(twin_status="SOMETHING_NEW"))
+    assert {"okta/a04", "okta/a04-twin"} <= set(ar15(ctx))
+    [gap] = [g for g in ctx.graph.source(OKTA).gaps if "Terraform Automation" in g]
+    assert "declares none of them" in gap
+
+
+def test_a_client_that_was_switched_off_is_still_declared_by_its_label():
+    """Nothing above may cost a lone client its declaration. One client carries
+    the label, so the entry is unambiguous whatever its status -- an account
+    that was decommissioned is the case a register is most likely to be right
+    about, and undeclaring it would report it at full severity forever."""
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    next(a for a in raw["apps"] if a["label"] == "Terraform Automation")["status"] = "INACTIVE"
+    ctx = context(Register.from_config([{"id": "Terraform Automation", "owner": "priya.shah@acme.example"}]),
+                  snapshot_raw=raw)
+    assert ctx.graph.link_for((OKTA, "a04")).identity == "priya.shah@acme.example"
+    assert [g for g in ctx.graph.source(OKTA).gaps if "register" in g] == []
+
+
+# --- a login that changed hands ----------------------------------------------
+
+
+def _github(register, **patch):
+    """The demo GitHub snapshot projected on its own, with one member's fields
+    replaced. Projected alone because this is the GitHub adapter's judgement and
+    nothing in the Okta snapshot bears on it."""
+    raw = json.loads((FIXTURES / "demo_github.json").read_text())
+    for login, fields in patch.items():
+        next(m for m in raw["members"] if m["login"] == login).update(fields)
+    return project_github(GitHubSnapshot.from_dict(raw), register)
+
+
+# A real person who claimed the freed login, with the SSO link that makes them
+# one: the account GitHub handed the name to next.
+CLAIMED = {
+    "accountCreatedAt": "2026-08-14T09:00:00Z",
+    "samlIdentity": {"nameId": "dana.ruiz@acme.example", "username": "dana.ruiz@acme.example",
+                     "emails": [{"value": "dana.ruiz@acme.example", "primary": True}]},
+    "verifiedEmails": ["dana.ruiz@acme.example"],
+}
+
+
+def test_a_github_login_that_changed_hands_declares_nothing():
+    """An Okta login that changes stops matching, and `stale` says so. A GitHub
+    login goes back into the pool the moment its owner renames, so the entry
+    goes on matching -- a different account under the same name.
+
+    That is worse than a miss on every axis: the account is typed a service
+    account, the SSO branch that would have joined a real person to their own
+    access is skipped, and the entry's owner is attached to somebody else's
+    credentials. The evidence against it is the entry's own `reviewed` date:
+    an account created after somebody confirmed the entry is not the account
+    they confirmed."""
+    register = Register.from_config([
+        {"source": GITHUB, "id": "acme-ci-bot", "owner": "priya.shah@acme.example",
+         "reviewed": "2026-07-01"},
+    ])
+    graph = _github(register, **{"acme-ci-bot": CLAIMED})
+    key = (GITHUB, "U_kgDOBq1kh6")
+
+    assert graph.principal(key).kind is PrincipalKind.HUMAN, "a person, not a declared bot"
+    link = graph.link_for(key)
+    assert link.method is LinkMethod.SSO_IDENTITY and link.identity == "dana.ruiz@acme.example", (
+        "the entry took the SSO branch away and joined this person's access to nobody"
+    )
+    assert key not in {p.key for p in graph.principals_of("priya.shah@acme.example")}, (
+        "an owner must never end up answering for an account they never touched"
+    )
+    [gap] = [g for g in graph.source(GITHUB).gaps if "acme-ci-bot" in g]
+    assert "2026-08-14" in gap and "2026-07-01" in gap
+    assert "did not return" not in gap, "the entry matched a name; it is the account that is wrong"
+
+
+def test_a_github_login_still_held_by_the_account_that_was_declared_is_declared():
+    """The counterpart, because the guard above is only worth having if it fires
+    on the rename and nothing else. The demo bot predates the entry's review, so
+    it is the account somebody confirmed, and an entry with no `reviewed` date
+    carries no evidence either way and keeps working as it always did."""
+    dated = _github(Register.from_config([
+        {"source": GITHUB, "id": "acme-ci-bot", "owner": "priya.shah@acme.example",
+         "reviewed": "2026-07-01"}]))
+    undated = _github(Register.from_config([{"source": GITHUB, "id": "acme-ci-bot"}]))
+    key = (GITHUB, "U_kgDOBq1kh6")
+    for graph in (dated, undated):
+        assert graph.principal(key).kind is PrincipalKind.SERVICE
+        assert graph.link_for(key).method is LinkMethod.DECLARED
+        assert [g for g in graph.source(GITHUB).gaps if "acme-ci-bot" in g] == []

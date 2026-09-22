@@ -824,7 +824,9 @@ CHECKS: list[Check] = [
         "Record the owner in the service account register (config.service_accounts): an entry "
         "with an owner ties the account to that person, so it appears in their access review and "
         "in their departure bundle if they leave. An entry naming no owner declares the account "
-        "without making anyone accountable, and is still reported here.",
+        "without making anyone accountable, and is still reported here. So is one naming an owner "
+        "no source evidences as a person -- a misspelled address reads as ownership and reaches "
+        "nobody, which is why it is worth no more than leaving the field blank.",
         _unowned_credentials, needs_graph=True,
     ),
     Check(

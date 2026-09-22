@@ -98,6 +98,20 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   normalised the way `identity_key` normalises an Okta profile email or it joins to nobody while
   reading as owned. That link is also what puts the account in the owner's departure bundle, through
   `principals_of` -- no new check, and it is the loop the register exists for.
+  **An owner only counts when some source evidences that person.** `IdentityGraph._attested` is the
+  set of identities named by a link whose method is not DECLARED -- every other method is a source
+  speaking about its own data, while DECLARED is somebody typing an address into a config file. An
+  unattested owner is `unattributed()`, ranks in `strength` exactly as a nameless link does, and is
+  kept out of `_by_identity` so `identities()` cannot invent the person. Without all three,
+  `marcus.lee@acme.exmaple` read as ownership, joined to nobody, reached no departure bundle and
+  *cleared* the finding a blank owner only downgrades -- a typo quieter than an honest blank, which
+  inverts the rule above. `review._note_register` records it as a gap after composing (an owner's
+  estate is usually not the account's, so no single projection can settle it), along with an entry
+  naming a source the review never read -- the one dead entry `Register.stale` structurally cannot
+  see, because `stale` is called per source and never runs for a source nothing projected.
+  `ServiceAccount.key` folds case on **both** halves: a GitHub org login displays in its creation
+  casing (`Acme-Eng`) while `source_name` builds it from the API, and comparing sources exactly made
+  such an entry silently inert and let two owners past the one-account-one-owner check.
   Three more things it must not do. **A link naming somebody outranks one that does not, whatever
   the method** (`strength` in `IdentityGraph`): DECLARED beats CREATOR on rank, so without that an
   ownerless entry would erase the audit log's "priya built this". **Entries are scoped to a source**
@@ -106,6 +120,19 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   label picks out exactly one client, because two clients can share a label -- the same reason ticket
   identity is hashed from the stable id. An entry that matches nothing, or a label that matches two,
   declares nothing and records a gap; silently ignoring it leaves a claim that looks like coverage.
+  **A name is matched against the accounts that are still live**, in both estates that have a way to
+  tell. `collect` reads `/api/v1/apps` with no status filter, so the ordinary way two clients share a
+  label -- deactivate the old "Terraform Automation", build the new one -- made a correct entry
+  declare neither and put the live client back at full AR-15 severity; a label now picks out the one
+  client still running, while a lone client is declared whatever its status, and a status
+  `_app_status` does not recognise keeps the label ambiguous rather than vouching for a client nobody
+  meant. GitHub is the sharper case, because a freed login is claimable: an entry there can go on
+  matching a **different** account, and matching is not a quiet no-op -- it types the account SERVICE,
+  skips the `elif member.saml_identity` branch so a real person's access joins to nobody, and puts
+  the entry's owner on somebody else's credentials. `identity/github.py._changed_hands` refuses an
+  entry whose `reviewed` date predates GitHub's account creation date and records a gap, which is
+  what that date is for; an old account renaming into a freed login is past what a register keyed by
+  a name can see, and the docstring says so rather than implying the name is checked.
   The register is written into `manifest.json` inside the signed config, so everything in it has to
   stay JSON: the lookup index is set with `object.__setattr__` rather than declared as a field
   (its keys are tuples) and `reviewed` goes through `Register.to_dict` (it is a `date`).

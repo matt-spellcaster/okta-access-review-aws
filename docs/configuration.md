@@ -78,7 +78,7 @@ object naming an owner:
 | `source` | Which estate the entry is about. `okta` by default; a GitHub org is `github:<org>` |
 | `owner` | The owner's email, matched against their Okta profile email. Optional, and the field that does the work |
 | `purpose` | Free text, carried into the evidence an auditor reads |
-| `reviewed` | `YYYY-MM-DD`, when someone last confirmed the entry is still true |
+| `reviewed` | `YYYY-MM-DD`, when someone last confirmed the entry is still true. Worth setting on a GitHub entry: see below |
 
 What each field changes:
 
@@ -90,6 +90,11 @@ What each field changes:
   This is the only thing that stops AR-15 reporting the account.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.
+- **An owner nobody can be reached at** — a typo, or a person with no account in any source this
+  review read — is worth exactly what no owner is worth, and reported the same way. An address is
+  typed by hand, and one transposition would otherwise read as ownership on every screen while
+  joining to no person and reaching no departure bundle. The review records a gap naming the entry,
+  so the register can be corrected rather than quietly trusted.
 
 Two entries for one account are rejected: one account has one owner, and picking between two claims
 would make the register the ambiguity it exists to remove. Entries are scoped to a source, so
@@ -98,7 +103,23 @@ declaring an Okta login never declares a GitHub member with the same name.
 An entry matching nothing in its source is recorded as a data gap rather than ignored — a renamed or
 deleted account leaves a claim that looks like coverage and is not. The same applies to an app label
 two service clients share: the entry declares neither, and the gap says to name the client ID
-instead.
+instead, and to an entry naming a source this review never read. `source` and `id` are both matched
+without regard to case, so `github:Acme-Eng` and `github:acme-eng` are one estate.
+
+Two more things a name can do that an ID cannot:
+
+- **A replaced Okta service client.** Deactivating a client does not remove it from the org, so the
+  old and the new "Terraform Automation" both come back in the read. A label picks out the client
+  still running, so the entry keeps declaring the live one; the deactivated one is a separate
+  account nobody declared, and is reported as such. If both are still running — or either has a
+  status this review does not recognise — the label declares neither and the gap says to name the
+  client ID.
+- **A GitHub login its owner renamed.** GitHub puts a freed login back in the pool, so an entry can
+  go on matching a *different* account that has since claimed the name. When the entry has a
+  `reviewed` date and GitHub says the account was created after it, the entry declares nothing and
+  the review records a gap. Without a `reviewed` date there is nothing to check it against, which is
+  the practical reason to set one on a GitHub entry. An account that already existed and renamed
+  into a freed login is beyond what matching on a name can see.
 
 The register is written into `manifest.json` with the rest of the config, so who was declared and
 who answers for them is part of the signed evidence.

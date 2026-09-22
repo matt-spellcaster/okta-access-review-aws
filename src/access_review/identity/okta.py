@@ -19,7 +19,6 @@ happened, the projection says unknown and records a gap.
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime
 
 from ..models import (
@@ -272,17 +271,39 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
     # naming a label that fits both would vouch for two accounts where somebody
     # meant one, so it declares neither and says so. The client id is the way
     # out, and it is what the Okta console shows beside the app.
-    labels = Counter(a.label.lower() for a in snapshot.apps if a.service_client and a.client_id)
+    # A deactivated client keeps its label and its client id, and the apps read
+    # returns it: `collect` filters users to ACTIVE and filters apps not at all.
+    # So the realistic way two clients share a label is a replacement -- the old
+    # "Terraform Automation" deactivated, the new one created beside it -- and
+    # counting the dead one made a correct entry declare neither, which put the
+    # live client back into AR-15 at full severity for being undeclared while it
+    # was declared. A label picks out one client when only one client is still
+    # running, and a client that is the only one carrying its label is declared
+    # whatever its status, so decommissioning does not undeclare it.
+    # `_app_status` reads an unrecognised status as UNKNOWN rather than
+    # DISABLED, so such a client stays in the count and keeps the label
+    # ambiguous: the milder answer here is the one that vouches for a client
+    # somebody may not have meant.
+    by_label: dict[str, list[App]] = {}
+    for app in snapshot.apps:
+        if app.service_client and app.client_id:
+            by_label.setdefault(app.label.lower(), []).append(app)
+    declares = {}
+    for label, sharing in by_label.items():
+        running = [a for a in sharing if _app_status(a.status) is not Status.DISABLED]
+        one = sharing if len(sharing) == 1 else running
+        if len(one) == 1:
+            declares[label] = one[0].id
     # Gathered before the loop and reported once per entry, not once per client
     # it could have meant: the register made one ambiguous claim, and an auditor
     # counting gaps should read one.
     ambiguous = {}
-    for app in snapshot.apps:
-        if not (app.service_client and app.client_id) or labels[app.label.lower()] == 1:
+    for label, sharing in by_label.items():
+        if label in declares:
             continue
-        found = register.entry(OKTA, app.label)
+        found = register.entry(OKTA, label)
         if found is not None:
-            ambiguous[found.key] = (found, labels[app.label.lower()])
+            ambiguous[found.key] = (found, len(sharing))
     for found, count in ambiguous.values():
         matched.add(found.key)  # matched, just not usably: this gap, not the stale one
         gaps.append(
@@ -328,7 +349,7 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
         # does not, so declaring an account never erases its creator: see the
         # strength ordering in IdentityGraph.
         entry = register.entry(OKTA, app.client_id)
-        if entry is None and labels[app.label.lower()] == 1:
+        if entry is None and declares.get(app.label.lower()) == app.id:
             entry = register.entry(OKTA, app.label)
         if entry is not None:
             matched.add(entry.key)

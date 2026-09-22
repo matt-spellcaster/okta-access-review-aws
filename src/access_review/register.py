@@ -18,11 +18,25 @@ means declared with nobody named, or an object:
 `id` is the name a person writes: an Okta login, an Okta service client's app
 label, a GitHub member's login. Deliberately not the stable principal id that
 `graph_subject` uses -- a register is a human artifact maintained by hand, and
-nobody knows an account as `0oa1f2e3d4`. The cost is that a rename breaks the
-entry, and the way it breaks is the point: the account stops being declared, so
-the finding comes back at full severity and the projection records a gap naming
-the entry that matched nothing. A register that has drifted says so rather than
-quietly vouching for an account that no longer exists.
+nobody knows an account as `0oa1f2e3d4`. The cost is a rename, and a rename
+does not cost the same everywhere.
+
+In Okta the entry stops matching, and the way it breaks is the point: the
+account is undeclared again, the finding comes back at full severity, and the
+projection records a gap naming the entry that matched nothing (`stale`). A
+register that has drifted says so rather than quietly vouching for an account
+that no longer exists.
+
+On GitHub a login returns to the pool the moment its owner renames, and anyone
+can claim it. There the entry goes on matching -- a different account, wearing
+the name somebody wrote down -- and that is worse than a miss, because matching
+is not a quiet no-op: it types the account as a service account, takes the SSO
+branch away from a real person so their own access joins to nobody, and attaches
+this entry's owner to somebody else's credentials. `identity/github.py` refuses
+the match when GitHub says the account was created after the entry was last
+`reviewed`, and records a gap instead. An account that renamed into a freed
+login is past what a register keyed by a name can see, and saying so is better
+than implying the name is checked.
 
 `owner` is an identity key -- the lowercased email `identity.identity_key`
 builds from an Okta profile -- because that is what the graph joins on. An
@@ -31,6 +45,17 @@ access review and in their departure bundle if they leave. An entry without one
 is *declared but unattributed*: somebody wrote it down and named nobody, which
 is weaker evidence than a link and stronger than nothing, and is its own branch
 of AR-15 rather than an absence of one.
+
+An owner is only worth something if it reaches somebody, so the graph checks
+that some source evidences that person before treating the entry as ownership
+(`IdentityGraph.unattributed`). An address is typed by hand into a config file
+and one transposition makes it nobody's: unchecked, `marcus.lee@acme.exmaple`
+read as ownership on every screen, joined to no person, reached no departure
+bundle, and cleared the finding that naming nobody only downgrades -- so a typo
+was quieter than an honest blank, and whoever wanted the finding gone was
+better off getting the address wrong than leaving it out. An owner nobody can
+be reached at is now worth exactly what no owner is worth, and the review
+records a gap naming the entry.
 """
 
 from __future__ import annotations
@@ -67,14 +92,28 @@ class ServiceAccount:
     owner: str = ""
     purpose: str = ""
     # When someone last confirmed this entry is still true. Carried into the
-    # link's evidence rather than checked here: an ownership claim from three
-    # years ago is worth less than a fresh one, and an auditor reading the
-    # bundle should be able to see which they are looking at.
+    # link's evidence: an ownership claim from three years ago is worth less
+    # than a fresh one, and an auditor reading the bundle should be able to see
+    # which they are looking at. Not checked here, because what it is worth
+    # depends on the source -- `identity/github.py` reads it against GitHub's
+    # account creation date, which is the only thing standing between an entry
+    # and a login its owner renamed out of.
     reviewed: date | None = None
 
     @property
     def key(self) -> tuple[str, str]:
-        return (self.source, self.id.lower())
+        # Both halves case-folded, and this is the only place that decides it:
+        # `entry`, `for_source` and the duplicate check all go through here, so
+        # they cannot disagree about whether two entries are one account.
+        #
+        # The source too, not just the name. A GitHub org login displays in the
+        # casing it was created with (`Acme-Eng`), so `github:Acme-Eng` is what
+        # a person copies out of the browser while `source_name` builds
+        # `github:acme-eng` from the API. Compared exactly, that entry matches
+        # nothing, declares nothing, and -- because `stale` only walks entries
+        # whose source it was called for -- says nothing either. Same for a
+        # config that writes `Okta`.
+        return (self.source.lower(), self.id.lower())
 
     def to_dict(self) -> dict:
         return {
@@ -109,10 +148,20 @@ class Register:
         on the name within one source: an Okta login and a GitHub login that
         happen to be the same string are two different accounts, and declaring
         one must never declare the other."""
-        return self._index.get((source, name.lower()))
+        return self._index.get((source.lower(), name.lower()))
 
     def for_source(self, source: str) -> list[ServiceAccount]:
-        return [e for e in self.entries if e.source == source]
+        return [e for e in self.entries if e.source.lower() == source.lower()]
+
+    def sources(self) -> list[str]:
+        """Every source this register makes a claim about, as written.
+
+        `review` checks these against the sources actually read: an entry for an
+        estate this run never looked at declares nothing, and is the one kind of
+        dead entry `stale` cannot see, because `stale` is called per source and
+        never runs for a source that was not projected.
+        """
+        return sorted({e.source for e in self.entries})
 
     def stale(self, source: str, matched: set[tuple[str, str]]) -> list[str]:
         """Gaps for this source's entries that matched no account in it.
