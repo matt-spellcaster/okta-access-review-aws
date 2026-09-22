@@ -1,5 +1,5 @@
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from access_review.identity import (
 )
 from access_review.items import (
     CISO,
+    FORMAT,
     ACKNOWLEDGE_ONLY,
     CROSS_SOURCE,
     DECIDE,
@@ -432,3 +433,51 @@ def test_every_graph_check_reaches_the_decision_screen(demo_graph):
     the screen that settles it never shows -- which is the defect this replaced."""
     assert set(GRAPH_CHECKS) == {c.id for c in CHECKS if c.needs_graph}
     assert GRAPH_CHECKS, "no graph checks found, so this guard proves nothing"
+
+
+def test_the_items_file_is_the_same_document_however_it_is_laid_out(demo):
+    """The layout changed to fit the file in a Lambda; the document did not.
+
+    `load_items`, `attest` and `slack_interact` all read this through
+    `json.loads`, and format 3 did not become format 4, so the bytes may be
+    arranged any way that parses to the same thing -- and must parse to exactly
+    the same thing, or a review's own evidence stops matching what wrote it.
+    """
+    built = build_items(demo)
+    text = items_json(built, AS_OF, 90)
+    # The indented form this replaced, spelled out rather than imported, so the
+    # comparison survives the next change to how the file is written.
+    indented = json.dumps(
+        {"format": FORMAT, "review_date": AS_OF.isoformat(), "app_unused_days": 90,
+         "items": [asdict(i) for i in built]},
+        indent=2,
+    ) + "\n"
+    assert json.loads(text) == json.loads(indented)
+    assert load_items(text) == load_items(indented) == built
+
+
+def test_the_items_file_stays_one_item_per_line(demo):
+    """Not decoration. `indent=2` is what this replaced, and the reason it was
+    there -- a file a person can open, grep and diff -- is real: this is
+    create-only evidence in S3 and the largest file a review writes. Encoding it
+    as one long line would pass every round-trip test above and hand an auditor
+    seventy megabytes on a single line.
+    """
+    built = build_items(demo)
+    lines = items_json(built, AS_OF, 90).splitlines()
+    assert len(lines) == len(built) + 2, "one line per item, plus the envelope's two"
+    assert [json.loads(line.rstrip(","))["key"] for line in lines[1:-1]] == [i.key for i in built]
+    # No line carries a second item: that is what makes a line greppable.
+    assert all(line.count('"key":') == 1 for line in lines[1:-1])
+
+
+def test_a_review_with_nothing_to_decide_writes_no_item_lines():
+    """One line per item means none when there are none.
+
+    A blank line where an item would go still parses -- JSON does not care --
+    so nothing else here would catch it, and it would read as a review that
+    wrote a row it could not fill rather than one with nothing to decide.
+    """
+    text = items_json([], AS_OF, 90)
+    assert text.splitlines() == [text.rstrip("\n")], "the whole document is one line"
+    assert json.loads(text)["items"] == [] and load_items(text) == []

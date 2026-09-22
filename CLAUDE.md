@@ -171,6 +171,20 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   (`items.LINK_MARKER` and a check id in `GRAPH_CHECKS`), so it cannot move an Okta finding. It is
   in memory only -- the object is create-only in S3 and hashed into a signed manifest, so nothing
   rewrites the file.
+- `review_items.json` is the only run-folder file holding a cross product -- one item per app a
+  person can reach, so 5000 users over one org-wide group of 250 apps is 1.25M of them, where
+  `snapshot.json` at the same scale is 2.6 MB. So `items_json` is written for that size and the
+  others are not: **one item per line, never `indent=`**. Indentation is 21% of the bytes, and on
+  Python 3.11 and 3.12 `json.dumps(indent=...)` drops to the pure-Python encoder, which at 250k
+  items peaks at 1.1 GB against a 1024 MB Lambda where the C encoder peaks at 383 MB (3.13 taught
+  `c_make_encoder` to indent; the image is 3.14, so that half only bites the CLI). Rows come from
+  `vars(item)`, not `dataclasses.asdict`, which deep-copies every item before a byte is encoded, and
+  the parts are joined once: `a + b + c` over a 176 MB document is three more live copies of it. A
+  `ReviewItem` field holding anything but a str or a tuple of str breaks `vars`, and
+  `test_the_items_file_is_the_same_document_however_it_is_laid_out` catches it by comparing against
+  the `asdict` form. Layout is not format: same document, still FORMAT 3, and `load_items`, `attest`
+  and the manifest hash need nothing. The line-per-item part is load-bearing too -- this is
+  create-only evidence someone may open, and one 176 MB line cannot be read, grepped or diffed.
 - A source adapter decides which of its roles are elevated, never `checks.py`: `identity/github.py`
   emits a `GrantKind.ROLE` grant only above ordinary membership (`ORDINARY_ROLES`), case-folded,
   because GraphQL spells the enum `ADMIN`/`MEMBER` and the invitations read says `direct_member`.

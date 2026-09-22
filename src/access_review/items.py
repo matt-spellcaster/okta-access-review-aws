@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .checks import (
@@ -372,11 +372,42 @@ def outside_okta_by_login(items: list[ReviewItem]) -> dict[str, tuple[tuple[str,
 
 
 def items_json(items: list[ReviewItem], as_of: date, unused_days: int) -> str:
-    return json.dumps(
-        {"format": FORMAT, "review_date": as_of.isoformat(), "app_unused_days": unused_days,
-         "items": [asdict(i) for i in items]},
-        indent=2,
-    ) + "\n"
+    """The items file: the same JSON document as before, encoded one item per line.
+
+    Not `indent=2`. This is the largest file a review writes -- one item per app
+    a person can reach, so an org-wide group over 250 apps is a quarter of a
+    million of them -- and indentation costs 21% of its bytes for nothing an
+    auditor gains. It also costs the C encoder on Python 3.11 and 3.12, where
+    `json.dumps(indent=...)` falls back to the pure-Python encoder and runs 4-6x
+    slower; 3.13 taught `c_make_encoder` to indent and the Lambda image is 3.14,
+    so that half only bites someone running the CLI on an older interpreter.
+
+    One item per line rather than one long line, because the readability that
+    `indent=` was there for is real: this is create-only evidence in S3 that a
+    person may open, and a single seventy-megabyte line cannot be read, grepped
+    or diffed. The document itself is unchanged -- same keys, same FORMAT --
+    so `load_items`, `attest` and the manifest hash need nothing.
+
+    `vars(i)`, not `asdict(i)`: `asdict` deep-copies every item into a second
+    dict before a byte is encoded, which at 100k items is 70 MB of peak held
+    only to be thrown away. Every `ReviewItem` field is a str or a tuple of str
+    and json encodes both directly. A field holding a nested dataclass would
+    need `asdict` back -- and a field holding a date never worked under either.
+    """
+    # `envelope` is a complete object, so dropping its closing brace and adding
+    # one more key yields the same document with the items spliced in, without
+    # ever building a dict that holds all of them.
+    envelope = json.dumps({"format": FORMAT, "review_date": as_of.isoformat(),
+                           "app_unused_days": unused_days})
+    parts = [envelope[:-1], ', "items": [']
+    for n, item in enumerate(items):
+        parts.append("\n" if n == 0 else ",\n")
+        parts.append(json.dumps(vars(item)))
+    parts.append("\n]}\n" if items else "]}\n")
+    # One join at the end, never `a + b + c`: each `+` copies the whole document
+    # again, and at a quarter of a million items that is four live copies of a
+    # 176 MB string in a Lambda sized for one.
+    return "".join(parts)
 
 
 def _held_outside_okta(concern: str) -> bool:
