@@ -464,11 +464,16 @@ def test_the_items_file_stays_one_item_per_line(demo):
     seventy megabytes on a single line.
     """
     built = build_items(demo)
-    lines = items_json(built, AS_OF, 90).splitlines()
+    text = items_json(built, AS_OF, 90)
+    lines = text.splitlines()
     assert len(lines) == len(built) + 2, "one line per item, plus the envelope's two"
     assert [json.loads(line.rstrip(","))["key"] for line in lines[1:-1]] == [i.key for i in built]
     # No line carries a second item: that is what makes a line greppable.
     assert all(line.count('"key":') == 1 for line in lines[1:-1])
+    # And the last line is a line: every other file this review writes ends in
+    # exactly one newline, and a bundle where one file does not is a diff an
+    # auditor has to ask about.
+    assert text.endswith("]}\n") and not text.endswith("\n\n")
 
 
 def test_a_review_with_nothing_to_decide_writes_no_item_lines():
@@ -481,3 +486,37 @@ def test_a_review_with_nothing_to_decide_writes_no_item_lines():
     text = items_json([], AS_OF, 90)
     assert text.splitlines() == [text.rstrip("\n")], "the whole document is one line"
     assert json.loads(text)["items"] == [] and load_items(text) == []
+
+
+def test_the_items_file_stays_one_line_per_item_whatever_the_text_holds(demo):
+    """One item per line is what `indent=2` was traded for, and it rests on one
+    thing: `json.dumps` escaping every non-ASCII character.
+
+    `str.splitlines` -- how this file's readers count lines, and how the test
+    above counts them -- breaks on U+2028 and U+2029 as well as on `\n`, and an
+    Okta app label or a person's name is free text that may carry either.
+    `attest`, `decisions` and `store` all pass `ensure_ascii=False`; the day a
+    consistency pass reaches this writer, the document still parses and still
+    loads, so nothing else here would say a word.
+    """
+    one = replace(build_items(demo)[0], target="App\u2028Two", name="Zo\u00eb\nSecond Line")
+    text = items_json([one], AS_OF, 90)
+    assert len(text.splitlines()) == 3, "the envelope, the one item, the closing brace"
+    assert text.isascii(), "a non-ASCII byte in this file is a line break waiting to happen"
+    assert load_items(text) == [one], "escaped, not mangled"
+
+
+def test_the_items_file_records_the_review_date_and_threshold_it_was_written_with(demo):
+    """The envelope is evidence too: an auditor reads it as the date the review
+    was as of and the unused-app threshold every proposal in the file was made
+    under.
+
+    Nothing reads either back, so a wrong value is silent in a create-only
+    object. The layout test above cannot catch one either: it rebuilds the
+    expected envelope from the same arguments it passed in. Deliberately not
+    `AS_OF` and not 90.
+    """
+    data = json.loads(items_json(build_items(demo), date(2025, 3, 31), 30))
+    assert data["review_date"] == "2025-03-31"
+    assert data["app_unused_days"] == 30
+    assert data["format"] == 3, "the literal `load_items` and `attest` read, not whatever FORMAT is"
