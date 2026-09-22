@@ -1,3 +1,4 @@
+import copy
 import json
 from collections import defaultdict
 from dataclasses import replace
@@ -22,7 +23,7 @@ from access_review.identity import (
     project_github,
     project_snapshot,
 )
-from access_review.models import Snapshot
+from access_review.models import App, Snapshot
 from access_review.register import Register
 from access_review.roster import load_roster
 
@@ -77,8 +78,10 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-09": {"victor.nguyen"},
         "AR-10": {"Terraform Automation"},
         "AR-11": {"priya.shah", "jordan.kim"},
-        "AR-12": {"marcus.lee"},
-        "AR-13": {"marcus.lee", "victor.nguyen"},
+        # victor held Reporting Bot's secret: custody, rotated not handed over.
+        # The bot running after he left is not his activity.
+        "AR-12": {"marcus.lee", "victor.nguyen"},
+        "AR-13": {"marcus.lee"},
         "AR-14": {"lee.chen"},
         # Graph subjects are the source's own id, not the login: see graph_subject.
         # The login is in the detail, and GRAPH_LOGINS maps them back here.
@@ -584,3 +587,44 @@ def test_one_leaver_with_two_okta_accounts_owns_their_service_account_once(demo)
 
     assert "okta/a05" in subjects, "victor owns it; this must not pass on an empty list"
     assert sorted(subjects) == sorted(set(subjects))
+
+
+def _undeclared_client(demo, read_its_activity):
+    """An Okta API client nobody who left ever touched, which is every AWS run's
+    ordinary case now the graph is built without a second source."""
+    snapshot = copy.deepcopy(demo.snapshot)
+    snapshot.apps.append(App(id="a07", label="Datadog Sync", status="ACTIVE", service_client=True,
+                             client_id="0oaDATADOG", granted_scopes=["okta.users.manage"]))
+    if read_its_activity:
+        snapshot.activity_actors = set(snapshot.activity_actors) | {"0oaDATADOG"}
+    ctx = ReviewContext(snapshot, demo.roster, demo.config, AS_OF)
+    ctx.graph = IdentityGraph.compose(project_snapshot(snapshot, demo.config.service_accounts))
+    return next(f for f in run_checks(ctx)[0] if f.check_id == "AR-15" and f.subject == "okta/a07")
+
+
+def test_an_okta_client_whose_use_nobody_read_is_not_described_as_idle(demo):
+    """The collector reads a client's activity only when a leaver held its
+    credentials. For the rest, a missing last-used date is "nobody asked", and
+    reading it as "no record of use" graded a busy write-capable client as a
+    dormant cleanup -- on every Okta-only run, which is every AWS run."""
+    found = _undeclared_client(demo, read_its_activity=False)
+
+    assert found.severity == "high"
+    assert "use not read" in found.detail and "no record of use" not in found.detail
+    # Nor does "no evidence" pass for "nobody looked" on who created it.
+    assert "only read for people who have left" in found.detail
+
+    # Where its activity was read and held nothing, that is evidence, and says so.
+    idle = _undeclared_client(demo, read_its_activity=True)
+    assert idle.severity == "medium" and "no record of use" in idle.detail
+
+
+def test_a_leaver_with_no_end_date_still_owns_their_service_account(demo):
+    """HR shows them terminated and gives no date, which AR-13 already treats as
+    a real case. The finding still stands at full severity, and its detail --
+    signed into the evidence -- never reads "left None"."""
+    demo.roster = {k: replace(e, end_date=None, end_at=None) if k == LEFT else e
+                   for k, e in demo.roster.items()}
+    [found] = _owns(demo, write_access=True)
+    assert found.check_id == "AR-18" and found.severity == "critical"
+    assert "Marcus Lee is terminated in HR" in found.detail and "None" not in found.detail

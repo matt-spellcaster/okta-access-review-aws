@@ -72,6 +72,10 @@ def test_the_bundle_gathers_what_okta_deactivation_does_not_reach(demo):
     outside = {p["label"] for p in victor.outside_okta}
     assert outside == {"victor-nguyen", "Reporting Bot"}
     assert "victor.nguyen@acme.example" not in outside, "his own account is what was deactivated"
+    # And first, where a reviewer starts reading -- Reporting Bot is in Okta, so
+    # sorting on source alone put it last, beside the account that was dealt with.
+    labels = [p["label"] for p in victor.principals]
+    assert labels[-1] == "victor.nguyen@acme.example", labels
     held = [p for p in victor.principals if p["label"] == "victor-nguyen"][0]
     assert held["status"] == "active"
     assert len(held["credentials"]) == 2

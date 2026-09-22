@@ -217,7 +217,7 @@ def test_api_client_creator_comes_from_the_system_log(graph):
     link = graph.link_for((OKTA, "a05"))  # Reporting Bot
     assert link.method is LinkMethod.CREATOR
     assert link.identity == "victor.nguyen@acme.example"
-    assert link.evidence == "app.oauth2.credentials.lifecycle.create by victor.nguyen@acme.example on 2026-05-04"
+    assert link.evidence == "application.lifecycle.create by victor.nguyen@acme.example on 2026-06-22"
 
 
 def test_creator_who_left_still_holds_the_client_in_their_identity(graph):
@@ -709,7 +709,7 @@ def test_every_record_serialises_its_own_fields(graph):
     blob = graph.to_dict()
     link = next(x for x in blob["links"] if x["principal"] == "a05")
     assert set(link) == {"source", "principal", "method", "identity", "evidence"}
-    assert link["evidence"].startswith("app.oauth2.credentials.lifecycle.create by")
+    assert link["evidence"].startswith("application.lifecycle.create by")
     github = next(g for g in blob["grants"] if g["principal"] == "u01" and g["target"] == "a01")
     assert github["via"] == "group:Engineering"
     terraform = next(c for c in blob["credentials"] if c["label"] == "Terraform Automation")

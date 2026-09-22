@@ -165,6 +165,10 @@ class Credential:
     # False is a claim, and a claim made from data nobody read is how a review
     # misses a credential that can change things.
     write_access: bool | None = None
+    # False when the source did not read this credential's activity at all, so a
+    # missing `last_used` is "nobody asked" rather than "no record of use".
+    # Okta reads it only for API clients a leaver held the credentials of.
+    usage_read: bool = True
 
     @property
     def holder_key(self) -> PrincipalKey | None:
@@ -181,6 +185,7 @@ class Credential:
             "last_used": format_time(self.last_used),
             "expires": format_time(self.expires),
             "write_access": self.write_access,
+            "usage_read": self.usage_read,
         }
 
 

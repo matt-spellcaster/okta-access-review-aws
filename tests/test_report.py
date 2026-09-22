@@ -84,19 +84,32 @@ def test_complete_review_has_no_gaps_section(tmp_path):
     assert json.loads((d / "manifest.json").read_text())["complete"] is True
 
 
-def test_a_register_entry_for_a_source_this_run_did_not_read_is_a_gap(tmp_path):
-    """The register is a claim about accounts, and a run that read one estate
-    cannot check the entries naming another.
-
-    Invisible until the graph was built on every run: `_note_register` needed a
-    graph, and an Okta-only review had none, so the entries it could not check
-    were silently the ones it said nothing about. The claim that looks like
-    coverage and is not is the whole reason that gap exists.
-    """
+def test_a_register_entry_for_an_estate_this_run_does_not_read_is_out_of_scope(tmp_path):
+    """The AWS pipeline reads Okta alone. A register that also declares the
+    GitHub bots -- as the demo's does -- made every one of its reviews INCOMPLETE
+    for good, a banner nobody could clear. An estate of a kind the run was never
+    asked to read is out of scope; the review already says it read Okta alone.
+    The dead entry that gap exists for is still one: see
+    `test_a_register_entry_naming_an_estate_nothing_reads_is_still_a_gap`."""
     main(DEMO_ARGS + ["--out", str(tmp_path)])
     manifest = json.loads((run_dir(tmp_path) / "manifest.json").read_text())
+    assert not any("did not read" in g for g in manifest["data_gaps"])
+    assert manifest["complete"] is True
+
+
+def test_a_register_entry_naming_an_estate_nothing_reads_is_still_a_gap(tmp_path):
+    """A source kind no collector reads can never be checked, whatever the run."""
+    config = json.loads((FIXTURES / "demo_config.json").read_text())
+    config["service_accounts"] = config.get("service_accounts", []) + [
+        {"source": "gitlab:acme", "id": "deploy-bot", "owner": "priya.shah@acme.example"}]
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    args = [a if a != str(FIXTURES / "demo_config.json") else str(path) for a in DEMO_ARGS]
+    main(args + ["--out", str(tmp_path / "out")])
+    manifest = json.loads((run_dir(tmp_path / "out") / "manifest.json").read_text())
+    [gap] = [g for g in manifest["data_gaps"] if "did not read" in g]
+    assert "gitlab:acme" in gap and "github" not in gap
     assert manifest["complete"] is False
-    assert any("github:acme-eng" in g and "did not read" in g for g in manifest["data_gaps"])
 
 
 def test_data_gaps_are_reported(tmp_path):
@@ -340,13 +353,14 @@ def test_a_failed_source_read_makes_the_manifest_incomplete(tmp_path):
 def test_an_okta_only_run_says_nothing_about_other_sources(tmp_path):
     """A graph is built either way now, so `sources` is what says whether a
     second estate was read -- it lists sources beyond Okta and nothing else.
-    The gap here is the register's, naming the GitHub entries this run could
-    not check; it is a statement about what was not read, which is the point."""
+    And no gap about the estate it did not read: the demo register's GitHub
+    entries are out of scope on an Okta-only run, not a hole in it. Exact, not
+    `all(...)`, which an empty list passes whatever it was meant to say."""
     assert main(DEMO_ARGS + ["--out", str(tmp_path)]) == 0
     manifest = json.loads((run_dir(tmp_path) / "manifest.json").read_text())
     assert manifest["sources"] == []
     assert "Also read" not in (run_dir(tmp_path) / "report.md").read_text()
-    assert all(g.startswith("okta: ") for g in manifest["data_gaps"])
+    assert manifest["data_gaps"] == []
 
 
 def test_the_github_snapshot_is_hashed_into_the_manifest(tmp_path):
@@ -607,3 +621,14 @@ def test_a_string_extra_file_reaches_the_file_in_one_write_and_a_rewrite_truncat
     _write_text(rewritten, "y" * 100)
     _write_text(rewritten, iter(["z" * 10]))
     assert rewritten.read_text() == "z" * 10, "append mode keeps the previous run's bytes"
+
+
+def test_the_departures_line_says_what_is_unfinished_not_where_it_lives(tmp_path, capsys):
+    """Counts only, and no "outside Okta": a leaver's Okta API client is
+    unfinished too, and it is in Okta. The sentence names what deactivation did
+    not reach instead."""
+    main(DEMO_ARGS + ["--github", str(FIXTURES / "demo_github.json"), "--out", str(tmp_path)])
+    out = capsys.readouterr().out
+    [line] = [ln for ln in out.splitlines() if ln.startswith("Departures:")]
+    assert line == "Departures: 3 checked, 3 with something deactivation did not reach. See transitions.json."
+    assert "outside okta" not in out.lower()

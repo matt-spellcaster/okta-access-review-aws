@@ -7,7 +7,7 @@ slack_review is covered end to end through tests/test_workflow.py.
 from access_review.items import CISO, CROSS_SOURCE, DECIDE, KEEP, REVOKE, ReviewItem
 import json
 
-from access_review.slack_review import OUTSIDE, card_lines, checklist_message, decision_lines
+from access_review.slack_review import OUTSIDE, card_lines, checklist_message, decision_lines, describe
 
 # The heading is read off slack_review rather than spelled again here: it is one
 # wording used by the card, the item line and the sign-off list, and a test that
@@ -191,8 +191,18 @@ def test_none_of_the_wording_claims_the_finding_is_outside_okta():
              "someone who left; declared a service account in the review register)")
     written = [OUTSIDE, CROSS_SOURCE_TARGET, CROSS_SOURCE_REASON]
     written += card_lines(item(outside_okta=(owned,)))
-    cross = item(kind=CROSS_SOURCE, proposed=DECIDE)
-    written += decision_lines([cross], {cross.key: {"decision": KEEP, "reason": ""}})
+    # The lines themselves, not the group names: `decision_lines` returns a
+    # dict, and adding one to a list adds its keys -- which is how a revert of
+    # the sign-off wording once passed this test. With an outside_okta concern,
+    # or the ":warning: not changed by this decision" line is never rendered.
+    cross = item(kind=CROSS_SOURCE, outside_okta=(owned,), proposed=DECIDE)
+    kept = item(outside_okta=(owned,), proposed=DECIDE)
+    signoff = [line for lines in decision_lines([cross, kept], {i.key: {"decision": KEEP, "reason": ""}
+                                                                for i in (cross, kept)}).values()
+               for line in lines]
+    assert any("AR-18" in line and "not changed by this decision" in line for line in signoff), signoff
+    written += signoff
+    written.append(describe(cross))
     written += _scope_to_okta((owned,), "", "Closing their way in through Okta")
 
     for text in written:

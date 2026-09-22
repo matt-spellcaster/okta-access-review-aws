@@ -127,21 +127,28 @@ those and nothing else.
 | AR-09 | Suspended or deprovisioned, but still in groups or apps | medium | SOC 2 CC6.2 · ISO A.5.18 |
 | AR-10 | Service app with write scopes or an admin role that can make changes (high if Super Administrator) | medium | SOC 2 CC6.3 · ISO A.8.2 |
 | AR-11 | Admin user, for the reviewer to confirm | info | SOC 2 CC6.3 · ISO A.8.2 |
-| AR-12 | Leaver still holds a working API token | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
+| AR-12 | Leaver still holds a working API token, or an API client secret they held that has not been rotated since | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
 | AR-13 | Signed in, or used a credential, after their last working day | critical | SOC 2 CC6.2, CC7.2 · ISO A.5.18, A.8.16 |
 | AR-14 | Directly assigned app with no sign-in to it for 90+ days (skipped if the System Log can't be read in full) | medium | SOC 2 CC6.2 · ISO A.5.18 |
+| AR-15 | Credential nobody is accountable for: no evidence ties the account to a person (high if it can write and may be in use) | medium | SOC 2 CC6.1, CC6.2 · ISO A.5.16, A.5.18 |
+| AR-16 | Access held by an account the source's own user read never returned | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18 |
+| AR-17 | Someone who left still has access in another source, such as GitHub | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
+| AR-18 | Service account owned by someone who left (critical if it can change anything) | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
 
 AR-01 to AR-03, AR-12 and AR-13 compare Okta with an HR roster: a CSV exported from the HR system
 and passed in with `--roster` (there's no live HR integration yet). Without it they're skipped, and
 the report says so. Thresholds and group names are configurable.
 
 AR-12 and AR-13 are about the leaver cases an account status doesn't show. An Okta API token keeps
-working after the account is deactivated, and so does an API client the leaver set up. The token is
-AR-12's; the client is AR-18's, because the answer to it is a new owner rather than a revocation,
-and one account with both findings would be two tickets contradicting each other. AR-13 reads the
-System Log to say whether any of it was actually used after their last working day, the client
-included. Okta keeps 90 days of log data, so a termination older than that is reported as a gap
-rather than as nothing to see.
+working after the account is deactivated, and so does any copy of an API client secret the leaver
+created, added or read. Both are AR-12's, and the fix for the secret is to rotate it, which the daily
+check can see in Okta. Who answers for the client now is a separate question with a separate fix
+(a new owner), and that is AR-18's, so the two never ask for opposite things. Only the System Log
+records who created a client, so AR-18 reads creation events and nothing else: reading a
+colleague's secret makes someone its custodian, not its owner. AR-13 reads the System Log to say
+whether the leaver's own account was used after their last working day. A client going on running
+after they leave is what it is for, not their activity. Okta keeps 90 days of log data, so a
+termination older than that is reported as a gap rather than as nothing to see.
 
 ## Evidence produced
 

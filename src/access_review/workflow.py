@@ -29,6 +29,7 @@ from typing import Callable
 
 from . import slack_review as msgs
 from . import store
+from .checks import secrets_held_by
 from .csvsafe import read_rows
 from .decisions import (
     DecisionError,
@@ -50,6 +51,7 @@ from .items import (
     outside_okta_by_login,
     summary,
 )
+from .models import Snapshot, format_time
 from .state import CLOSED, OPEN, SIGNED_OFF, create_state, load_state, update_state
 from .tickets import record_verify_mode
 
@@ -147,6 +149,25 @@ def people(deps: Deps, run: str) -> dict[str, str]:
     return {u["login"].lower(): u["id"] for u in snap.get("users", [])}
 
 
+def held_secrets(deps: Deps, run: str) -> dict[str, list[dict]]:
+    """The API client secrets each person held and has not been seen to rotate,
+    by lowercased login, from the run's signed snapshot: what AR-12 reported.
+
+    Written into the leaver ticket record so the daily check can settle it
+    against these clients directly. Re-deriving custody from a fresh System Log
+    read instead closed the ticket "done in Okta" once the event that showed
+    it aged past the 90 days Okta keeps, with the secret still working.
+    """
+    snap = Snapshot.from_dict(json.loads(store.get_bytes(deps.s3, deps.evidence_bucket, _key(run, "snapshot.json"))))
+    out: dict[str, list[dict]] = {}
+    for user in snap.users:
+        held = [{"app_id": app.id, "label": app.label, "since": format_time(when)}
+                for app, when, retired in secrets_held_by(snap, user.id) if not retired]
+        if held:
+            out[user.login.lower()] = held
+    return out
+
+
 def post_to_channel(deps: Deps, run: str, payload: dict, broadcast: bool = False) -> str:
     """Post in the review channel, as a reply in the review's thread once it has
     one. broadcast also shows the reply in the channel itself."""
@@ -219,7 +240,7 @@ def open_review(deps: Deps, run: str, task_token: str) -> dict:
         # in" it does not cover: it closes on a fresh Okta read, and Okta cannot
         # see a role in another source.
         urgent = deps.tickets.open_urgent(run, parent, urgent_findings(deps, run), people(deps, run),
-                                          outside_okta_by_login(data.item_list))
+                                          outside_okta_by_login(data.item_list), held_secrets(deps, run))
 
     if data.item_list and not state.get("dms"):
         dms = {CISO: _post_dm(deps, data, {}, due, parent)}

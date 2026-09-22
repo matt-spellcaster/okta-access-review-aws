@@ -15,6 +15,23 @@ Okta allows an API call only if the token's scopes **and** the app's admin role 
 3. **Client:** `OktaClient` only sends GET requests, plus the token request. A test fails if any
    other request is made.
 
+### Reading client secrets, and what it leaves behind
+
+AR-12 asks whether a leaver who held an API client's secret could still use it, and the only way
+to tell a rotated secret from the one they saw is its creation date. Okta returns that from
+`GET /api/v1/apps/{id}/credentials/secrets`, which also returns the secret itself. So the review:
+
+- reads secrets only for clients a leaver held in the review window, and, in the daily check, only
+  for clients an open leaver ticket names. It never reads them org-wide;
+- keeps the creation dates of live secrets and keys and nothing else. The secret and its hash are
+  dropped in `collect._credentials_created`, and a test asserts neither reaches the snapshot;
+- appears in the System Log as the actor of `app.oauth2.client.read_client_secret` for those
+  clients. That is expected, and it is this review's client doing it, not a person. Filter on its
+  client id if the event alerts.
+
+A 404, an undated credential, or a client with no live secrets or keys (its keys may be published
+at a `jwks_uri`) all count as not rotated, so none of them can close a leaver ticket.
+
 ### Admin role: a tested tradeoff
 
 Scopes decide *what kind* of call is allowed. The admin role decides *which data* the app can see.
@@ -119,7 +136,9 @@ that it can see its own app. If it can't, the app list is marked as filtered.
 - The review app's Super Administrator role is a standing privilege; it relies on scopes, the key
   in 1Password, DPoP and AR-10 as controls.
 - Okta keeps 90 days of System Log data, so AR-13 cannot see activity after a termination older
-  than that. The review reports it as a gap rather than as a clean result, but the answer for an
+  than that, and AR-12 cannot see that someone held an API client secret more than 90 days before a
+  review. Once a review has seen it, the leaver ticket records the secret and the daily check
+  settles against the client itself, so the log forgetting never closes that ticket. The review reports it as a gap rather than as a clean result, but the answer for an
   older leaver is still "unknown", not "nothing happened".
 - `attestations.json` shows who says they signed off, not proof that they did. Keep the manifest
   hash somewhere outside the report folder if an auditor needs more than that.

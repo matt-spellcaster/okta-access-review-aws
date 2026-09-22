@@ -407,6 +407,28 @@ def test_a_leaver_ticket_does_not_promise_to_close_a_way_in_it_cannot_see(graph_
     assert record["outside_okta"], record
 
 
+def test_a_leaver_ticket_asks_for_a_held_client_secret_to_be_rotated_never_removed(graph_review):
+    """victor held Reporting Bot's secret (AR-12) and built it (AR-18). The
+    leaver ticket may ask for the secret to be rotated -- the daily Okta re-read
+    sees that -- but never for the client to go: AR-18 asks for it to be handed
+    over, and one assignee holding both got opposite instructions."""
+    rem, session, run, s3 = graph_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    rem.open_urgent(run.run_dir.name, "UAR-99", workflow.urgent_findings(deps, run.run_dir.name),
+                    workflow.people(deps, run.run_dir.name), outside_okta_by_login(run.items))
+    record = next(r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
+                  if r.get("subject") == "victor.nguyen@acme.example")
+    assert "AR-12" in record["checks"]
+    todo = record["todo"].lower()
+    assert "rotated secret" in todo and "ar-18" in todo
+    assert "set up" not in todo and "delete" not in todo and "remove" not in todo.split("(", 1)[1]
+    victor = next(f for f in session.issues.values()
+                  if f["summary"] == "Remove access for leaver victor.nguyen@acme.example")
+    body = " ".join(_paragraphs(victor["description"])).lower()
+    assert "rotate" in body and "delete" not in body
+
+
 def test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket():
     """`outside_okta` says each finding has its own ticket under the same parent,
     and only FIX_CHECKS produces one of those. A graph check in URGENT_CHECKS

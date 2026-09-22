@@ -24,7 +24,7 @@ from datetime import datetime
 from ..models import (
     APP_DISABLED_STATUSES,
     APP_LIVE_STATUSES,
-    CREDENTIAL_EVENTS,
+    CREATION_EVENTS,
     DISABLED_STATUSES,
     LIVE_STATUSES,
     READ_ONLY_ROLES,
@@ -96,14 +96,16 @@ def _write_access(app: App, source_complete: bool) -> bool | None:
 def _index_events(snapshot: Snapshot) -> tuple[dict[str, tuple[ActivityEvent, User]], dict[str, datetime]]:
     """One pass over the System Log for both things the projection needs.
 
-    Returns the earliest credential-lifecycle event per target (with the user
-    who performed it) and the last token grant per actor. One pass rather than
+    Returns the earliest creation event per target (with the user who performed
+    it) and the last token grant per actor. Creation only: reading a client's
+    secret or adding one is custody, which AR-12 reports as a secret to rotate,
+    and counting it here named whoever once opened a colleague's client as the
+    person who answers for it. One pass rather than
     two per service client, which at a few hundred clients is the difference
     between a scan and a cross product.
 
     Okta keeps no owner field on an API client, so the log is the only record
-    of who set one up. This generalises what AR-12 does for a single leaver. It
-    establishes accountability, not ownership -- and the creator may themselves
+    of who set one up. It establishes accountability, not ownership -- and the creator may themselves
     have left, which the checks treat as a worse finding.
     """
     by_id = {u.id: u for u in snapshot.users}
@@ -112,7 +114,7 @@ def _index_events(snapshot: Snapshot) -> tuple[dict[str, tuple[ActivityEvent, Us
     for event in snapshot.events:
         if not event.published:
             continue
-        if event.is_kind(CREDENTIAL_EVENTS):
+        if event.is_kind(CREATION_EVENTS):
             user = by_id.get(event.actor_id)
             if user:
                 for target in event.targets:
@@ -337,6 +339,7 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
                 holder=app.id,
                 last_used=last_used,
                 write_access=_write_access(app, source_complete),
+                usage_read=snapshot.activity_actors is not None and app.client_id in snapshot.activity_actors,
             )
         )
         for role in app.admin_roles:
@@ -354,7 +357,9 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
         if entry is not None:
             matched.add(entry.key)
             links.append(Link(key, LinkMethod.DECLARED, entry.owner, entry.evidence()))
-        found = creators.get(app.client_id)
+        # Events name an app by its app id or its client id depending on type.
+        found = min((f for f in (creators.get(app.id), creators.get(app.client_id)) if f),
+                    key=lambda f: f[0].published, default=None)
         if found:
             event, creator = found
             creator_email = identity_key(creator)
@@ -377,10 +382,10 @@ def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> Id
         gaps=gaps,
         activity_since=snapshot.activity_since,
         # activity_since is None when the System Log was not read at all, and
-        # app_usage_complete is False when the usage read was cut short. Note
-        # that events are only collected for rostered leavers and the clients
-        # they set up, so a principal's last_used of None is "no record here",
-        # never "idle".
+        # app_usage_complete is False when the usage read was cut short. Events
+        # are only collected for rostered leavers and the clients they held the
+        # credentials of, which is per credential and so not this flag's to say:
+        # `Credential.usage_read` carries it.
         activity_complete=snapshot.activity_since is not None and snapshot.app_usage_complete,
     )
     return IdentityGraph(

@@ -100,10 +100,10 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
     s3, sfn, bot, jira = aws
     out = handlers.collect({}, None)
     no_personal_data(out)
-    # Not complete: the register declares a GitHub account and this pipeline
-    # reads Okta only, which the review now says rather than passing over. The
-    # gap is counts-and-text, no personal data, which is what this test guards.
-    assert out["items"]["total"] == 17 and out["complete"] is False
+    # Complete although the register declares a GitHub account: this pipeline
+    # reads Okta only, so that estate is out of scope rather than a gap. A gap
+    # here would mark every AWS review incomplete, for good.
+    assert out["items"]["total"] == 17 and out["complete"] is True
     assert ("uar-evidence-test", f"runs/{out['run']}/review_items.json") in s3.objects
 
     opened = handlers.open_review({"run": out["run"], "task_token": "tok"}, None)

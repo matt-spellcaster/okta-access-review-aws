@@ -100,8 +100,7 @@ class Transition:
         The field keeps its name, here and in the file: it is what the bundle
         has always been called and the format is read back by `from_dict`.
         """
-        return [p for p in self.principals
-                if p["source"] != OKTA or p.get("kind") == str(PrincipalKind.SERVICE)]
+        return [p for p in self.principals if _unfinished(p)]
 
     def to_dict(self) -> dict:
         return {
@@ -140,6 +139,12 @@ class Transition:
         )
 
 
+def _unfinished(principal: dict) -> bool:
+    """Whether deactivating the person's Okta account leaves this one working:
+    anything in another source, and a service account anywhere."""
+    return principal["source"] != OKTA or principal.get("kind") == str(PrincipalKind.SERVICE)
+
+
 def _finding_row(f: Finding) -> dict:
     return {
         "check_id": f.check_id,
@@ -167,9 +172,10 @@ def _held(ctx: ReviewContext, identity: str) -> list[dict]:
         record["credentials"] = [c.to_dict() for c in graph.credentials_for(principal.key)]
         record["grants"] = [g.to_dict() for g in graph.grants_for(principal.key)]
         out.append(record)
-    # Okta last: the other sources are where the departure is unfinished, and a
-    # reviewer reads the top of the list.
-    out.sort(key=lambda p: (p["source"] == OKTA, p["source"], p["label"]))
+    # Unfinished first, because a reviewer reads the top of the list: what
+    # deactivation did not reach, which includes an Okta API client they owned,
+    # before their own deactivated Okta account.
+    out.sort(key=lambda p: (not _unfinished(p), p["source"], p["label"]))
     return out
 
 
@@ -202,7 +208,7 @@ def build_transitions(ctx: ReviewContext, findings, gaps: list[str]) -> list[Tra
     makes the ones with residue mean anything.
 
     None -- not an empty list -- when there is no roster, or when no source
-    beyond Okta was read, following `ReviewItem.items`. "Nobody left" and
+    beyond Okta was read, following `ReviewRun.items`. "Nobody left" and
     "nothing looked" are different answers, and `summary` of an empty list would
     report every departure clean and the review complete for a run that never
     ran this at all.

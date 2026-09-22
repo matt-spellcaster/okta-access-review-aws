@@ -162,7 +162,8 @@ class Remediation:
 
     def open_urgent(self, run: str, parent: str, findings: list[dict],
                     people: dict[str, str] | None = None,
-                    outside: dict[str, tuple[tuple[str, ...], str]] | None = None) -> int:
+                    outside: dict[str, tuple[tuple[str, ...], str]] | None = None,
+                    held: dict[str, list[dict]] | None = None) -> int:
         """One ticket per person, listing every leaver finding about them.
 
         people maps a lowercased login to their Okta user ID, for the link.
@@ -176,6 +177,7 @@ class Remediation:
         """
         people = people or {}
         outside = outside or {}
+        held = held or {}
         by_subject: dict[str, list[dict]] = defaultdict(list)
         for f in findings:
             if f["severity"] != INFO:
@@ -194,15 +196,19 @@ class Remediation:
             link = self._okta_link(people.get(subject.lower()), subject)
             if link:
                 paragraphs.append(link)
-            held, gap = outside.get(subject.lower(), ((), ""))
-            paragraphs += _scope_to_okta(held, gap, "Closing their way in through Okta")
+            scoped, gap = outside.get(subject.lower(), ((), ""))
+            paragraphs += _scope_to_okta(scoped, gap, "Closing their way in through Okta")
             paragraphs.append("Resolve this ticket once done; the next daily check confirms it in Okta.")
             _, new = self._create(run, label, {"kind": "leaver", "run": run, "subject": subject,
                                                "checks": [r["check_id"] for r in rows], "due": due,
-                                               "outside_okta": list(held),
+                                               "outside_okta": list(scoped),
+                                               # What `watch.still_present` settles AR-12's client
+                                               # secrets against: the System Log forgets custody.
+                                               "held_secrets": held.get(subject.lower(), []),
                                                "todo": f"Remove every way in through Okta for leaver "
-                                                       f"{subject} (account and API tokens; a service "
-                                                       f"account they owned is AR-18's own ticket)"}, {
+                                                       f"{subject} (account, API tokens, and a rotated "
+                                                       f"secret for any API client whose secret they held; "
+                                                       f"who owns such a client now is AR-18's own ticket)"}, {
                 "issuetype": {"name": self.child_type},
                 "parent": {"key": parent},
                 "summary": f"Remove access for leaver {subject}",

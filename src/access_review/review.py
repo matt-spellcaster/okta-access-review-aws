@@ -93,6 +93,10 @@ def run_review(
         github = _load_github(github_path)
         projections.append(project_github(github, config.service_accounts))
     graph = IdentityGraph.compose(*projections)
+    # Every AWS run builds a graph now, in the 1024 MB collect Lambda. The
+    # projections carry their own indexes, and left in scope they would stay
+    # live through the checks, the items and the PDF beside the composed copy.
+    del projections
     if github_path is not None:
         _note_skew(graph, github, snapshot)
         # The data nine findings rest on, inside the bundle the manifest signs.
@@ -153,8 +157,16 @@ def _note_register(graph: IdentityGraph, register: Register) -> None:
             f"belongs to them. The account is reported as unowned, because an owner who cannot be "
             f"reached is not accountable for it. Correct the owner, or remove it and say so."
         )
-    read = {m.source for m in graph.sources}
-    unread = [s for s in register.sources() if s.lower() not in {r.lower() for r in read}]
+    read = {m.source.lower() for m in graph.sources}
+    kinds_read = {_kind(s) for s in read}
+    # An estate of a kind this run was never asked to read is out of scope, not
+    # a hole in it: the AWS pipeline reads Okta alone, and a register that also
+    # declares the GitHub bots would otherwise mark every one of its reviews
+    # INCOMPLETE for good -- a banner nobody can clear teaches everyone to skip
+    # it. What stays a gap is the dead entry: a kind nothing reads at all, or a
+    # name that misses the estate of its kind that was read (a typo'd org).
+    unread = [s for s in register.sources()
+              if s.lower() not in read and (_kind(s) in kinds_read or _kind(s) not in SOURCE_KINDS)]
     if unread:
         # On Okta's metadata because every review has one and this is a
         # statement about the review rather than about any source in it.
@@ -165,6 +177,15 @@ def _note_register(graph: IdentityGraph, register: Register) -> None:
                 f"review did not read: {', '.join(sorted(unread))}. Those entries declare nothing "
                 f"here, and nothing in this review checked them."
             )
+
+
+# The kinds of estate this tool can read. A register source is `okta` or
+# `github:<org>`; anything else names an estate no run will ever check.
+SOURCE_KINDS = {"okta", "github"}
+
+
+def _kind(source: str) -> str:
+    return source.lower().split(":", 1)[0]
 
 
 def _load_github(path: Path) -> GitHubSnapshot:

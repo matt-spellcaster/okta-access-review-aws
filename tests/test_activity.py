@@ -1,6 +1,7 @@
 """Activity evidence: the System Log projection and the leaver checks that read it."""
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -141,7 +142,7 @@ def test_events_for_actor_filters_and_orders_oldest_first():
 # --- the checks ------------------------------------------------------------
 
 def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_status="ACTIVE",
-         tz="America/Chicago"):
+         tz="America/Chicago", credentials_created=None):
     from datetime import date
 
     from access_review.checks import Config, ReviewContext
@@ -155,7 +156,8 @@ def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_
         collected_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
         users=[user],
         groups=[Group(id="g1", name="Finance", type="OKTA_GROUP", members={"u02"})],
-        apps=[App(id="a05", label="Reporting Bot", status="ACTIVE", service_client=True, client_id="0oaBOT")],
+        apps=[App(id="a05", label="Reporting Bot", status="ACTIVE", service_client=True, client_id="0oaBOT",
+                  credentials_created=credentials_created)],
         api_tokens=list(tokens),
         events=list(events),
     )
@@ -200,51 +202,79 @@ def test_a_leaver_with_no_end_date_is_reported_as_undeterminable():
     assert "no end date" in f.detail
 
 
-def test_a_client_the_leaver_set_up_carries_their_activity():
-    """The point of the check: the account is gone, the credential is not.
+def _held(event_type="app.oauth2.credentials.lifecycle.create", day=4, target="0oaBOT"):
+    return ActivityEvent(published=datetime(2026, 5, day, tzinfo=timezone.utc), event_type=event_type,
+                         actor_id="u02",
+                         targets=[{"id": target, "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
 
-    AR-13 still reads the client as the leaver's actor. AR-12 no longer reports
-    the client itself -- that is AR-18's, whose remediation is the opposite of
-    this one -- so the activity is attributed without a second demand to delete
-    the thing AR-18 asks somebody to take over.
-    """
-    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
-                          event_type="app.oauth2.credentials.lifecycle.create", actor_id="u02",
-                          targets=[{"id": "0oaBOT", "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
+
+def test_a_client_secret_the_leaver_held_is_a_credential_to_rotate():
+    """Custody: whoever added or read a client's secret may still have a copy,
+    and deactivating their account does not stop it working. The fix is to
+    rotate it -- never to delete the client, which is AR-18's to decide."""
+    [f] = _findings(_ctx(events=[_held()], credentials_created=[datetime(2026, 5, 4, tzinfo=timezone.utc)]),
+                    "AR-12")
+
+    assert f.detail == "Left 2026-08-29 but still holds the secret of API client Reporting Bot."
+    assert "rotate" in f.remediation and "delete" not in f.remediation
+
+
+def test_reading_a_colleagues_client_secret_is_custody_whoever_built_it():
+    """The case the ownership split first dropped: nobody's AR-18, because the
+    leaver never created the client, and they have still seen its secret."""
+    from access_review.identity import project_snapshot
+
+    ctx = _ctx(events=[_held("app.oauth2.client.read_client_secret")])
+
+    [f] = _findings(ctx, "AR-12")
+    assert "Reporting Bot" in f.detail
+    # And reading it names nobody as the client's creator.
+    assert project_snapshot(ctx.snapshot).link_for(("okta", "a05")) is None
+
+
+def test_a_secret_rotated_since_they_held_it_clears_them_and_an_unread_one_does_not():
+    """Rotation is the fix, so it has to be visible -- and "not read" is never
+    taken as rotated: that would sign a leaver ticket off on a read that failed."""
+    after = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert _findings(_ctx(events=[_held()], credentials_created=[after]), "AR-12") == []
+    # One old secret left alongside the new one still works.
+    both = [after, datetime(2026, 5, 4, tzinfo=timezone.utc)]
+    assert _findings(_ctx(events=[_held()], credentials_created=both), "AR-12")
+
+    [unread] = _findings(_ctx(events=[_held()]), "AR-12")
+    assert "could not be read" in unread.detail
+
+
+def test_the_latest_time_they_held_it_is_what_a_rotation_has_to_beat():
+    created, reread = _held(), _held("app.oauth2.client.read_client_secret", day=20)
+    between = [datetime(2026, 5, 10, tzinfo=timezone.utc)]
+
+    assert _findings(_ctx(events=[created, reread], credentials_created=between), "AR-12")
+
+
+def test_a_client_that_goes_on_running_after_they_leave_is_not_their_activity():
+    """A client built by a leaver keeps working after they go, which is what
+    AR-18 reports as needing an owner. Read as the leaver's own activity it was
+    a critical "possible incident, revoke it" on the leaver ticket, against
+    AR-18's "hand it over" on the same client."""
     grant = ActivityEvent(published=datetime(2026, 9, 14, tzinfo=timezone.utc),
                           event_type="app.oauth2.token.grant.access_token", actor_id="0oaBOT",
                           actor_type="PublicClientApp",
                           targets=[{"id": "AT.1", "type": "access_token", "label": "Reporting Bot"}])
-    ctx = _ctx(events=[setup, grant], user_status="DEPROVISIONED")
+    ctx = _ctx(events=[_held("application.lifecycle.create", target="a05"), grant],
+               user_status="DEPROVISIONED")
 
-    [activity] = _findings(ctx, "AR-13")
-
-    assert activity.detail == "1 token grant after 2026-08-29; last 2026-09-14 (Reporting Bot)."
-    assert _findings(ctx, "AR-12") == []
+    assert _findings(ctx, "AR-13") == []
 
 
-def test_a_client_the_leaver_set_up_is_never_also_a_credential_to_revoke():
-    """The AR-12/AR-18 partition, in the place it went wrong.
-
-    A client the leaver created is a service account somebody has to take over,
-    which is AR-18's finding and AR-18's ticket. Reported here as well it went
-    into the leaver ticket too -- one assignee, two tickets, "rotate or delete"
-    against "it is still running, hand it over" -- and the leaver ticket closes
-    on an Okta re-read that only deleting it satisfies. The token stays: that is
-    a credential the person held, not an account that outlives them.
-    """
-    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
-                          event_type="app.oauth2.credentials.lifecycle.create", actor_id="u02",
-                          targets=[{"id": "0oaBOT", "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
-    ctx = _ctx(events=[setup], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
+def test_a_token_and_a_held_secret_are_listed_together():
+    ctx = _ctx(events=[_held()], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")],
+               credentials_created=[datetime(2026, 5, 4, tzinfo=timezone.utc)])
 
     [f] = _findings(ctx, "AR-12")
 
-    assert "Reporting Bot" not in f.detail and "API client" not in f.detail
-    assert "ci-deploy" in f.detail
-    # And with only the client, nothing at all -- not a finding stripped to an
-    # empty list of credentials, which would still open a ticket.
-    assert _findings(_ctx(events=[setup]), "AR-12") == []
+    assert f.detail == ("Left 2026-08-29 but still holds API token ci-deploy; "
+                        "the secret of API client Reporting Bot.")
 
 
 def test_a_deleted_client_is_not_reported():
@@ -407,3 +437,36 @@ def test_an_unknown_org_timezone_is_rejected_at_config_load(tmp_path):
 
     with pytest.raises(ValueError, match="Mars/Olympus"):
         Config.load(path)
+
+
+def test_the_secret_they_made_is_not_a_rotation_by_a_few_milliseconds():
+    """Okta stamps a secret's `created` and the event recording it separately.
+    Compared exactly, the secret the leaver made read as a later rotation."""
+    made = datetime(2026, 5, 4, 0, 0, 0, 120000, tzinfo=timezone.utc)
+    assert _findings(_ctx(events=[_held()], credentials_created=[made]), "AR-12")
+
+
+def test_no_live_secrets_or_keys_is_not_proof_of_rotation():
+    """A service client authenticates somehow. One whose keys are published at
+    a jwks_uri lists none here while the leaver may hold the private key."""
+    [f] = _findings(_ctx(events=[_held()], credentials_created=[]), "AR-12")
+    assert "could not be read" in f.detail
+
+
+def test_custody_is_found_whichever_id_the_event_names():
+    """Okta names an app by its app id in some events and its client id in others."""
+    assert _findings(_ctx(events=[_held(target="a05")]), "AR-12")
+    assert _findings(_ctx(events=[_held(target="0oaBOT")]), "AR-12")
+
+
+def test_a_deleted_or_deactivated_client_is_retired_but_only_when_the_app_read_was_whole():
+    """Gone from a complete app list, it issues no tokens. Gone from a list the
+    admin role was hiding apps from, it may be right there."""
+    from access_review.checks import rotated_since
+
+    since = datetime(2026, 5, 4, tzinfo=timezone.utc)
+    assert rotated_since(None, since, apps_complete=True) is True
+    assert rotated_since(None, since, apps_complete=False) is None
+    off = App(id="a05", label="Reporting Bot", status="INACTIVE", client_id="0oaBOT", credentials_created=[since])
+    assert rotated_since(off, since) is True
+    assert rotated_since(replace(off, status="ACTIVE"), since) is False

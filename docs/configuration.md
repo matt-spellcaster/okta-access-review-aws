@@ -12,10 +12,10 @@
    |---|---|
    | `okta.users.read` | Users, last sign-in, MFA factors |
    | `okta.groups.read` | Groups and members |
-   | `okta.apps.read` | Apps and their user and group assignments |
+   | `okta.apps.read` | Apps and their user and group assignments; when a leaver-held client secret or key was made (AR-12, dates only) |
    | `okta.appGrants.read` | API scopes granted to other apps (AR-10) |
    | `okta.roles.read` | Admin roles of users and API apps (AR-10, AR-11) |
-| `okta.logs.read` | System Log: what a leaver did after they left (AR-12, AR-13) |
+| `okta.logs.read` | System Log: what a leaver did after they left, and whose API client secrets they held (AR-12, AR-13) |
 | `okta.apiTokens.read` | API tokens and who owns them (AR-12) |
 
 4. **Admin roles:** Super Administrator for full coverage, or Read-Only Administrator for a review
@@ -93,8 +93,8 @@ What each field changes:
   The fix is to name a new owner here, or to decommission the account — not to revoke it, because
   something is presumably still calling it. An Okta API client is the case this exists for:
   deactivating the person who owned it does not touch it, and no other check asks who is now
-  accountable for it. AR-12 used to report the same client under the leaver's own ticket, which
-  asked for the opposite; it now covers the tokens a person held and leaves the account here.
+  accountable for it. AR-12 still reports the client's secret on the leaver's own ticket if they held
+  it, but asks only for it to be rotated, which leaves the client running for its new owner.
   A `reviewed` date on the entry is what tells the reviewer how old the claim they are replacing is.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.

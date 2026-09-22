@@ -236,7 +236,8 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
         app.users.clear()
         app.groups.clear()
     gone.users = [u for u in gone.users if not u.login.startswith(("marcus", "sofia", "victor"))]
-    gone.events = []  # nobody left who set up an API client
+    gone.events = []
+    rotated(gone)  # victor held Reporting Bot's secret, and somebody has rotated it
 
     # Fix tickets aren't verified while their findings are still reported.
     watch.daily(deps, jira, gone, leavers(gone), current={("AR-04", "lee.chen@acme.example")})
@@ -299,6 +300,45 @@ def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):
     assert watch.daily(deps, jira, snapshot, leavers(snapshot), current=set())["verified"] == 1
     # Without fresh findings (e.g. the checks couldn't run), nothing is verified.
     assert watch.still_present(mfa, snapshot, {}, None, None) == (None, {})
+
+
+def rotated(snapshot, when=datetime(2026, 9, 17, tzinfo=timezone.utc)):
+    bot = next(a for a in snapshot.apps if a.label == "Reporting Bot")
+    bot.credentials_created = [when]
+
+
+def test_a_held_secret_is_settled_against_the_client_not_the_log(world):
+    """The System Log keeps 90 days. Re-derived from it, a leaver whose only
+    remaining way in is a client secret they held dropped out of the leaver
+    checks the day the event that showed it aged out -- and the ticket was
+    signed off "done in Okta" with the secret still working. The ticket record
+    names the secret, and that is what the daily check reads."""
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    victor = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+                  if r["kind"] == "leaver" and r["subject"].startswith("victor"))
+    assert [h["label"] for h in victor["held_secrets"]] == ["Reporting Bot"]
+    assert watch.held_clients(deps) == {"a05"}
+    jira.issues[victor["issue"]]["done"] = True
+    forgot = copy.deepcopy(snapshot)
+    forgot.events = []  # the custody event is past the window now
+    assert victor["subject"] not in (leavers(forgot) or set())
+
+    clock.now = OPENED + timedelta(days=2)
+    assert watch.daily(deps, jira, forgot, leavers(forgot))["verified"] == 0
+    # A read that saw no live secrets at all proves nothing either.
+    blank = copy.deepcopy(forgot)
+    rotated(blank)
+    next(a for a in blank.apps if a.label == "Reporting Bot").credentials_created = []
+    clock.now += timedelta(days=1)
+    assert watch.daily(deps, jira, blank, leavers(blank))["verified"] == 0
+    # Rotated: the copy he saw no longer works, and that is the evidence.
+    rotated(forgot)
+    clock.now += timedelta(days=1)
+    assert watch.daily(deps, jira, forgot, leavers(forgot))["verified"] >= 1
+    rec = store.list_records(deps.s3, "evidence", run, "verifications")
+    [rec] = [r for n, r in rec if n == f"{victor['label']}-verified.json"]
+    assert rec["observed"]["client_secrets_rotated"] == {"Reporting Bot": True}
 
 
 def test_a_leaver_with_a_working_api_client_is_not_cleared(world):
@@ -388,7 +428,14 @@ def test_a_judgement_call_ticket_is_taken_as_done_when_resolved(world):
 
     [(name, rec)] = store.list_records(deps.s3, "evidence", run, "verifications")
     assert name == f"{scopes['label']}-verified.json" and rec["result"] == "accepted"
-    assert any(k == scopes["issue"] and "taken as done" in body for k, body in jira.comments)
+    [comment] = [body for k, body in jira.comments if k == scopes["issue"]]
+    assert "taken as done" in comment
+    # What it may claim: that this review does not look again. Not that Okta
+    # cannot see the fix -- AR-18's is often an Okta API client, which a fresh
+    # snapshot would see go -- and not that the ticket only asked for a
+    # decision, which AR-18's "hand it over or decommission it" did not.
+    assert "does not re-read" in comment
+    assert "checked in okta" not in comment.lower() and "a decision" not in comment
     assert not any("Okta still shows the problem" in dm for dm in dms_to(deps, R.ciso))
     checklist = [p for c, t, p in deps.bot.updates if "To close" in json.dumps(p)][-1]
     assert f"resolved {rec['checked_at'][:10]}" in json.dumps(checklist)
@@ -402,3 +449,13 @@ def test_a_judgement_call_ticket_is_taken_as_done_when_resolved(world):
     # later must say so deliberately rather than inherit it.
     assert record_verify_mode({"kind": "escalation"}) == "reviewer"
     assert record_verify_mode({}) == "reviewer"
+
+
+def test_a_refused_client_secret_read_clears_no_leaver(world):
+    """The gap the collector writes when it cannot read a held client's secret
+    dates names AR-12, and that is what stops a leaver being cleared on it."""
+    *_, snapshot = world
+    unread = copy.deepcopy(snapshot)
+    unread.gaps.append("Could not read OAuth client secrets and keys; AR-12 may be incomplete. "
+                       "Needs the okta.apps.read scope and an admin role allowed to view this data. (403)")
+    assert leavers(unread) is None
