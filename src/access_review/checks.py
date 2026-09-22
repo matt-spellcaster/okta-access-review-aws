@@ -36,6 +36,7 @@ from .identity import (
     Status,
     identity_key,
 )
+from .register import Register
 from .roster import RosterEntry, entry_for
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -57,8 +58,10 @@ class Config:
     never_signed_in_grace_days: int = 14
     employee_only_groups: list[str] = field(default_factory=list)
     admin_groups: list[str] = field(default_factory=lambda: ["Okta Administrators"])
-    # Logins that are expected to be missing from the HR roster.
-    service_accounts: list[str] = field(default_factory=list)
+    # The service account register: accounts expected to be missing from the HR
+    # roster (AR-03), and who is accountable for each (AR-15). A flat list of
+    # logins is still read and means declared with nobody named. See register.py.
+    service_accounts: Register = field(default_factory=Register)
     # How far back to read the System Log (AR-12, AR-13). Okta keeps 90 days.
     activity_lookback_days: int = 90
     # Where the org is, for resolving an end_date with no time on it (AR-13).
@@ -90,6 +93,12 @@ class Config:
 
         Branding.from_config(config.branding)  # fail fast on bad colors or keys
         return config
+
+    def __post_init__(self) -> None:
+        # Coerced here rather than in `load`, so a Config built in code from a
+        # list of logins -- a test, a caller wiring one by hand -- gets the same
+        # register a config file does, and no caller can hold a half-parsed one.
+        self.service_accounts = Register.from_config(self.service_accounts)
 
     def timezone(self) -> ZoneInfo:
         try:
@@ -128,7 +137,7 @@ class ReviewContext:
         return entry_for(self.roster, user.email, user.login)
 
     def is_service_account(self, user: User) -> bool:
-        return user.login.lower() in {s.lower() for s in self.config.service_accounts}
+        return self.config.service_accounts.entry(OKTA, user.login) is not None
 
 
 @dataclass
@@ -560,13 +569,35 @@ def _write_access(credentials: list[Credential], evidence_complete: bool = True)
     return False
 
 
+def _downgrade(severity: str) -> str:
+    """One rung milder, never below `low`.
+
+    What a register entry with no owner is worth. Somebody wrote the account
+    down, so it is deliberate rather than a mystery, and that is the whole of
+    the difference -- no one is named, so no one is accountable. `info` is the
+    rung for things a reviewer confirms rather than fixes (AR-11), and a
+    credential nobody answers for is always work, so the floor is `low`.
+    """
+    return SEVERITIES[min(SEVERITIES.index(severity) + 1, SEVERITIES.index("low"))]
+
+
 def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
     """An account the source knows about, holding credentials, that no evidence
     ties to a person. The cross-source identity join is the heart of this tool,
-    so this is the headline check, not an edge case."""
+    so this is the headline check, not an edge case.
+
+    Two ways to get here, and they are reported apart. Nothing at all says who
+    holds it (`unlinked`), or the register declares it and names no owner
+    (`unattributed`). The second exists because adding an account to the
+    register would otherwise delete this finding while leaving exactly as many
+    people accountable for the credential as before: nobody. The two lists are
+    disjoint -- one is principals with no best link, the other is principals
+    whose best link carries no identity.
+    """
     graph = ctx.graph
     out = []
-    for principal in graph.unlinked():
+    for principal, declared in ([(p, False) for p in graph.unlinked()]
+                                + [(p, True) for p in graph.unattributed()]):
         # AR-16's case: the account itself is unknown to the source's own
         # member read, which is a different and sharper problem.
         if principal.kind is PrincipalKind.UNKNOWN:
@@ -579,11 +610,17 @@ def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
         if not credentials and known:
             continue
         held = _describe(credentials, ctx.as_of)
+        whose = (
+            "the review register declares this account and names no owner, so nobody is "
+            "accountable for it"
+            if declared else
+            "no evidence ties this account to a person"
+        )
         detail = (
-            f"{principal.label}: no evidence ties this account to a person. Holds {held}."
+            f"{principal.label}: {whose}. Holds {held}."
             if credentials else
-            f"{principal.label}: no evidence ties this account to a person, and the "
-            f"{principal.source} credential read did not complete, so what it holds is unknown."
+            f"{principal.label}: {whose}, and the {principal.source} credential read did not "
+            f"complete, so what it holds is unknown."
         )
         writes = _write_access(credentials, known) is not False
         recent = _maybe_recent(credentials, ctx.as_of, ctx.config.inactive_days, known)
@@ -591,7 +628,8 @@ def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
         # case. Dormant is a cleanup; this is an investigation. Unknown counts
         # as the worse branch on both axes -- see _write_access, _maybe_recent.
         severity = "high" if writes and recent else "medium" if writes or recent else "low"
-        out.append(check.finding(graph_subject(principal), detail, severity=severity))
+        out.append(check.finding(graph_subject(principal), detail,
+                                 severity=_downgrade(severity) if declared else severity))
     return out
 
 
@@ -783,9 +821,10 @@ CHECKS: list[Check] = [
         # AR-12, the other credential check.
         ["SOC 2 CC6.1", "SOC 2 CC6.2", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
         "Establish who owns this account, and revoke its credentials if nobody will own it. "
-        "Recording an owner does not yet stop this being reported: the service account register "
-        "(config.service_accounts) is a flat list of Okta logins with no owner field and is not "
-        "read for this source, so the finding returns next quarter until that register exists.",
+        "Record the owner in the service account register (config.service_accounts): an entry "
+        "with an owner ties the account to that person, so it appears in their access review and "
+        "in their departure bundle if they leave. An entry naming no owner declares the account "
+        "without making anyone accountable, and is still reported here.",
         _unowned_credentials, needs_graph=True,
     ),
     Check(

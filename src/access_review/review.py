@@ -78,8 +78,12 @@ def run_review(
     extra: dict[str, str | Iterable[str]] = {}
     if github_path is not None:
         github = _load_github(github_path)
+        # The register reaches both projections. It used to reach only Okta,
+        # so a declared GitHub bot was a service account in the config and an
+        # unowned mystery in the graph.
         graph = IdentityGraph.compose(
-            project_snapshot(snapshot, config.service_accounts), project_github(github)
+            project_snapshot(snapshot, config.service_accounts),
+            project_github(github, config.service_accounts),
         )
         _note_skew(graph, github, snapshot)
         # The data nine findings rest on, inside the bundle the manifest signs.

@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..models import format_time, parse_time
+from ..register import Register
 from .graph import (
     Credential,
     CredentialKind,
@@ -428,16 +429,21 @@ def _permission_write_access(permissions: dict[str, dict[str, str]], read_comple
     return False if read_complete else None
 
 
-def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None = None) -> IdentityGraph:
+def project_github(snapshot: GitHubSnapshot, register: Register | None = None) -> IdentityGraph:
     """Turn a GitHub snapshot into a one-source graph.
 
-    `declared_services` is the register of logins someone has declared are not
-    people, the same role `Config.service_accounts` plays for Okta. Nothing
-    else makes a member a service account: personhood is not implied by having
-    an SSO link, because a machine user can be provisioned in the IdP too.
+    `register` is `Config.service_accounts`, the same register the Okta
+    projection reads. Nothing else makes a member a service account: personhood
+    is not implied by having an SSO link, because a machine user can be
+    provisioned in the IdP too.
+
+    Entries are scoped to this org's source name (`github:<org>`), so declaring
+    an Okta login never declares a GitHub member that happens to share it. Two
+    sources are two estates and a login is only a name within one.
     """
     source = source_name(snapshot.org)
-    declared = {s.lower() for s in declared_services or []}
+    register = Register.from_config(register if register is not None else Register())
+    matched: set[tuple[str, str]] = set()
     principals: list[Principal] = []
     credentials: list[Credential] = []
     grants: list[Grant] = []
@@ -474,7 +480,8 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
 
     for member in snapshot.members:
         key = (source, member.id)
-        service = member.login.lower() in declared
+        entry = register.entry(source, member.login)
+        service = entry is not None
         principals.append(
             Principal(
                 source=source,
@@ -492,8 +499,12 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
                 last_used=None,
             )
         )
-        if service:
-            links.append(Link(key, LinkMethod.DECLARED, "", "declared a service account in the review register"))
+        if entry is not None:
+            matched.add(entry.key)
+            # Declared accounts take no SSO or verified-email link: those say
+            # the IdP or GitHub knows the address, not that a person answers for
+            # a machine account. The register is the only thing that says who.
+            links.append(Link(key, LinkMethod.DECLARED, entry.owner, entry.evidence()))
         elif member.saml_identity:
             identity, attribute = member.saml_identity.joinable()
             if identity:
@@ -585,6 +596,8 @@ def project_github(snapshot: GitHubSnapshot, declared_services: list[str] | None
             f"{principal_id} holds {how} in the {snapshot.org} org but was not returned by the "
             f"member read. It is counted as unlinked."
         )
+
+    gaps.extend(register.stale(source, matched))
 
     meta = SourceMeta(
         source=source,

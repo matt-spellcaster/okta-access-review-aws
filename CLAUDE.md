@@ -87,6 +87,28 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   by name or email similarity, because a false link marks a credential as accounted for when nobody
   is. Completeness is per source (`SourceMeta`): a read that failed is "incomplete", never "nothing
   found".
+- The service account register (`register.py`, `Config.service_accounts`) is an ownership claim, not
+  a mute button. **An entry with no owner must never remove a finding.** It emits
+  `Link(key, DECLARED, "", ...)`, which takes the principal out of `graph.unlinked()` and used to
+  delete its AR-15 -- a config change that made a write-capable credential stop being reported while
+  exactly as many people were accountable for it as before: nobody. Those principals are
+  `graph.unattributed()`, AR-15 walks that list as well as `unlinked()` (the two are disjoint), and
+  reports them one severity milder, floored at `low` -- `info` is the rung for what a reviewer
+  confirms rather than fixes. An `owner` is the only thing that clears the finding, and it is
+  normalised the way `identity_key` normalises an Okta profile email or it joins to nobody while
+  reading as owned. That link is also what puts the account in the owner's departure bundle, through
+  `principals_of` -- no new check, and it is the loop the register exists for.
+  Three more things it must not do. **A link naming somebody outranks one that does not, whatever
+  the method** (`strength` in `IdentityGraph`): DECLARED beats CREATOR on rank, so without that an
+  ownerless entry would erase the audit log's "priya built this". **Entries are scoped to a source**
+  (`okta`, `github:<org>`), because a login is only a name within one estate. And an entry must
+  identify **one** account: a service client is matched by client id, or by app label only when that
+  label picks out exactly one client, because two clients can share a label -- the same reason ticket
+  identity is hashed from the stable id. An entry that matches nothing, or a label that matches two,
+  declares nothing and records a gap; silently ignoring it leaves a claim that looks like coverage.
+  The register is written into `manifest.json` inside the signed config, so everything in it has to
+  stay JSON: the lookup index is set with `object.__setattr__` rather than declared as a field
+  (its keys are tuples) and `reviewed` goes through `Register.to_dict` (it is a `date`).
 - `IdentityGraph.grants` is only what a source stated verbatim, never the whole set. App-via-group
   access is stored once per group (`group_apps`) and expanded on read, because one org-wide group
   over 250 apps materialises 1.25M grants and 535 MB RSS against a 1024 MB collect Lambda. Ask

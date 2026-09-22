@@ -374,7 +374,11 @@ def write_report(
         "org_url": snapshot.org_url,
         "collected_at": snapshot.to_dict()["collected_at"],
         "review_date": as_of.isoformat(),
-        "config": asdict(config),
+        # The register carries a date, which asdict leaves as a date object.
+        # It is in the signed config because "who was declared not a person,
+        # and who answers for them" is exactly what an auditor checks a review
+        # against.
+        "config": {**asdict(config), "service_accounts": config.service_accounts.to_dict()},
         "roster": roster,
         "finding_counts": dict(Counter(f.severity for f in findings)),
         "skipped_checks": skipped,

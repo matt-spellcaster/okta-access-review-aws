@@ -46,13 +46,62 @@ A JSON file. Every key is optional, and unknown keys are rejected.
 | `never_signed_in_grace_days` | `14` | AR-06 threshold |
 | `employee_only_groups` | `[]` | Groups contractors shouldn't be in (AR-07) |
 | `admin_groups` | `["Okta Administrators"]` | Groups treated as admin access (AR-11) |
-| `service_accounts` | `[]` | Logins expected to be missing from the HR roster (AR-03) |
+| `service_accounts` | `[]` | The service account register: accounts that are not people, and who owns each (AR-03, AR-15). Below |
 | `activity_lookback_days` | `90` | How far back to read the System Log (AR-12, AR-13); Okta keeps 90 days |
 | `org_timezone` | `"America/Chicago"` | Where the org is, for resolving an `end_date` with no time on it (AR-13) |
 | `history_reviews` | `12` | How many earlier reviews to read for findings history, below |
 | `branding` | none | PDF branding, below |
 
 Example: [`fixtures/demo_config.json`](../fixtures/demo_config.json).
+
+### The service account register
+
+`service_accounts` is the register of accounts nobody signs in as. An entry is a bare login, or an
+object naming an owner:
+
+```json
+"service_accounts": [
+  "svc-legacy@acme.example",
+  {
+    "id": "Terraform Automation",
+    "owner": "priya.shah@acme.example",
+    "purpose": "Applies infrastructure changes from CI",
+    "reviewed": "2026-07-01"
+  },
+  {"source": "github:acme-eng", "id": "acme-ci-bot", "purpose": "Publishes release artifacts"}
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The name a person knows the account by: an Okta login, an Okta API service client's app label or client ID, a GitHub member login |
+| `source` | Which estate the entry is about. `okta` by default; a GitHub org is `github:<org>` |
+| `owner` | The owner's email, matched against their Okta profile email. Optional, and the field that does the work |
+| `purpose` | Free text, carried into the evidence an auditor reads |
+| `reviewed` | `YYYY-MM-DD`, when someone last confirmed the entry is still true |
+
+What each field changes:
+
+- **An entry** keeps the account out of AR-03 ("no HR record"), whatever else it says. That is all
+  the bare-login form ever meant and all it still means.
+- **An owner** ties the account to that person. It appears on their access review, and in their
+  departure bundle if they leave — an ownership claim goes stale the moment the claimant does, so
+  the long tail of a departure is not only their own credentials but everything they answered for.
+  This is the only thing that stops AR-15 reporting the account.
+- **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
+  Somebody wrote the account down and named nobody; that is worth a rung and no more.
+
+Two entries for one account are rejected: one account has one owner, and picking between two claims
+would make the register the ambiguity it exists to remove. Entries are scoped to a source, so
+declaring an Okta login never declares a GitHub member with the same name.
+
+An entry matching nothing in its source is recorded as a data gap rather than ignored — a renamed or
+deleted account leaves a claim that looks like coverage and is not. The same applies to an app label
+two service clients share: the entry declares neither, and the gap says to name the client ID
+instead.
+
+The register is written into `manifest.json` with the rest of the config, so who was declared and
+who answers for them is part of the signed evidence.
 
 ### PDF branding
 

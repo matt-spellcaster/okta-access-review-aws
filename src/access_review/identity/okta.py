@@ -19,6 +19,7 @@ happened, the projection says unknown and records a gap.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 from ..models import (
@@ -34,6 +35,7 @@ from ..models import (
     Snapshot,
     User,
 )
+from ..register import Register
 from .graph import (
     AppRef,
     Credential,
@@ -144,15 +146,21 @@ def identity_key(user: User) -> str:
     return (user.profile.get("email") or "").strip().lower()
 
 
-def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = None) -> IdentityGraph:
+def project_snapshot(snapshot: Snapshot, register: Register | None = None) -> IdentityGraph:
     """Turn a snapshot into a one-source graph.
 
-    `declared_services` is `Config.service_accounts`: logins someone has
-    declared are not people. It is the only thing that makes an account a
-    service account here -- an undeclared bot account is itself the finding
-    (AR-03), so guessing from the login would hide it.
+    `register` is `Config.service_accounts`: the accounts someone has declared
+    are not people, and who answers for each. It is the only thing that makes an
+    account a service account here -- an undeclared bot account is itself the
+    finding (AR-03), so guessing from the login would hide it.
+
+    An entry with an owner links the account to that person, so it reaches their
+    review item and their departure bundle. An entry without one links it to
+    nobody (`Link.identity` is empty), which is `graph.unattributed()` and a
+    downgraded AR-15 rather than silence.
     """
-    declared = {s.lower() for s in declared_services or []}
+    register = Register.from_config(register if register is not None else Register())
+    matched: set[tuple[str, str]] = set()
     source_complete = not snapshot.gaps
     creators, last_token = _index_events(snapshot)
     principals: list[Principal] = []
@@ -162,7 +170,10 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
     gaps = list(snapshot.gaps)
 
     for user in snapshot.users:
-        service = user.login.lower() in declared
+        # Matched on the login, which is what the register has always keyed on
+        # and what a person writing an entry knows the account by.
+        entry = register.entry(OKTA, user.login)
+        service = entry is not None
         key = (OKTA, user.id)
         principals.append(
             Principal(
@@ -180,8 +191,13 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
                 last_used=user.last_login,
             )
         )
-        if service:
-            links.append(Link(key, LinkMethod.DECLARED, "", "declared a service account in the review config"))
+        if entry is not None:
+            matched.add(entry.key)
+            # No SSO_IDENTITY link for a declared account, even though it has a
+            # profile email: that address is the account's own, so linking on it
+            # would invent a person named svc-ci. The register is the only thing
+            # that says who a service account belongs to.
+            links.append(Link(key, LinkMethod.DECLARED, entry.owner, entry.evidence()))
         else:
             profile_email = identity_key(user)
             if profile_email:
@@ -251,6 +267,30 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
             )
         )
 
+    # Two service clients can carry the same label -- the same reason ticket
+    # identity is hashed from the stable id and not the name. A register entry
+    # naming a label that fits both would vouch for two accounts where somebody
+    # meant one, so it declares neither and says so. The client id is the way
+    # out, and it is what the Okta console shows beside the app.
+    labels = Counter(a.label.lower() for a in snapshot.apps if a.service_client and a.client_id)
+    # Gathered before the loop and reported once per entry, not once per client
+    # it could have meant: the register made one ambiguous claim, and an auditor
+    # counting gaps should read one.
+    ambiguous = {}
+    for app in snapshot.apps:
+        if not (app.service_client and app.client_id) or labels[app.label.lower()] == 1:
+            continue
+        found = register.entry(OKTA, app.label)
+        if found is not None:
+            ambiguous[found.key] = (found, labels[app.label.lower()])
+    for found, count in ambiguous.values():
+        matched.add(found.key)  # matched, just not usably: this gap, not the stale one
+        gaps.append(
+            f"The service account register declares {found.id!r}, which is the label of {count} API "
+            f"service clients in this org. It declares none of them: vouching for the wrong one "
+            f"would record a credential as accounted for while nobody is. Name the client id instead."
+        )
+
     for app in snapshot.apps:
         if not (app.service_client and app.client_id):
             continue
@@ -280,6 +320,19 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
         )
         for role in app.admin_roles:
             grants.append(Grant(OKTA, app.id, GrantKind.ROLE, role, role))
+        # A service client is declared by its client id, or by its app label
+        # when that label picks out exactly one client. `graph_subject` still
+        # uses the stable app id. A DECLARED entry that names an owner outranks
+        # the CREATOR link below, which is the point -- an audit log says who
+        # made it, the register says who answers for it. One that names nobody
+        # does not, so declaring an account never erases its creator: see the
+        # strength ordering in IdentityGraph.
+        entry = register.entry(OKTA, app.client_id)
+        if entry is None and labels[app.label.lower()] == 1:
+            entry = register.entry(OKTA, app.label)
+        if entry is not None:
+            matched.add(entry.key)
+            links.append(Link(key, LinkMethod.DECLARED, entry.owner, entry.evidence()))
         found = creators.get(app.client_id)
         if found:
             event, creator = found
@@ -293,6 +346,8 @@ def project_snapshot(snapshot: Snapshot, declared_services: list[str] | None = N
                         f"{event.event_type} by {creator.login} on {event.published.date()}",
                     )
                 )
+
+    gaps.extend(register.stale(OKTA, matched))
 
     meta = SourceMeta(
         source=OKTA,

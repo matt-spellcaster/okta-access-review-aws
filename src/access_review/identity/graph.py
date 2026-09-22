@@ -373,16 +373,25 @@ class IdentityGraph:
         # Strongest link wins. Two equally strong links naming different people
         # do NOT resolve to whichever adapter appended first -- the principal is
         # contested, which means unlinked, which means a finding.
+        #
+        # A link that names somebody outranks one that does not, whatever the
+        # method: a register entry with no owner is DECLARED and beats CREATOR
+        # on rank, so without this, declaring an account someone is recorded as
+        # having created would *remove* the only attribution there was. Rank
+        # orders evidence about who; a nameless link carries none.
+        def strength(link: Link) -> tuple[int, int]:
+            return (0 if link.identity else 1, link.method.rank)
+
         best: dict[PrincipalKey, Link] = {}
         contested: set[PrincipalKey] = set()
         for link in self.links:
             current = best.get(link.principal)
             if current is None:
                 best[link.principal] = link
-            elif link.method.rank < current.method.rank:
+            elif strength(link) < strength(current):
                 best[link.principal] = link
                 contested.discard(link.principal)
-            elif link.method.rank == current.method.rank and link.identity != current.identity:
+            elif strength(link) == strength(current) and link.identity != current.identity:
                 contested.add(link.principal)
         for key in contested:
             best.pop(key, None)
@@ -465,6 +474,19 @@ class IdentityGraph:
         """Principals two equally strong links disagree about. Worse than
         unlinked: something claims to know who owns this, twice, differently."""
         return [p for p in self.principals if p.key in self._contested]
+
+    def unattributed(self) -> list[Principal]:
+        """Principals whose only evidence names nobody.
+
+        A register entry with no owner is the case: someone declared the account
+        is not a person's, which is why it is not in `unlinked()`, and named no
+        one to answer for it, which is why it reaches no identity and appears on
+        no one's review. Between the two, and reported as its own thing -- a
+        declaration that clears a finding while leaving nobody accountable is
+        the register being used to make the tool quieter.
+        """
+        return [p for p in self.principals
+                if (link := self._best.get(p.key)) is not None and not link.identity]
 
     def holder_of(self, credential: Credential) -> Principal | None:
         """The principal holding a credential, or None when the source names a

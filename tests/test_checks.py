@@ -8,10 +8,26 @@ import pytest
 from access_review.checks import CHECKS, Config, ReviewContext, run_checks
 from access_review.identity import GitHubSnapshot, IdentityGraph, project_github, project_snapshot
 from access_review.models import Snapshot
+from access_review.register import Register
 from access_review.roster import load_roster
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 AS_OF = date(2026, 9, 15)
+
+
+def _compose(ctx, snapshot=None, github=None):
+    """The graph exactly as `review.run_review` builds it, register and all.
+
+    Both projections get it. A fixture that passed it to Okta only would leave
+    a declared GitHub bot reading as an unowned mystery here while production
+    saw it declared, which is the bug this register change exists to close.
+    """
+    if github is None:
+        github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
+    return IdentityGraph.compose(
+        project_snapshot(snapshot or ctx.snapshot, ctx.config.service_accounts),
+        project_github(github, ctx.config.service_accounts),
+    )
 
 
 @pytest.fixture
@@ -19,11 +35,9 @@ def demo():
     snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
     config = Config.load(FIXTURES / "demo_config.json")
     roster = load_roster(FIXTURES / "demo_roster.csv", config.timezone())
-    github = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
-    graph = IdentityGraph.compose(
-        project_snapshot(snapshot, config.service_accounts), project_github(github)
-    )
-    return ReviewContext(snapshot, roster, config, AS_OF, graph=graph)
+    ctx = ReviewContext(snapshot, roster, config, AS_OF)
+    ctx.graph = _compose(ctx)
+    return ctx
 
 
 def by_check(findings):
@@ -53,8 +67,12 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-14": {"lee.chen"},
         # Graph subjects are the source's own id, not the login: see graph_subject.
         # The login is in the detail, and GRAPH_LOGINS maps them back here.
+        # okta/a04 (Terraform Automation) is not here: the register declares it
+        # with an owner, which is the one thing that stops this check firing.
+        # acme-ci-bot is still here, declared with no owner -- see the severity
+        # table below, where declaring it moved the grade and not the finding.
         "AR-15": {"github:acme-eng/U_kgDOBq1kh6", "github:acme-eng/U_kgDOBq1jg5",
-                  "github:acme-eng/U_kgDOBq1gd2", "okta/a04"},
+                  "github:acme-eng/U_kgDOBq1gd2"},
         "AR-16": {"github:acme-eng/U_kgDOBq1zzz", "github:acme-eng/sam-departed"},
         "AR-17": {"github:acme-eng/U_kgDOBq1bYx", "github:acme-eng/U_kgDOBq1daz",
                   "github:acme-eng/U_kgDOBq1cZy"},
@@ -99,12 +117,16 @@ def test_cross_source_findings_carry_the_planted_severities(demo):
         # Write-capable and unowned.
         ("AR-16", "sam-departed"): "high",
         ("AR-16", "U_kgDOBq1zzz"): "medium",  # grants, no credential
-        ("AR-15", "acme-ci-bot"): "high",  # can write, used today
+        # Can write, used today: high on the evidence. The register declares it
+        # and names no owner, which is worth exactly one rung -- somebody wrote
+        # the account down, and nobody is any more accountable for it.
+        # dev-contractor-42 is the control: identical evidence, undeclared,
+        # still high. Break the downgrade and only the first line moves.
+        ("AR-15", "acme-ci-bot"): "medium",
         ("AR-15", "dev-contractor-42"): "high",  # can write, used 2 days ago
         # Permissions were never readable, so write access is unknown -- which is
         # not the same as read-only, and must not be ranked as the mildest case.
         ("AR-15", "omar-haddad"): "medium",
-        ("AR-15", "Terraform Automation"): "medium",
     }
 
 
@@ -127,10 +149,7 @@ def test_two_principals_sharing_a_label_get_distinct_subjects(demo):
     raw["apps"].append(twin)
     snapshot = Snapshot.from_dict(raw)
     demo.snapshot = snapshot
-    demo.graph = IdentityGraph.compose(
-        project_snapshot(snapshot, demo.config.service_accounts),
-        project_github(GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))),
-    )
+    demo.graph = _compose(demo, snapshot)
     findings, _ = run_checks(demo)
     subjects = [f.subject for f in findings if f.check_id == "AR-15"]
     assert len(subjects) == len(set(subjects)) == 5
@@ -149,10 +168,7 @@ def test_one_leaver_with_two_okta_accounts_is_reported_once(demo):
     raw["users"].append(second)
     snapshot = Snapshot.from_dict(raw)
     demo.snapshot = snapshot
-    demo.graph = IdentityGraph.compose(
-        project_snapshot(snapshot, demo.config.service_accounts),
-        project_github(GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))),
-    )
+    demo.graph = _compose(demo, snapshot)
     findings, _ = run_checks(demo)
     subjects = [f.subject for f in findings if f.check_id == "AR-17"]
     assert sorted(subjects) == sorted(set(subjects))
@@ -279,7 +295,7 @@ def test_without_roster_contractor_type_comes_from_okta_profile(demo):
 
 
 def test_service_account_not_reported_as_missing_from_hr(demo):
-    demo.config.service_accounts = []
+    demo.config.service_accounts = Register()
     findings, _ = run_checks(demo)
     assert "svc-ci" in by_check(findings)["AR-03"]
 
@@ -339,9 +355,22 @@ def test_cross_source_checks_map_to_the_controls_they_actually_evidence():
     assert "ISO 27001 A.5.17" not in cited and "ISO 27001 A.5.11" not in cited
 
 
-def test_ar15_does_not_promise_a_register_that_cannot_suppress_it():
-    """The remediation told a human to record an owner in a register that
-    project_github is never given, so following the instruction exactly could
-    not change next quarter's result."""
-    [ar15] = [c for c in CHECKS if c.id == "AR-15"]
-    assert "the finding returns next quarter" in ar15.remediation
+def test_ar15s_remediation_is_an_instruction_that_works(demo):
+    """It used to say that recording an owner would not stop the finding,
+    because `project_github` was never given the register -- an instruction that
+    could not change next quarter's result, printed in signed evidence.
+
+    Asserted by following it rather than by reading it: the wording can be
+    rewritten, and what has to stay true is that doing what it says works.
+    """
+    before = {f.subject for f in run_checks(demo)[0] if f.check_id == "AR-15"}
+    assert "github:acme-eng/U_kgDOBq1jg5" in before, "dev-contractor-42 is the undeclared control"
+
+    demo.config.service_accounts = Register.from_config([
+        *demo.config.service_accounts.to_dict(),
+        {"source": "github:acme-eng", "id": "dev-contractor-42", "owner": "priya.shah@acme.example"},
+    ])
+    demo.graph = _compose(demo)
+    after = {f.subject for f in run_checks(demo)[0] if f.check_id == "AR-15"}
+    assert before - after == {"github:acme-eng/U_kgDOBq1jg5"}, "the rest of the estate is untouched"
+    assert demo.graph.link_for(("github:acme-eng", "U_kgDOBq1jg5")).identity == "priya.shah@acme.example"
