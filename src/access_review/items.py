@@ -422,10 +422,10 @@ def items_chunks(items: list[ReviewItem], as_of: date, unused_days: int) -> Iter
     envelope = json.dumps({"format": FORMAT, "review_date": as_of.isoformat(),
                            "app_unused_days": unused_days}, ensure_ascii=True)
     yield envelope[:-1] + ', "items": ['
-    # The separator leads the row rather than trailing it, so the empty case
-    # needs no branch of its own: no items, no newline, and the file is the one
-    # line `{...,"items": []}`. A trailing-comma form would have to look ahead
-    # to know which row is last, which is the one thing a lazy writer cannot do.
+    # The separator leads the row rather than trailing it, so no row has to know
+    # it is last. A trailing-comma form would have to look ahead to find the last
+    # one, which is the thing a lazy writer cannot do. All the empty case costs
+    # is the newline below: no items, no newline, and the file is one line.
     for n, item in enumerate(items):
         yield ("\n" if n == 0 else ",\n") + json.dumps(vars(item), ensure_ascii=True)
     yield "\n]}\n" if items else "]}\n"

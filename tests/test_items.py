@@ -546,3 +546,32 @@ def test_the_items_file_is_yielded_a_row_at_a_time_and_never_whole(demo):
     # newline after the bracket, and the document is one line.
     empty = ('{"format": 3, "review_date": "2026-09-15", "app_unused_days": 90, "items": [', "]}\n")
     assert list(items_chunks([], AS_OF, 90)) == list(empty)
+
+
+def test_the_items_file_encodes_one_item_at_a_time_and_never_all_of_them_first(demo):
+    """Yielding rows is not the same as encoding them lazily, and only the
+    second one is worth anything.
+
+    `rows = [json.dumps(vars(i)) for i in items]` above the first yield leaves a
+    generator that yields exactly the same chunks in exactly the same order, so
+    the test above passes, the report test passes, and the whole encoded
+    document is live before a single byte reaches the disk -- which is the peak
+    this function exists to avoid. The only place the difference shows is in
+    when the items are pulled, so that is what this asserts.
+    """
+    pulled = []
+
+    class Watched(list):
+        def __iter__(self):
+            for item in super().__iter__():
+                pulled.append(item)
+                yield item
+
+    chunks = items_chunks(Watched(build_items(demo)), AS_OF, 90)
+    assert pulled == [], "a generator body must not run before the first next()"
+    assert next(chunks).endswith('"items": ['), "the envelope"
+    assert pulled == [], "the envelope cost an encoded document"
+    next(chunks)
+    assert len(pulled) == 1, "one row out, more than one item in: the rows were encoded up front"
+    next(chunks)
+    assert len(pulled) == 2

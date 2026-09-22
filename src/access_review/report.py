@@ -253,7 +253,8 @@ def _write_text(path: Path, content: str | Iterable[str]) -> None:
     so the largest file in the folder is never a string anybody holds.
     `Path.write_text` costs the document twice over -- once for the string the
     caller built and once for the encoded copy it makes -- at the point in the
-    run where the access matrix and the PDF are still live. Measured at 250k
+    run where the access matrix is still bound, on the peak the PDF has just
+    set. Measured at 250k
     items, that write plus the manifest's read-back peaks 243 MB above the
     items themselves; a chunk at a time and a blockwise hash peak 15 MB, for
     the same bytes in the same wall time.
@@ -275,7 +276,7 @@ def _sha256(path: Path) -> str:
 
     `read_bytes` on `review_items.json` is another full copy of the largest
     file in the folder, held for the one line that hashes it, and it lands
-    while the report, the matrix and the PDF are all still in memory. This is
+    while the access matrix is still bound. This is
     the other half of not materialising the file: writing it a chunk at a time
     buys nothing if the manifest then reads all of it back.
     """

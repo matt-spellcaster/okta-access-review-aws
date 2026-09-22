@@ -185,19 +185,38 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   against 448 MB overall, byte-identical output in the same wall time. `items_json` is the reader's
   join over the same chunks -- `load_items` and every test take text -- and uses one `io.StringIO`,
   never `"".join`, which costs 48 MB more at that size; nothing that writes a review calls it.
-  Each of the three halves has a test that kills its own mutant, because all three regressions are
-  byte-identical on disk and silent everywhere else:
-  `test_the_items_file_is_yielded_a_row_at_a_time_and_never_whole` (a writer that batches rows),
+  Every regression here is **byte-identical on disk and silent everywhere else**, so each way of
+  undoing it has one test that kills it, and the assertions pin the *property* rather than the exact
+  edit -- an assertion shaped to one mutation lets its neighbours walk through, which is how five of
+  these survived a green suite once already. Six mutants, six tests:
+  `test_the_items_file_is_yielded_a_row_at_a_time_and_never_whole` (a writer that batches rows);
+  `test_the_items_file_encodes_one_item_at_a_time_and_never_all_of_them_first` (rows encoded into a
+  list above the first `yield` -- same generator, same chunks, whole document live before a byte is
+  written, so only *when the items are pulled* can tell the two apart);
   `test_a_chunked_extra_file_reaches_the_disk_before_the_last_chunk_is_asked_for` (a `"".join`
-  inside `_write_text`), and `test_a_review_hands_the_items_file_over_as_chunks_not_as_a_document`
-  (`review.py` handing over the document again).
+  inside `_write_text`); `test_a_review_hands_the_items_file_over_as_chunks_not_as_a_document`
+  (`review.py` handing over the document again -- it asserts an **unstarted generator** and counts
+  the chunks pulled through it, because `not isinstance(x, str)` also accepts `list(items_chunks(
+  ...))` and `[items_json(...)]`, which both put the peak straight back);
+  `test_the_manifest_hash_never_reads_the_file_whole` (`_sha256` back to
+  `hashlib.sha256(path.read_bytes())`, which yields an identical digest for every file); and
+  `test_a_string_extra_file_reaches_the_file_in_one_write_and_a_rewrite_truncates` (dropping
+  `_write_text`'s `isinstance` branch, which writes `github_snapshot.json` one character at a time,
+  and opening `"a"` instead of `"w"`, which is identical until a rerun into an existing folder
+  leaves the previous review's bytes in a file the manifest then signs).
+  Two hazards this does **not** close, both latent rather than reachable today: `_write_text` cannot
+  tell an already-exhausted iterator from an empty file, so a stream something else consumed first
+  is written as 0 bytes, hashed to `e3b0c442...` and signed, and `attest` reports a full match; and
+  a failure mid-stream leaves a truncated file (which `attest` does catch) under the previous run's
+  manifest. Anything that reads `extra_files` values before `write_report` does, or any writer added
+  here, has to reckon with both.
   The layout is **one item per line, never `indent=`**. Indentation is 21% of the bytes on every
   version, which is the whole of the win on the 3.14 image -- peak there is within a megabyte either
   way, and the gain is 1.7x on time. The memory cliff is 3.11 and 3.12 only, where
   `json.dumps(indent=...)` drops to the pure-Python encoder and peaks at 1.1 GB against 383 MB for
   the C one; 3.13 taught `c_make_encoder` to indent, so that half bites the CLI and never the
-  Lambda. The row separator **leads** each row rather than trailing it, so the empty file needs no
-  branch and no lookahead -- which a lazy writer could not do anyway. Rows come from `vars(item)`,
+  Lambda. The row separator **leads** each row rather than trailing it, so no row has to know it is
+  last; the lookahead a trailing comma needs is the one thing a lazy writer cannot do. Rows come from `vars(item)`,
   not `dataclasses.asdict`, which deep-copies every item before a byte is encoded. The two ways
   `vars` can differ from `asdict` are a field holding a **dataclass** (on its own or inside a
   tuple), which `asdict` flattens and `vars` hands json something it cannot encode, and
