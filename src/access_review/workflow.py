@@ -428,27 +428,47 @@ def checklist_entries(deps: Deps, run: str) -> list[dict]:
     ]
 
 
-def settled_counts(entries: list[dict]) -> tuple[int, int]:
-    """(verified against Okta, taken on the reviewer's word), over settled entries.
+def settled_counts(entries: list[dict]) -> tuple[int, int, int]:
+    """(verified against Okta, taken on the reviewer's word, neither).
 
-    What the closing claim is worded from. The two are not the same evidence and
-    a single count cannot say which happened.
+    What the closing claim is worded from. The first two are not the same
+    evidence and a single count cannot say which happened. The third exists
+    because the close decision is made elsewhere, over the tickets that had no
+    verification record yet, while these counts are over every ticket on file --
+    so the two can disagree, and a sentence saying "every ticket is settled"
+    must not be printed from numbers that do not add up to every ticket.
     """
     done = [e for e in entries if e.get("verified")]
     on_word = sum(1 for e in done if e.get("accepted"))
-    return len(done) - on_word, on_word
+    return len(done) - on_word, on_word, len(entries) - len(done)
 
 
-def how_settled(in_okta: int, on_word: int) -> str:
+def how_settled(in_okta: int, on_word: int, unaccounted: int = 0) -> str:
     """One clause naming what settled a review's tickets, counts only."""
-    if not in_okta and not on_word:
-        return "there was nothing to fix"
-    word = (f"{on_word} resolved on the reviewer's word (a decision, or access in a source this "
-            f"review cannot re-read)")
-    okta = f"{in_okta} verified against a fresh Okta snapshot"
-    if not on_word:
-        return okta
-    return word if not in_okta else f"{okta}, {word}"
+    parts = []
+    if in_okta:
+        parts.append(f"{in_okta} verified against a fresh Okta snapshot")
+    if on_word:
+        parts.append(f"{on_word} resolved on the reviewer's word (a decision, or access in a source "
+                     f"this review cannot re-read)")
+    if unaccounted:
+        parts.append(f"{unaccounted} with no verification record on file")
+    return ", ".join(parts) or "there was nothing to fix"
+
+
+def closing_claim(entries: list[dict], on_date) -> str:
+    """The sentence a closing review puts on its tracking ticket, counts only.
+
+    The whole sentence in one place because the part that matters is which
+    lead-in the counts justify. "Every ticket is settled" is a claim about all of
+    them, and the close decision is made elsewhere, over the tickets that were
+    still pending -- so it is only printed when the counts do add up to all of
+    them.
+    """
+    in_okta, on_word, unaccounted = settled_counts(entries)
+    lead = ("Every ticket under this review is settled as of" if not unaccounted
+            else "This review is closing as of")
+    return f"{lead} {on_date}: {how_settled(in_okta, on_word, unaccounted)}."
 
 
 def post_checklist(deps: Deps, run: str) -> None:

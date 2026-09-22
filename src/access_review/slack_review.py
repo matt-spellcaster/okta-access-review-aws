@@ -362,7 +362,8 @@ def channel_finished(run: str, manifest: dict, check_counts: list[tuple[str, str
     if revokes or fixes:
         lines.append(f"*Tickets:* {revokes} to remove access and {fixes} to fix findings, under "
                      f"{ticket_link(parent) or '-'}, due in {revoke_days} days. The action list is in the "
-                     f"approval thread; the tracking ticket closes once all are verified.")
+                     f"approval thread; the tracking ticket closes once every one is settled, each "
+                     f"either verified in Okta or resolved on the reviewer's word.")
     else:
         lines.append(f"Nothing to fix. Tracking ticket {ticket_link(parent) or '-'} closes at the next daily check.")
     return {"text": f"Okta access review {run} is finished", "blocks": [

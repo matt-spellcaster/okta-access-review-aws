@@ -39,6 +39,7 @@ from .tickets import record_verify_mode
 from .workflow import (
     Deps,
     checklist_entries,
+    closing_claim,
     current_decisions,
     how_settled,
     load_run,
@@ -181,8 +182,16 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     item = items[record["item_key"]]
     user = next((u for u in snapshot.users if u.id == item.user_id), None)
     if user is None:
+        # Users are read with get_all and a refusal raises, so the account is
+        # genuinely gone rather than unread, and gone means the access is gone.
         return False, {"account_status": "not found"}
     if item.kind == "app":
+        # An assignment missing from a read that was hiding apps is not an
+        # assignment that was removed. Without this the daily check closed a
+        # revoke ticket, and signed the evidence record "done in Okta", because
+        # the admin role running the collection could not see the app.
+        if not snapshot.apps_complete:
+            return None, {}
         present = any(a.id == item.target_id and via == item.via for a, via in snapshot.apps_for(user.id))
     elif item.kind == "admin_role":
         if user.admin_roles is None:
@@ -278,12 +287,12 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
             # above already draw that line; these two closing claims were the
             # only place that flattened it, and they are the ones an auditor
             # reads.
-            in_okta, on_word = settled_counts(checklist_entries(deps, run))
-            how = how_settled(in_okta, on_word)
+            entries = checklist_entries(deps, run)
+            in_okta, on_word, unaccounted = settled_counts(entries)
+            how = how_settled(in_okta, on_word, unaccounted)
             if parent:
                 jira.add_comment(parent, adf(
-                    f"Every ticket under this review is settled as of {now.date()}: {how}. "
-                    f"Closing this ticket."))
+                    f"{closing_claim(entries, now.date())} Closing this ticket."))
                 closed = jira.close(parent)
             link = msgs.ticket_link((parent, deps.ticket_url(parent))) if parent else ""
             post_to_channel(deps, run, msgs.channel_note(

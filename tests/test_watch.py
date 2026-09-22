@@ -7,6 +7,7 @@ import pytest
 from fakes import FakeBot, FakeS3, FakeSfn
 
 from access_review import store, watch, workflow
+from access_review.workflow import load_run
 from access_review.checks import Config
 from access_review.decisions import Reviewers
 from access_review.items import DECIDE, KEEP
@@ -189,6 +190,41 @@ def test_daily_verification_checks_resolved_tickets_against_okta(world):
     assert len(jira.comments) == comments
 
 
+def test_a_revoke_is_not_verified_from_a_read_that_was_hiding_apps(world):
+    """The worst shape this bug takes: the daily check closing an audit ticket and
+    signing the evidence "done in Okta" because the admin role running the
+    collection could not see the app. The collector already detects that and says
+    so; nothing was reading it. Silence is not absence, in the one function that
+    decides whether a fix happened."""
+    deps, run, items, clock, jira, snapshot = world
+    finish_review(deps, run, items)
+    revoke = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
+                  if r["kind"] == "revoke")
+    loaded = load_run(deps, run).items
+    assert loaded[revoke["item_key"]].kind == "app", "this guard is the app branch"
+    jira.issues[revoke["issue"]]["done"] = True
+
+    blind = copy.deepcopy(snapshot)
+    blind.apps = []  # what a role-restricted read returns
+    blind.apps_complete = False
+    blind.gaps = ["The app list does not include this review app, so the admin role is hiding apps."]
+    assert watch.still_present(revoke, blind, loaded, set()) == (None, {})
+    watch.daily(deps, jira, blind, leavers(blind))
+    settled = [n for n, _ in store.list_records(deps.s3, "evidence", run, "verifications")]
+    assert f"{revoke['label']}-verified.json" not in settled, "closed on a read that saw no apps"
+
+    # A complete read that shows the assignment gone is the real thing.
+    gone = copy.deepcopy(snapshot)
+    for app in gone.apps:
+        app.users.clear()
+        app.groups.clear()
+    clock.now += timedelta(days=1)
+    watch.daily(deps, jira, gone, leavers(gone))
+    rec = dict(store.list_records(deps.s3, "evidence", run, "verifications"))[
+        f"{revoke['label']}-verified.json"]
+    assert rec["result"] == "removed"
+
+
 def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     deps, run, items, clock, jira, snapshot = world
     finish_review(deps, run, items)
@@ -223,6 +259,8 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     assert "13 verified against a fresh Okta snapshot" in closing
     assert "4 resolved on the reviewer's word" in closing
     assert "Everything under this review was verified in Okta" not in closing
+    # 13 + 4 accounts for all 17, so "every ticket" is a claim the counts support.
+    assert "Every ticket under this review is settled" in closing
 
 
 def test_the_checklist_ticks_off_verified_tickets(world):
@@ -360,3 +398,7 @@ def test_a_judgement_call_ticket_is_taken_as_done_when_resolved(world):
     assert record_verify_mode({"kind": "finding", "check_id": "AR-04"}) == "okta"
     assert record_verify_mode({"kind": "revoke"}) == "okta"
     assert record_verify_mode({"kind": "leaver", "check_id": "AR-05"}) == "okta"
+    # "okta" is the claim that something re-read the estate. A ticket kind added
+    # later must say so deliberately rather than inherit it.
+    assert record_verify_mode({"kind": "escalation"}) == "reviewer"
+    assert record_verify_mode({}) == "reviewer"

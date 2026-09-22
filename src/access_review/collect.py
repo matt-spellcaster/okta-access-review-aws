@@ -298,7 +298,9 @@ def collect(
         )
 
     # The review app always exists, so if it's missing the admin role is hiding apps.
+    apps_complete = True
     if client.client_id not in {a.id for a in apps}:
+        apps_complete = False
         gap = (
             f"The app list does not include this review app ({client.client_id}), so the admin role is "
             f"hiding apps. App assignments, AR-09 and AR-10 are incomplete ({len(apps)} apps visible)."
@@ -338,4 +340,5 @@ def collect(
         app_usage=usage,
         app_usage_since=usage_since,
         app_usage_complete=usage_complete,
+        apps_complete=apps_complete,
     )

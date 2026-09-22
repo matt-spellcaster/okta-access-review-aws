@@ -121,8 +121,9 @@ Within a minute:
   Every ticket links to the person's page in the Okta admin console.
 - **The approval thread** (under the sign-off message): the **action checklist**. It lists every
   ticket that must be done to close the tracking ticket, with links and due dates, and it ticks
-  itself off as the daily check verifies each one. The same list is a comment on the tracking
-  ticket.
+  itself off as the daily check settles each one. Lines marked *taken on your word* are ticked off
+  as soon as you resolve them, without Okta being consulted. The same list is a comment on the
+  tracking ticket.
 - **Review channel:** the finished summary, in the review's thread (and shown in the channel). It
   shows who signed off, findings by severity and by check, the decisions, and the ticket counts. It
   contains no names.
@@ -138,11 +139,14 @@ Then work through the checklist:
      ✅ on the checklist.
    - **Not done:** a comment on the ticket and a DM to the CISO. Finish the change; it's checked
      again daily.
-   - **Judgement calls** are different: fix tickets for *inactive* or *never used* accounts
-     (AR-05, AR-06), *contractor in an employee-only group* (AR-07) and *API client with admin
-     access* (AR-10) ask you to decide, and deciding to leave things as they are
-     is a valid answer. Resolving the ticket is taken as done, with a *"Resolved…"* comment; nothing
-     is checked in Okta.
+   - **Taken on your word** are different, and the checklist marks them as such before you start.
+     Fix tickets for *inactive* or *never used* accounts (AR-05, AR-06), *contractor in an
+     employee-only group* (AR-07) and *API client with admin access* (AR-10) ask you to decide, and
+     deciding to leave things as they are is a valid answer. So do the cross-source findings
+     (AR-15, AR-16, AR-17): those ask for a change in a source this review can read once but cannot
+     re-read to confirm a fix. For all of them, resolving the ticket is taken as done, with a
+     *"Resolved…"* comment; nothing is checked in Okta. When the review closes, the tracking ticket
+     and the channel say how many were verified in Okta and how many were taken on your word.
 4. When every line is ✅, the **tracking ticket closes itself**, and the channel says *"Access review
    `<run>` is complete"*. That's the only ticket the tool ever moves.
 

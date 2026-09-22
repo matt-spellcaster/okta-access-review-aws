@@ -58,6 +58,9 @@ INFO = "info"
 # system has a collector, and claiming to have verified it would be worse than
 # taking the reviewer's word. See the guard in tests/test_tickets.py.
 REVIEW_CHECKS = ("AR-05", "AR-06", "AR-07", "AR-10", "AR-15", "AR-16", "AR-17")
+# Ticket kinds that ask for a change in Okta, so `watch.still_present` can re-read
+# it there. Everything else settles on the reviewer's word.
+OKTA_VERIFIED_KINDS = frozenset({"leaver", "revoke"})
 
 
 def verify_mode(check_id: str) -> str:
@@ -74,9 +77,12 @@ def record_verify_mode(record: dict) -> str:
     change in Okta and is re-read there. Records written before the `verify`
     field existed go by their check.
     """
-    if record.get("kind") != "finding":
-        return "okta"
-    return record.get("verify") or verify_mode(record.get("check_id", ""))
+    if record.get("kind") == "finding":
+        return record.get("verify") or verify_mode(record.get("check_id", ""))
+    # Listed, not defaulted. "okta" is the claim that something re-read the
+    # estate and confirmed the fix, so a ticket kind added later must say so
+    # deliberately rather than inherit it.
+    return "okta" if record.get("kind") in OKTA_VERIFIED_KINDS else "reviewer"
 
 
 def quarter(review_date: str) -> str:

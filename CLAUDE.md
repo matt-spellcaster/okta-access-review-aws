@@ -165,7 +165,15 @@ tickets in Jira Service Management. Produces SOC 2 / ISO 27001 audit evidence. S
   and `slack_review.checklist_message`. A blanket "verified in Okta" over a list that includes either
   kind is the review asserting a check that never ran, and it is the sentence an auditor reads.
   `checklist_entries` carries `verify` as well as `accepted`, so a line says which it will be before
-  anyone has ticked it.
+  anyone has ticked it, and `workflow.closing_claim` only says "every ticket is settled" when the
+  counts add up to every ticket on file.
+- `watch.still_present` returns **None**, never False, when the data behind a ticket was not read.
+  `False` is the claim that a fix happened, and it is written into a signed evidence record and a
+  "done in Okta" comment. Every branch needs its own signal: `user.admin_roles is None` for a role,
+  `snapshot.apps_complete` for an app assignment, `snapshot.gaps` naming the check for a finding, and
+  `leavers is None` for a leaver. `apps_complete` is False when the collecting admin role was hiding
+  apps, which the collector already detects; without that guard a revoke ticket closed as verified
+  because the reader could not see the app.
 - Findings history (`history.py`) and `attest` never write outside the one report folder, never
   change a hashed file, and never send anything. History must never count a review it couldn't
   verify against its manifest; when unsure, count lower. `reopened` ("Back again") asserts a
