@@ -1,28 +1,35 @@
 # okta-access-review-aws
 
-A quarterly user access review of an Okta org that runs in AWS, is approved in Slack, and tracks fixes
-as Jira Service Management tickets. It compares Okta users, groups, apps, MFA enrollment and admin
-roles with an HR roster, flags access to remove or confirm, and saves the results as evidence for
-SOC 2 (CC6.1–CC6.3) and ISO 27001:2022 (A.5.15–A.8.5). Okta is only ever read.
+A quarterly user access review that runs in AWS, is approved in Slack, and tracks fixes as Jira
+Service Management tickets. It compares Okta users, groups, apps, MFA enrollment and admin roles
+with an HR roster, and joins the accounts and credentials people hold in other systems onto the same
+people — so a departure can be checked against the long tail an Okta deactivation never reaches.
+Access is flagged to remove or confirm, and the results are saved as evidence for SOC 2 (CC6.1–CC6.3)
+and ISO 27001:2022 (A.5.15–A.8.5). Every source is only ever read.
 
 - **In AWS** ([docs/aws.md](docs/aws.md)): a scheduled Step Functions workflow collects the review
   and asks the CISO to decide each item in Slack, showing the facts, why it could be an issue, and
   a proposed decision. After sign-off it opens a JSM ticket for each piece of access to remove and
   each finding to fix, under one tracking ticket per quarter, and posts an action checklist. A daily
-  check confirms each resolved ticket really changed Okta, ticks it off, and closes the tracking
-  ticket once everything is verified. Built with Terraform, and removed with one script
-  ([docs/teardown.md](docs/teardown.md)). Running a review, step by step: [docs/runbook.md](docs/runbook.md).
+  check re-reads Okta to confirm each resolved ticket really changed it and ticks it off; a ticket
+  Okta can't settle — a fix somewhere else — is taken on the reviewer's word and says so, and the
+  tracking ticket closes once every ticket is settled one of those two ways. Built with Terraform,
+  and removed with one script ([docs/teardown.md](docs/teardown.md)). Running a review, step by
+  step: [docs/runbook.md](docs/runbook.md).
 - **Or locally**, as the original command-line tool: the same checks and report, run on a laptop.
 
 Seeded from `okta-access-review` at commit 1a20697. The local tool below works the same way.
 
-- 14 checks, such as leavers who still hold a working API credential, terminated users with live
-  accounts, missing MFA, app assignments nobody uses, and API clients with write access.
+- 18 checks. Fourteen read Okta: leavers who still hold a working API credential, terminated users
+  with live accounts, missing MFA, app assignments nobody uses, API clients with write access. Four
+  read [across sources](#across-sources): credentials nobody is accountable for, access held by an
+  account no user read returned, and what a departure leaves behind in another system.
 - Read-only scopes, Private Key JWT, and DPoP-bound tokens.
 - Output: a PDF with a sign-off page, CSVs, the raw data, and a manifest of SHA-256 hashes.
 - Shows how many reviews in a row each finding has been open, from earlier report folders it has
   verified, and `access-review attest` records a sign-off tied to the report's manifest.
-- The report is marked incomplete if Okta withholds any data.
+- The report is marked incomplete if a source withholds data, and names the source. A read that
+  failed is reported as incomplete, never as nothing found.
 - Optionally emails the PDF and posts a summary to Slack. Messages contain no personal data.
 
 ## Built with
@@ -30,6 +37,7 @@ Seeded from `okta-access-review` at commit 1a20697. The local tool below works t
 | | Used for |
 |---|---|
 | **Okta** | The system being reviewed, read through its API with read-only scopes |
+| **GitHub** | The optional second source: org membership and roles, SAML identities, PATs and SSH keys. Read from a snapshot file passed with `--github`; there's no collector for it yet |
 | **Slack** | The review and sign-off: a bot posts to one channel and DMs the reviewer (the CISO), who decides with buttons |
 | **Jira Service Management** | A tracking ticket per review, and a ticket for each piece of access to remove and each finding to fix |
 | **AWS Lambda** | All of the compute and automation: collecting from Okta, posting to Slack, handling button clicks, opening tickets, reminders, and the daily check. Eight functions share one container image (Python, arm64). |
@@ -106,11 +114,13 @@ uv run access-review \
   --snapshot fixtures/demo_snapshot.json \
   --roster fixtures/demo_roster.csv \
   --config fixtures/demo_config.json \
+  --github fixtures/demo_github.json \
   --as-of 2026-09-15
 ```
 
 The demo org has exactly one planted issue for each check, and the tests confirm the review finds
-those and nothing else.
+those and nothing else. `--github` supplies the second estate: leave it out and the run is a valid
+Okta-only review, with the planted cases that live in the GitHub fixture absent from it.
 
 ## Checks
 
@@ -130,14 +140,14 @@ those and nothing else.
 | AR-12 | Leaver still holds a working API token | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
 | AR-13 | Signed in, or used a credential, after their last working day | critical | SOC 2 CC6.2, CC7.2 · ISO A.5.18, A.8.16 |
 | AR-14 | Directly assigned app with no sign-in to it for 90+ days (skipped if the System Log can't be read in full) | medium | SOC 2 CC6.2 · ISO A.5.18 |
-| AR-15 | Credential nobody is accountable for: no evidence ties the account to a person (high if it can write and may be in use) | medium | SOC 2 CC6.1, CC6.2 · ISO A.5.16, A.5.18 |
-| AR-16 | Access held by an account the source's own user read never returned | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18 |
-| AR-17 | Someone who left still has access in another source, such as GitHub | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
+| AR-15 | A credential no evidence ties to a person, or one the register declares and names no owner for (a rung milder); high if it can write and may be in use | medium | SOC 2 CC6.1, CC6.2 · ISO A.5.16, A.5.18 |
+| AR-16 | Something holds access that the source's own user or member read never returned | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18 |
+| AR-17 | Someone who left still has access in a system Okta deactivation doesn't reach | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
 | AR-18 | Service account a leaver owned, or held the secret of (critical if it can change anything, or if that is unknown) | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.17, A.5.18, A.8.2 |
 
-AR-01 to AR-03, AR-12 and AR-13 compare Okta with an HR roster: a CSV exported from the HR system
-and passed in with `--roster` (there's no live HR integration yet). Without it they're skipped, and
-the report says so. Thresholds and group names are configurable.
+AR-01 to AR-03, AR-12, AR-13, AR-17 and AR-18 compare what the review found with an HR roster: a CSV
+exported from the HR system and passed in with `--roster` (there's no live HR integration yet).
+Without it they're skipped, and the report says so. Thresholds and group names are configurable.
 
 AR-12, AR-13 and AR-18 are about the leaver cases an account status doesn't show. An Okta API token keeps
 working after the account is deactivated: that is AR-12, and the daily check sees the revocation
@@ -156,6 +166,38 @@ and apps: AR-18 takes the account, names its state and lists the groups and apps
 would restore, so the reviewer sees the blast radius while deciding between handover and decommission. Every check declares whether its
 remediation removes the account's access, keeps the account running, or neither, and a test asserts
 that no account is the subject of both a removal and a keep.
+
+## Across sources
+
+AR-15 to AR-18 don't read the Okta snapshot. They read an identity graph: the principals that can
+hold access in each source, the credentials that keep working after the account they were created
+under is deactivated, the grants each principal holds, and the links saying which principal belongs
+to which person. Each source is projected into it — Okta from its snapshot, GitHub from its own —
+and the graph is what these four checks reason over. Three rules shape it.
+
+**A link is evidenced or it is absent.** A principal is tied to a person by the IdP's own SSO
+assertion, an email the source itself states as verified, a register entry somebody signed up to, or
+an audit log's record of who created the account. Never by name or email similarity. The methods are
+a ladder rather than a score, and two equally strong links naming different people leave the account
+unlinked, which is itself a finding. A false link is worse than no link: it marks a credential as
+accounted for when nobody is accountable for it.
+
+**Completeness is tracked per source.** A read that failed is recorded against that source, so the
+review never reports "no GitHub credentials" when the GitHub call simply failed. Emptiness is
+evidence only when the read that would have said so actually ran: an unread scope list is unknown
+write access rather than read-only, and an account with no credentials found under a failed read is
+still reported. Unknown is never ranked as the milder case.
+
+**The service account register is an ownership claim, not a mute button.** `config.service_accounts`
+records which accounts are not people and who owns each. An entry with an owner ties the account to
+that person, so it appears in their access review and in their departure bundle if they leave. An
+entry naming nobody — or naming somebody no source evidences — is still reported, one severity
+milder: it declares the account without making anyone accountable for it. Details:
+[docs/configuration.md](docs/configuration.md#the-service-account-register).
+
+All four run on an Okta-only estate too, where AR-18 finds an API client a leaver owned or held the
+secret of. What a second source adds is the other estate — the org roles, PATs and SSH keys a
+departure leaves behind — and a per-departure bundle in `transitions.json`.
 
 ## Evidence produced
 
@@ -211,6 +253,8 @@ PDF branding and the roster format are in [docs/configuration.md](docs/configura
 
 ## Limitations
 
+- There's no collector for the second source yet. GitHub data is a snapshot file passed with
+  `--github`, and the AWS pipeline doesn't pass one, so its runs are Okta-only.
 - MFA status comes from enrolled factors. It doesn't check whether a sign-on policy requires MFA.
 - Admin roles granted through a group aren't expanded to the group's members yet.
 - Apps assigned through several groups are listed once per group.
