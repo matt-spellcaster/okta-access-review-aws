@@ -26,7 +26,20 @@
 
   <!-- Title -->
   <text x="20" y="46" font-size="18" font-weight="700" fill="#1f2328">How a review runs</text>
-  <text x="20" y="68" class="l">read · decide · fix · verify</text>
+  <circle cx="26" cy="77.5" r="4.5" fill="#007dc1"/>
+  <text x="38" y="82" class="t">read Okta</text>
+  <path d="M26,84 V95" stroke="#d0d7de" stroke-width="1.5"/>
+  <circle cx="26" cy="101.5" r="4.5" fill="#611f69"/>
+  <text x="38" y="106" class="t">decide in Slack</text>
+  <path d="M26,108 V119" stroke="#d0d7de" stroke-width="1.5"/>
+  <circle cx="26" cy="125.5" r="4.5" fill="#0052cc"/>
+  <text x="38" y="130" class="t">fix in JSM</text>
+  <path d="M26,132 V143" stroke="#d0d7de" stroke-width="1.5"/>
+  <circle cx="26" cy="149.5" r="4.5" fill="#007dc1"/>
+  <text x="38" y="154" class="t">verify in Okta</text>
+  <path d="M26,156 V167" stroke="#d0d7de" stroke-width="1.5"/>
+  <circle cx="26" cy="173.5" r="4.5" fill="#3f8624"/>
+  <text x="38" y="178" class="t">keep the evidence</text>
 
   <!-- AWS account -->
   <rect x="200" y="14" width="500" height="764" rx="8" fill="#f6f8fa" stroke="#232f3e" stroke-width="1.2"/>
