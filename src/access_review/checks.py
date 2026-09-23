@@ -63,7 +63,7 @@ class Config:
     # roster (AR-03), and who is accountable for each (AR-15). A flat list of
     # logins is still read and means declared with nobody named. See register.py.
     service_accounts: Register = field(default_factory=Register)
-    # How far back to read the System Log (AR-12, AR-13). Okta keeps 90 days.
+    # How far back to read the System Log (AR-13, AR-18). Okta keeps 90 days.
     activity_lookback_days: int = 90
     # Where the org is, for resolving an end_date with no time on it (AR-13).
     org_timezone: str = "America/Chicago"
@@ -373,7 +373,7 @@ def _activity_after_leaving(ctx: ReviewContext, check: Check) -> list[Finding]:
         # activity is not theirs: read as theirs, every such client was a
         # critical "possible incident, revoke it" in the leaver ticket while
         # AR-18 asked for it to be handed over. Whether they may still use it is
-        # AR-12's held secret.
+        # AR-18's held secret.
         after = sorted(
             (e for e in ctx.snapshot.events_for_actor(user.id) if e.published and e.published > cutoff),
             key=lambda e: e.published,
@@ -802,65 +802,81 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
     leavers: dict[str, tuple[RosterEntry, list[User]]] = {}
     for user, entry in _leavers(ctx):
         leavers.setdefault(identity_key(user) or f"user:{user.id}", (entry, []))[1].append(user)
+    # Keyed by account across every leaver, not per leaver: two people who left
+    # holding one client is one finding naming both. Per leaver it was two
+    # findings on one subject, and ticket identity is (check, subject), so the
+    # second person's reason never reached the ticket.
+    why: dict[PrincipalKey, dict[str, list[str]]] = {}
     for who, (entry, users) in leavers.items():
-        why: dict[PrincipalKey, list[str]] = {}
+        # Named, not `_left_on`: this detail opens with the account rather than
+        # the person, so "Left 2026-08-29" would read as the account having
+        # left. The roster's name, falling back to the identity the link
+        # actually joined on -- never a name from the register entry, which is
+        # a string somebody typed.
+        gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
+        person = f"{entry.name or (users[0].login if who.startswith('user:') else who)} {gone}"
         for principal in graph.principals_of(who):
             if principal.kind is not PrincipalKind.SERVICE:
                 continue
             link = graph.link_for(principal.key)
             if link is None:  # principals_of is built from these; belt and braces
                 continue
-            why.setdefault(principal.key, []).append(
+            why.setdefault(principal.key, {}).setdefault(person, []).append(
                 f"the strongest evidence of who answers for this {principal.source} service account "
                 f"names them -- {link.evidence}")
         for user in users:
             for app, when in secrets_held_by(ctx.snapshot, user.id):
-                why.setdefault((OKTA, app.id), []).append(
+                why.setdefault((OKTA, app.id), {}).setdefault(person, []).append(
                     f"the System Log shows them holding its credentials on {when.date()}, so a copy "
                     f"may still work")
-        for key, reasons in why.items():
-            principal = graph.principal(key)
-            if principal is None:
-                continue
-            credentials = graph.credentials_for(principal.key)
-            known = _credential_evidence_complete(graph, principal.source)
-            roles = _elevated_roles(graph, principal)
-            held = _describe(credentials, ctx.as_of)
-            # Named, not `_left_on`: this detail opens with the account rather
-            # than the person, so "Left 2026-08-29" would read as the account
-            # having left. The roster's name, falling back to the identity the
-            # link actually joined on -- never a name from the register entry,
-            # which is a string somebody typed.
-            gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
-            name = entry.name or (who if not who.startswith("user:") else users[0].login)
-            detail = f"{principal.label}: {name} {gone}, and {'; and '.join(reasons)}."
-            carries = []
-            if roles:
-                carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
-                               else f"the {', '.join(roles)} roles")
-            if held:
-                carries.append(held)
-            if carries:
-                detail += f" It holds {' and '.join(carries)}."
-            # Independent of the line above, not an else: a principal can carry
-            # a role the source did return and credentials it did not, and the
-            # roles reading as the whole of what it holds is the same
-            # silence-is-absence claim in a smaller place.
-            if not credentials and not known:
-                detail += (f" The {principal.source} credential read did not complete, so what it "
-                           f"holds is unknown.")
-            # Graded on what the account can change, not on the owner's rank.
-            # `_elevated_roles` is "above ordinary membership", which for Okta
-            # includes a read-only admin role that cannot change a thing, so
-            # READ_ONLY_ROLES is filtered out; a role that is not one of them is
-            # treated as elevated. Unknown write access is not the milder case:
-            # see _write_access.
-            elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
-            writes = _write_access(credentials, known) is not False
+    apps = {a.id: a for a in ctx.snapshot.apps}
+    for key, people in sorted(why.items()):
+        said = "; ".join(f"{person}, and {'; and '.join(reasons)}" for person, reasons in people.items())
+        principal = graph.principal(key)
+        if principal is None:
+            # A client with a secret that is not a service client -- a web or
+            # native OIDC app -- is not in the graph, and its secret works just
+            # as well. Reported ungraded rather than dropped: skipping it lost
+            # the custody AR-12 used to report, with no gap.
+            app = apps.get(key[1])
+            label = app.label if app else key[1]
             out.append(check.finding(
-                graph_subject(principal), detail,
-                severity="critical" if elevated or writes else "high",
+                f"{key[0]}/{key[1]}",
+                f"{label}: {said}. It is not a service client, so what it can reach was not graded.",
             ))
+            continue
+        credentials = graph.credentials_for(principal.key)
+        known = _credential_evidence_complete(graph, principal.source)
+        roles = _elevated_roles(graph, principal)
+        held = _describe(credentials, ctx.as_of)
+        detail = f"{principal.label}: {said}."
+        carries = []
+        if roles:
+            carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
+                           else f"the {', '.join(roles)} roles")
+        if held:
+            carries.append(held)
+        if carries:
+            detail += f" It holds {' and '.join(carries)}."
+        # Independent of the line above, not an else: a principal can carry
+        # a role the source did return and credentials it did not, and the
+        # roles reading as the whole of what it holds is the same
+        # silence-is-absence claim in a smaller place.
+        if not credentials and not known:
+            detail += (f" The {principal.source} credential read did not complete, so what it "
+                       f"holds is unknown.")
+        # Graded on what the account can change, not on the owner's rank.
+        # `_elevated_roles` is "above ordinary membership", which for Okta
+        # includes a read-only admin role that cannot change a thing, so
+        # READ_ONLY_ROLES is filtered out; a role that is not one of them is
+        # treated as elevated. Unknown write access is not the milder case:
+        # see _write_access.
+        elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
+        writes = _write_access(credentials, known) is not False
+        out.append(check.finding(
+            graph_subject(principal), detail,
+            severity="critical" if elevated or writes else "high",
+        ))
     return out
 
 

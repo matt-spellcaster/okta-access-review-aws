@@ -454,3 +454,36 @@ def test_custody_is_found_whichever_id_the_event_names():
     """Okta names an app by its app id in some events and its client id in others."""
     assert _findings(_ctx(events=[_held(target="a05")]), "AR-18")
     assert _findings(_ctx(events=[_held(target="0oaBOT")]), "AR-18")
+
+
+def test_custody_of_a_web_apps_secret_is_reported_not_dropped():
+    """A web OIDC app has a client secret too, and it is not in the graph as a
+    service account. Skipped for want of a principal, the custody AR-12 used
+    to report vanished with no gap."""
+    ctx = _ctx(events=[_held("app.oauth2.client.read_client_secret", target="0oaWEB")])
+    ctx.snapshot.apps.append(App(id="a07", label="Expense Portal", status="ACTIVE", client_id="0oaWEB"))
+    ctx.graph = project_snapshot(ctx.snapshot)
+
+    subjects = {f.subject: f for f in _findings(ctx, "AR-18")}
+    assert set(subjects) == {"okta/a07"}
+    assert "Expense Portal" in subjects["okta/a07"].detail
+    assert "not graded" in subjects["okta/a07"].detail
+
+
+def test_two_leavers_on_one_client_are_one_finding_naming_both():
+    """Ticket identity is (check, subject). Two findings on one client folded
+    into one ticket, and the second person's reason never reached it."""
+    from access_review.models import User
+    from access_review.roster import RosterEntry
+
+    ctx = _ctx(events=[_held(), ActivityEvent(
+        published=datetime(2026, 5, 9, tzinfo=timezone.utc), event_type="app.oauth2.client.read_client_secret",
+        actor_id="u09", targets=[{"id": "0oaBOT", "type": "AppInstance", "label": "Reporting Bot"}])])
+    ctx.snapshot.users.append(User(id="u09", login="victor.nguyen@acme.example", status="DEPROVISIONED",
+                                   profile={"email": "victor.nguyen@acme.example"}))
+    ctx.roster["victor.nguyen@acme.example"] = RosterEntry(
+        "victor.nguyen@acme.example", "Victor Nguyen", "employee", "terminated", date(2026, 7, 15), "Priya")
+    ctx.graph = project_snapshot(ctx.snapshot)
+
+    [f] = _findings(ctx, "AR-18")
+    assert "Marcus Lee" in f.detail and "Victor Nguyen" in f.detail

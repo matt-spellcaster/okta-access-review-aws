@@ -140,7 +140,7 @@ def render_markdown(snapshot: Snapshot, findings: list[Finding], skipped: list[s
     live = sum(1 for u in snapshot.users if u.status != "DEPROVISIONED")
     activity = (
         snapshot.activity_since.strftime("%Y-%m-%d") if snapshot.activity_since
-        else "not collected (AR-12 and AR-13 have no evidence to read)"
+        else "not collected (AR-13 and AR-18 have no evidence to read)"
     )
     lines = [
         "# Okta user access review",

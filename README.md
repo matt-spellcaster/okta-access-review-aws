@@ -139,9 +139,9 @@ AR-01 to AR-03, AR-12 and AR-13 compare Okta with an HR roster: a CSV exported f
 and passed in with `--roster` (there's no live HR integration yet). Without it they're skipped, and
 the report says so. Thresholds and group names are configurable.
 
-AR-12 and AR-13 are about the leaver cases an account status doesn't show. An Okta API token keeps
+AR-12, AR-13 and AR-18 are about the leaver cases an account status doesn't show. An Okta API token keeps
 working after the account is deactivated: that is AR-12, and the daily check sees the revocation
-in Okta. So does any copy of an API client secret the leaver created, added or read. That is AR-18's,
+in Okta. A copy of an API client secret the leaver created, added or read also keeps working. That is AR-18's,
 together with any client they owned: somebody still here has to answer for it, and every secret they
 held has to be rotated. A reviewer confirms the rotation, because Okta can't show it reliably (a key
 published at a `jwks_uri` never appears there). Only the System Log records who created a client, so

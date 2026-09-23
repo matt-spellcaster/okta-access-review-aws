@@ -98,7 +98,7 @@ def _index_events(snapshot: Snapshot) -> tuple[dict[str, tuple[ActivityEvent, Us
 
     Returns the earliest creation event per target (with the user who performed
     it) and the last token grant per actor. Creation only: reading a client's
-    secret or adding one is custody, which AR-12 reports as a secret to rotate,
+    secret or adding one is custody, which AR-18 reports as a secret to rotate,
     and counting it here named whoever once opened a colleague's client as the
     person who answers for it. One pass rather than
     two per service client, which at a few hundred clients is the difference
