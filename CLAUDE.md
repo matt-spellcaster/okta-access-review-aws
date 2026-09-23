@@ -108,7 +108,7 @@ that area.
 - How a ticket is verified comes only from `tickets.record_verify_mode`. Never write a blanket
   "verified in Okta".
 - Departure bundles (`transitions.py`) are per identity, use the roster as the denominator, walk in
-  login order, and don't exist (`None`) without a graph and a roster.
+  login order, and don't exist (`None`) without a roster and a source beyond Okta.
 - `load_items` splits pre-format-3 files in memory only.
 
 ## review_items.json
