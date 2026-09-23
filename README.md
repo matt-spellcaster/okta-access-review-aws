@@ -1,54 +1,52 @@
 # okta-access-review-aws
 
-A quarterly user access review that runs in AWS, is approved in Slack, and tracks fixes as Jira
-Service Management tickets. It compares Okta users, groups, apps, MFA enrollment and admin roles
-with an HR roster, and joins the accounts and credentials people hold in other systems onto the same
-people — so a departure can be checked against the long tail an Okta deactivation never reaches.
-Access is flagged to remove or confirm, and the results are saved as evidence for SOC 2 (CC6.1–CC6.3)
-and ISO 27001:2022 (A.5.15–A.8.5). Every source is only ever read.
+A quarterly Okta user access review that runs in AWS. The CISO decides each item in Slack, fixes are
+tracked as Jira Service Management tickets, and everything is kept as SOC 2 and ISO 27001 evidence.
 
-- **In AWS** ([docs/aws.md](docs/aws.md)): a scheduled Step Functions workflow collects the review
-  and asks the CISO to decide each item in Slack, showing the facts, why it could be an issue, and
-  a proposed decision. After sign-off it opens a JSM ticket for each piece of access to remove and
-  each finding to fix, under one tracking ticket per quarter, and posts an action checklist. A daily
-  check re-reads Okta to confirm each resolved ticket really changed it and ticks it off; a ticket
-  Okta can't settle — a judgement call, or a fix somewhere else — is taken on the reviewer's word
-  and says so, and the tracking ticket closes once every ticket is settled one of those two ways.
-  Built with Terraform, and removed with one script ([docs/teardown.md](docs/teardown.md)). Running
-  a review, step by step: [docs/runbook.md](docs/runbook.md).
-- **Or locally**, as the original command-line tool: the same checks and report, run on a laptop.
+It also follows a departure past Okta. Deactivating someone's Okta account doesn't touch the API
+tokens they hold, the service accounts they own, or their access in GitHub. The review finds those
+too.
 
-Seeded from `okta-access-review` at commit 1a20697. The local tool below works the same way.
+<img src="docs/images/slack-review-finished.png" width="560" alt="Slack: the finished review, signed off, with 18 findings by check from critical to info, the decisions, and the tickets opened">
 
-- 18 checks. Fourteen read Okta: leavers who still hold a working API credential, terminated users
-  with live accounts, missing MFA, app assignments nobody uses, API clients with write access. Four
-  read [across sources](#across-sources): credentials nobody is accountable for, access held by an
-  account no user read returned, and what a departure leaves behind that deactivating the leaver's
-  account doesn't reach.
-- Read-only scopes, Private Key JWT, and DPoP-bound tokens.
-- Output: a PDF with a sign-off page, CSVs, the raw data, and a manifest of SHA-256 hashes.
-- Shows how many reviews in a row each finding has been open, from earlier report folders it has
-  verified, and `access-review attest` records a sign-off tied to the report's manifest.
-- The report is marked incomplete if a source withholds data, and names the source. A read that
-  failed is reported as incomplete, never as nothing found.
-- Optionally emails the PDF and posts a summary to Slack. Messages contain no personal data.
+## What it does
 
-## Built with
+- **Reads Okta and never writes to it.** Users, groups, apps, MFA, admin roles and the System Log,
+  through read-only scopes, Private Key JWT and DPoP-bound tokens.
+- **Runs 18 checks**, each mapped to SOC 2 and ISO 27001:2022 controls: a leaver whose account is
+  still live, a missing MFA factor, an API token a leaver still holds, a service account whose owner
+  left, and [more](#checks).
+- **Puts every decision in front of a person.** The CISO keeps or revokes each item in Slack, and
+  the sign-off is bound to the report's SHA-256.
+- **Tracks the fixes.** One JSM ticket for each piece of access to remove and each finding to fix.
+  When someone resolves a ticket, a daily job checks Okta to see whether the change really happened,
+  and flags it if Okta still shows the problem. Tickets Okta can't show, like a decision to keep
+  something, are taken on the reviewer's word. The quarter's tracking ticket closes once every
+  ticket is settled.
+- **Keeps the evidence.** A PDF, CSVs, the raw data and a hash manifest, stored create-only in S3
+  under Object Lock.
+- **Never calls a failed read clean.** If a source can't be read in full, the report is marked
+  incomplete and says which source.
 
-| | Used for |
-|---|---|
-| **Okta** | The system being reviewed, read through its API with read-only scopes |
-| **GitHub** | The optional second source: org membership and roles, SAML identities, PATs and SSH keys. Read from a snapshot file passed with `--github`; there's no collector for it yet |
-| **Slack** | The review and sign-off: a bot posts to one channel and DMs the reviewer (the CISO), who decides with buttons |
-| **Jira Service Management** | A tracking ticket per review, and a ticket for each piece of access to remove and each finding to fix |
-| **AWS Lambda** | All of the compute and automation: collecting from Okta, posting to Slack, handling button clicks, opening tickets, reminders, and the daily check. Eight functions share one container image (Python, arm64). |
-| **AWS Step Functions** | Runs the steps of a review in order and waits for the sign-off |
-| **Amazon EventBridge Scheduler** | Starts the quarterly review and the hourly and daily jobs |
-| **Amazon S3** | The evidence, kept create-only under Object Lock, and the review's working state |
-| **AWS Systems Manager Parameter Store** | The four secrets: the Okta key, the Slack token and signing secret, and the Jira token |
-| **Amazon ECR, IAM, CloudWatch Logs, AWS Budgets** | The container image, one least-privilege role per function, 30-day logs, and a cost alert |
-| **Terraform** | **All of the AWS infrastructure.** A one-time bootstrap creates the state bucket and the CI roles; everything else is `infra/main`. The only AWS step done by hand is storing the four secret values, which Terraform deliberately never holds. |
-| **GitHub Actions** | Tests, security checks and Terraform on every pull request; on `master`, builds the image and applies Terraform after an approval. It signs in to AWS through OIDC, so there are no stored AWS keys. |
+## Try it
+
+No Okta, AWS, Slack or Jira needed:
+
+```bash
+uv run access-review \
+  --snapshot fixtures/demo_snapshot.json \
+  --roster fixtures/demo_roster.csv \
+  --config fixtures/demo_config.json \
+  --github fixtures/demo_github.json \
+  --as-of 2026-09-15
+```
+
+That reviews **Acme**, a fictional company with at least one planted case for each check, and
+writes the report to `reports/`. The tests confirm the review finds those cases and nothing else.
+Leave out `--github` and it's an Okta-only review, without the cases planted in the GitHub fixture.
+
+To run the whole AWS workflow in memory, Slack and Jira included, with nothing leaving your laptop:
+`uv run python scripts/e2e_local.py`.
 
 ## How a review looks
 
@@ -71,10 +69,8 @@ and concerns, bound to the report's SHA-256, with **Approve review** below.
 
 ![Slack DM: the end of the decision list, including a service account AR-18 reports because its owner left, then the manifest hash and the Approve review button](docs/images/slack-signoff.png)
 
-**4. The review finishes.** Tickets are opened and the channel thread gets a summary: who signed off,
-findings by check, the decisions, and where the tickets are.
-
-![Slack thread: "Okta access review is finished" with findings by severity and check, decisions, and ticket counts](docs/images/slack-review-finished.png)
+**4. The review finishes.** Tickets are opened and the channel thread gets the summary at the top
+of this page: who signed off, findings by check, the decisions, and where the tickets are.
 
 <details>
 <summary>The tickets in Jira Service Management</summary>
@@ -84,8 +80,8 @@ One tracking ticket per review, with the manifest hash and where the evidence is
 ![JSM tracking ticket "Okta Access Review 2026-Q3" with counts, manifest SHA-256 and evidence path](docs/images/jira-tracking-ticket.png)
 
 Under it, one sub-ticket for each leaver, each revoke and each finding to fix. Each links to the
-person in the Okta admin console. The tracking ticket closes itself once every ticket is resolved
-and, where Okta can show the change, verified by the daily check.
+person in the Okta admin console. The tracking ticket closes itself once every ticket is settled:
+checked in Okta where Okta can show the change, and on the reviewer's word where it can't.
 
 ![JSM sub-tickets: leaver removals, revokes and fixes for the Acme demo](docs/images/jira-subtasks.png)
 
@@ -109,21 +105,6 @@ rather than treating what it couldn't read as clean.
 [Full sample PDF](docs/sample-report.pdf) · The same run posted to Slack:
 
 ![Slack summary of the Acme demo review, with the PDF report attached in the thread](docs/images/slack-summary.png)
-
-## Try it without Okta
-
-```bash
-uv run access-review \
-  --snapshot fixtures/demo_snapshot.json \
-  --roster fixtures/demo_roster.csv \
-  --config fixtures/demo_config.json \
-  --github fixtures/demo_github.json \
-  --as-of 2026-09-15
-```
-
-The demo org has at least one planted case for each check, and the tests confirm the review finds
-those and nothing else. `--github` supplies the second estate: leave it out and the run is a valid
-Okta-only review, with the planted cases that live in the GitHub fixture absent from it.
 
 ## Checks
 
@@ -152,31 +133,33 @@ AR-01 to AR-03, AR-12, AR-13, AR-17 and AR-18 compare what the review found with
 exported from the HR system and passed in with `--roster` (there's no live HR integration yet).
 Without it they're skipped, and the report says so. Thresholds and group names are configurable.
 
-AR-12, AR-13 and AR-18 are about the leaver cases an account status doesn't show. An Okta API token keeps
-working after the account is deactivated: that is AR-12, and the daily check sees the revocation
-in Okta. A copy of an API client secret the leaver created, added or read also keeps working. That is AR-18's,
-together with any client they owned: somebody still here has to answer for it, and every secret they
-held has to be rotated. A reviewer confirms the rotation, because Okta can't show it reliably (a key
-published at a `jwks_uri` never appears there). Only the System Log records who created a client, so
-ownership comes from creation events alone: reading a colleague's secret makes someone its custodian,
-not its owner. AR-13 reads the System Log to say
-whether the leaver's own account was used after their last working day. A client going on running
-after they leave is what it is for, not their activity. Okta keeps 90 days of log data, so a
-termination older than that is reported as a gap rather than as nothing to see.
+AR-12, AR-13 and AR-18 cover the leaver cases an account status doesn't show:
 
-AR-09 stands down the same way for a declared bot account that is deactivated and still holds groups
-and apps: AR-18 takes the account, names its state and lists the groups and apps reactivating it
-would restore, so the reviewer sees the blast radius while deciding between handover and decommission. Every check declares whether its
-remediation removes the account's access, keeps the account running, or neither, and a test asserts
-that no account is the subject of both a removal and a keep.
+- **AR-12:** an Okta API token keeps working after the account is deactivated. The daily check sees
+  the revocation in Okta.
+- **AR-18:** so does a copy of an API client secret the leaver created, added or read, and any
+  client they owned. Somebody still here has to answer for it, and every secret they held has to be
+  rotated. A reviewer confirms the rotation, because Okta can't show it reliably (a key published at
+  a `jwks_uri` never appears there). Only the System Log records who created a client, so ownership
+  comes from creation events alone. Reading a colleague's secret makes someone its custodian, and
+  that's all.
+- **AR-13:** reads the System Log for use of the leaver's own account after their last working day.
+  A client they built going on running is what it's for, so it doesn't count. Okta keeps 90 days of
+  log data, so a termination older than that is reported as a gap.
+
+AR-09 stands down for a declared bot account that's deactivated and still holds groups and apps.
+AR-18 takes the account, names its state, and lists the groups and apps that reactivating it would
+restore, so the reviewer sees what's at stake while choosing between handover and decommission.
+Every check declares whether its remediation removes the account's access, keeps the account
+running, or neither, and a test asserts that no account is told both.
 
 ## Across sources
 
 AR-15 to AR-18 reason over an identity graph rather than the Okta snapshot alone: the principals
 that can hold access in each source, the credentials that keep working after the account they were
 created under is deactivated, the grants each principal holds, and the links saying which principal
-belongs to which person. Each source is projected into it — Okta from its snapshot, GitHub from its
-own — and AR-17 and AR-18 match the graph against the roster's leavers. Three rules shape it.
+belongs to which person. Each source is projected into it (Okta from its snapshot, GitHub from its
+own), and AR-17 and AR-18 match the graph against the roster's leavers. Three rules shape it.
 
 **A link is evidenced or it is absent.** A principal is tied to a person by the IdP's own SSO
 assertion, an email the source itself states as verified, a register entry somebody signed up to, or
@@ -191,16 +174,16 @@ evidence only when the read that would have said so actually ran: an unread scop
 write access rather than read-only, and an account with no credentials found under a failed read is
 still reported. Unknown is never ranked as the milder case.
 
-**The service account register is an ownership claim, not a mute button.** `config.service_accounts`
+**The service account register records ownership. It can't silence a finding.** `config.service_accounts`
 records which accounts are not people and who owns each. An entry with an owner ties the account to
 that person, so it appears in their access review and in their departure bundle if they leave. An
-entry naming nobody — or naming somebody no source evidences — is still reported, one severity
+entry naming nobody, or naming somebody no source evidences, is still reported one severity
 milder: it declares the account without making anyone accountable for it. Details:
 [docs/configuration.md](docs/configuration.md#the-service-account-register).
 
 All four run on an Okta-only estate too, where AR-18 finds an API client a leaver owned or held the
-secret of. What a second source adds is the other estate — the org roles, PATs and SSH keys a
-departure leaves behind — and a per-departure bundle in `transitions.json`.
+secret of. What a second source adds is the other estate (the org roles, PATs and SSH keys a
+departure leaves behind) and a per-departure bundle in `transitions.json`.
 
 ## Evidence produced
 
@@ -240,7 +223,33 @@ data. It assumes the laptop, repo or logs could leak, and limits what a leak is 
 
 Details, including the admin-role test results: [docs/security.md](docs/security.md).
 
-## Run it on your org
+## Built with
+
+| | Used for |
+|---|---|
+| **Okta** | The system being reviewed, read through its API with read-only scopes |
+| **GitHub** | The optional second source: org membership and roles, SAML identities, PATs and SSH keys. Read from a snapshot file passed with `--github`; there's no collector for it yet |
+| **Slack** | The review and sign-off: a bot posts to one channel and DMs the reviewer (the CISO), who decides with buttons |
+| **Jira Service Management** | A tracking ticket per review, and a ticket for each piece of access to remove and each finding to fix |
+| **AWS Lambda** | All of the compute and automation: collecting from Okta, posting to Slack, handling button clicks, opening tickets, reminders, and the daily check. Eight functions share one container image (Python, arm64). |
+| **AWS Step Functions** | Runs the steps of a review in order and waits for the sign-off |
+| **Amazon EventBridge Scheduler** | Starts the quarterly review and the hourly and daily jobs |
+| **Amazon S3** | The evidence, kept create-only under Object Lock, and the review's working state |
+| **AWS Systems Manager Parameter Store** | The four secrets: the Okta key, the Slack token and signing secret, and the Jira token |
+| **Amazon ECR, IAM, CloudWatch Logs, AWS Budgets** | The container image, one least-privilege role per function, 30-day logs, and a cost alert |
+| **Terraform** | **All of the AWS infrastructure.** A one-time bootstrap creates the state bucket and the CI roles; everything else is `infra/main`. The only AWS step done by hand is storing the four secret values, which Terraform deliberately never holds. |
+| **GitHub Actions** | Tests, security checks and Terraform on every pull request; on `master`, builds the image and applies Terraform after an approval. It signs in to AWS through OIDC, so there are no stored AWS keys. |
+
+## Run it in AWS
+
+A scheduled Step Functions workflow runs the review each quarter, with eight Lambda functions in one
+container image. All of it is Terraform, deployed from GitHub Actions through OIDC, and one script
+removes it again. Setup: [docs/aws.md](docs/aws.md). Running a review step by step:
+[docs/runbook.md](docs/runbook.md). Teardown: [docs/teardown.md](docs/teardown.md).
+
+## Run it locally
+
+The original command-line tool runs the same checks and writes the same report on a laptop:
 
 1. Create an Okta API Services app with read scopes and DPoP
    ([step-by-step](docs/configuration.md#okta-app)), and store its key in 1Password.
@@ -290,6 +299,8 @@ Every pull request and push to `master` runs the [Compliance workflow](docs/ci.m
 The results are bundled as evidence with SHA-256 hashes. On `master`, the bundle is signed with a
 GitHub artifact attestation. All actions are pinned to commit SHAs, and jobs run with minimal
 permissions.
+
+Seeded from `okta-access-review` at commit 1a20697.
 
 Related: [okta-mcp-local](https://github.com/matt-spellcaster/okta-mcp-local) connects an AI
 assistant to Okta for interactive admin work, with the same credential handling.
