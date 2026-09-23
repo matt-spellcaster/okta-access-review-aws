@@ -65,7 +65,7 @@ def test_opening_posts_counts_to_the_channel_and_everything_else_to_the_ciso(env
     deps, run, items = env
     out = workflow.open_review(deps, run, "token-1")
 
-    assert out == {"run": run, "items": len(items), "urgent_tickets": 3}
+    assert out == {"run": run, "items": len(items), "urgent_tickets": 2}
     [channel] = posts_to(deps, deps.channel)
     assert "@acme.example" not in channel and "Salesforce" not in channel
     assert f"<{SITE}UAR-1|UAR-1>" in channel  # the tracking ticket, linked

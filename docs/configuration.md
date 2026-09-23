@@ -12,10 +12,10 @@
    |---|---|
    | `okta.users.read` | Users, last sign-in, MFA factors |
    | `okta.groups.read` | Groups and members |
-   | `okta.apps.read` | Apps and their user and group assignments; when a leaver-held client secret or key was made (AR-12, dates only) |
+   | `okta.apps.read` | Apps and their user and group assignments |
    | `okta.appGrants.read` | API scopes granted to other apps (AR-10) |
    | `okta.roles.read` | Admin roles of users and API apps (AR-10, AR-11) |
-| `okta.logs.read` | System Log: what a leaver did after they left, and whose API client secrets they held (AR-12, AR-13) |
+| `okta.logs.read` | System Log: what a leaver did after they left, and whose API client secrets they held (AR-13, AR-18) |
 | `okta.apiTokens.read` | API tokens and who owns them (AR-12) |
 
 4. **Admin roles:** Super Administrator for full coverage, or Read-Only Administrator for a review
@@ -47,7 +47,7 @@ A JSON file. Every key is optional, and unknown keys are rejected.
 | `employee_only_groups` | `[]` | Groups contractors shouldn't be in (AR-07) |
 | `admin_groups` | `["Okta Administrators"]` | Groups treated as admin access (AR-11) |
 | `service_accounts` | `[]` | The service account register: accounts that are not people, and who owns each (AR-03, AR-15). Below |
-| `activity_lookback_days` | `90` | How far back to read the System Log (AR-12, AR-13); Okta keeps 90 days |
+| `activity_lookback_days` | `90` | How far back to read the System Log (AR-13, AR-18); Okta keeps 90 days |
 | `org_timezone` | `"America/Chicago"` | Where the org is, for resolving an `end_date` with no time on it (AR-13) |
 | `history_reviews` | `12` | How many earlier reviews to read for findings history, below |
 | `branding` | none | PDF branding, below |
@@ -93,8 +93,8 @@ What each field changes:
   The fix is to name a new owner here, or to decommission the account — not to revoke it, because
   something is presumably still calling it. An Okta API client is the case this exists for:
   deactivating the person who owned it does not touch it, and no other check asks who is now
-  accountable for it. AR-12 still reports the client's secret on the leaver's own ticket if they held
-  it, but asks only for it to be rotated, which leaves the client running for its new owner.
+  accountable for it. The same finding asks for every secret the leaver held to be rotated, which
+  leaves the client running for its new owner.
   A `reviewed` date on the entry is what tells the reviewer how old the claim they are replacing is.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.

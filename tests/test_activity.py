@@ -1,10 +1,10 @@
 """Activity evidence: the System Log projection and the leaver checks that read it."""
 
 import json
-from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from access_review.identity import project_snapshot
 from access_review.models import ActivityEvent, ApiToken, App, Snapshot
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -108,6 +108,17 @@ def test_events_and_tokens_round_trip_through_a_snapshot():
     assert again.activity_since == snapshot.activity_since
 
 
+def test_whose_activity_was_read_survives_a_round_trip():
+    """The run folder's snapshot.json is re-read by later steps. Dropped on the
+    way out, every client's use would read "not read" on a re-review -- and the
+    empty set (read, nobody) is not the same claim as None (not read)."""
+    base = dict(org_url="https://acme.okta.com", collected_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+                users=[], groups=[], apps=[], api_tokens=[])
+    for actors in ({"u02", "0oaBOT"}, set(), None):
+        snapshot = Snapshot(**base, activity_actors=actors)
+        assert Snapshot.from_dict(json.loads(json.dumps(snapshot.to_dict()))).activity_actors == actors, actors
+
+
 def test_a_snapshot_saved_before_activity_existed_still_loads():
     old = {
         "org_url": "https://acme.okta.com",
@@ -142,7 +153,7 @@ def test_events_for_actor_filters_and_orders_oldest_first():
 # --- the checks ------------------------------------------------------------
 
 def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_status="ACTIVE",
-         tz="America/Chicago", credentials_created=None):
+         tz="America/Chicago"):
     from datetime import date
 
     from access_review.checks import Config, ReviewContext
@@ -156,8 +167,7 @@ def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_
         collected_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
         users=[user],
         groups=[Group(id="g1", name="Finance", type="OKTA_GROUP", members={"u02"})],
-        apps=[App(id="a05", label="Reporting Bot", status="ACTIVE", service_client=True, client_id="0oaBOT",
-                  credentials_created=credentials_created)],
+        apps=[App(id="a05", label="Reporting Bot", status="ACTIVE", service_client=True, client_id="0oaBOT")],
         api_tokens=list(tokens),
         events=list(events),
     )
@@ -165,7 +175,7 @@ def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_
     ends, ends_at = _parse_end(end_date or "", config.timezone(), "marcus.lee@acme.example")
     roster = {"marcus.lee@acme.example": RosterEntry(
         "marcus.lee@acme.example", "Marcus Lee", "employee", status, ends, "Priya", end_at=ends_at)}
-    return ReviewContext(snapshot, roster, config, date(2026, 9, 15))
+    return ReviewContext(snapshot, roster, config, date(2026, 9, 15), graph=project_snapshot(snapshot))
 
 
 def _findings(ctx, check_id):
@@ -208,48 +218,47 @@ def _held(event_type="app.oauth2.credentials.lifecycle.create", day=4, target="0
                          targets=[{"id": target, "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
 
 
-def test_a_client_secret_the_leaver_held_is_a_credential_to_rotate():
+def test_a_client_secret_the_leaver_held_is_a_secret_to_rotate_under_ar18():
     """Custody: whoever added or read a client's secret may still have a copy,
     and deactivating their account does not stop it working. The fix is to
-    rotate it -- never to delete the client, which is AR-18's to decide."""
-    [f] = _findings(_ctx(events=[_held()], credentials_created=[datetime(2026, 5, 4, tzinfo=timezone.utc)]),
-                    "AR-12")
+    rotate it, which Okta cannot be relied on to show, so it is AR-18's --
+    confirmed by a reviewer -- and never on the leaver ticket AR-12 feeds,
+    which closes on a daily Okta re-read."""
+    ctx = _ctx(events=[_held()])
 
-    assert f.detail == "Left 2026-08-29 but still holds the secret of API client Reporting Bot."
-    assert "rotate" in f.remediation and "delete" not in f.remediation
+    assert _findings(ctx, "AR-12") == []
+    [f] = _findings(ctx, "AR-18")
+    assert f.subject == "okta/a05"
+    assert "holding its credentials on 2026-05-04" in f.detail
+    assert "rotate" in f.remediation
 
 
 def test_reading_a_colleagues_client_secret_is_custody_whoever_built_it():
-    """The case the ownership split first dropped: nobody's AR-18, because the
-    leaver never created the client, and they have still seen its secret."""
-    from access_review.identity import project_snapshot
-
+    """The case the ownership split first dropped: the leaver never created the
+    client, and they have still seen its secret."""
     ctx = _ctx(events=[_held("app.oauth2.client.read_client_secret")])
 
-    [f] = _findings(ctx, "AR-12")
+    [f] = _findings(ctx, "AR-18")
     assert "Reporting Bot" in f.detail
     # And reading it names nobody as the client's creator.
-    assert project_snapshot(ctx.snapshot).link_for(("okta", "a05")) is None
+    assert ctx.graph.link_for(("okta", "a05")) is None
 
 
-def test_a_secret_rotated_since_they_held_it_clears_them_and_an_unread_one_does_not():
-    """Rotation is the fix, so it has to be visible -- and "not read" is never
-    taken as rotated: that would sign a leaver ticket off on a read that failed."""
-    after = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    assert _findings(_ctx(events=[_held()], credentials_created=[after]), "AR-12") == []
-    # One old secret left alongside the new one still works.
-    both = [after, datetime(2026, 5, 4, tzinfo=timezone.utc)]
-    assert _findings(_ctx(events=[_held()], credentials_created=both), "AR-12")
-
-    [unread] = _findings(_ctx(events=[_held()]), "AR-12")
-    assert "could not be read" in unread.detail
+def test_switching_a_secret_off_is_not_custody():
+    """Deactivating or deleting a secret shows nobody anything. Counted as
+    custody, it raised a finding against whoever cleaned up an old secret."""
+    for kind in ("app.oauth2.credentials.lifecycle.deactivate", "app.oauth2.credentials.lifecycle.delete"):
+        assert _findings(_ctx(events=[_held(kind)]), "AR-18") == [], kind
 
 
-def test_the_latest_time_they_held_it_is_what_a_rotation_has_to_beat():
-    created, reread = _held(), _held("app.oauth2.client.read_client_secret", day=20)
-    between = [datetime(2026, 5, 10, tzinfo=timezone.utc)]
+def test_owning_and_holding_one_client_is_one_finding_with_both_reasons():
+    """Two reasons, one account, one ticket: never an ownership finding and a
+    custody finding that would be two tickets about one client."""
+    ctx = _ctx(events=[_held("application.lifecycle.create", target="a05"),
+                       _held("app.oauth2.client.read_client_secret", day=20)])
 
-    assert _findings(_ctx(events=[created, reread], credentials_created=between), "AR-12")
+    [f] = _findings(ctx, "AR-18")
+    assert "names them" in f.detail and "holding its credentials on 2026-05-20" in f.detail
 
 
 def test_a_client_that_goes_on_running_after_they_leave_is_not_their_activity():
@@ -267,14 +276,15 @@ def test_a_client_that_goes_on_running_after_they_leave_is_not_their_activity():
     assert _findings(ctx, "AR-13") == []
 
 
-def test_a_token_and_a_held_secret_are_listed_together():
-    ctx = _ctx(events=[_held()], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")],
-               credentials_created=[datetime(2026, 5, 4, tzinfo=timezone.utc)])
+def test_a_token_and_a_held_secret_go_to_the_ticket_that_can_settle_each():
+    """The token is revoked in Okta and the leaver ticket's re-read sees it; the
+    secret's rotation is not visible there, so it is AR-18's."""
+    ctx = _ctx(events=[_held()], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
 
     [f] = _findings(ctx, "AR-12")
 
-    assert f.detail == ("Left 2026-08-29 but still holds API token ci-deploy; "
-                        "the secret of API client Reporting Bot.")
+    assert f.detail == "Left 2026-08-29 but still holds API token ci-deploy."
+    assert [f.subject for f in _findings(ctx, "AR-18")] == ["okta/a05"]
 
 
 def test_a_deleted_client_is_not_reported():
@@ -283,6 +293,7 @@ def test_a_deleted_client_is_not_reported():
                           targets=[{"id": "0oaGONE", "type": "OAuth2ClientSecretEntity", "label": "Old Bot"}])
 
     assert _findings(_ctx(events=[setup]), "AR-12") == []
+    assert _findings(_ctx(events=[setup]), "AR-18") == []
 
 
 def test_every_token_is_listed_together():
@@ -439,34 +450,7 @@ def test_an_unknown_org_timezone_is_rejected_at_config_load(tmp_path):
         Config.load(path)
 
 
-def test_the_secret_they_made_is_not_a_rotation_by_a_few_milliseconds():
-    """Okta stamps a secret's `created` and the event recording it separately.
-    Compared exactly, the secret the leaver made read as a later rotation."""
-    made = datetime(2026, 5, 4, 0, 0, 0, 120000, tzinfo=timezone.utc)
-    assert _findings(_ctx(events=[_held()], credentials_created=[made]), "AR-12")
-
-
-def test_no_live_secrets_or_keys_is_not_proof_of_rotation():
-    """A service client authenticates somehow. One whose keys are published at
-    a jwks_uri lists none here while the leaver may hold the private key."""
-    [f] = _findings(_ctx(events=[_held()], credentials_created=[]), "AR-12")
-    assert "could not be read" in f.detail
-
-
 def test_custody_is_found_whichever_id_the_event_names():
     """Okta names an app by its app id in some events and its client id in others."""
-    assert _findings(_ctx(events=[_held(target="a05")]), "AR-12")
-    assert _findings(_ctx(events=[_held(target="0oaBOT")]), "AR-12")
-
-
-def test_a_deleted_or_deactivated_client_is_retired_but_only_when_the_app_read_was_whole():
-    """Gone from a complete app list, it issues no tokens. Gone from a list the
-    admin role was hiding apps from, it may be right there."""
-    from access_review.checks import rotated_since
-
-    since = datetime(2026, 5, 4, tzinfo=timezone.utc)
-    assert rotated_since(None, since, apps_complete=True) is True
-    assert rotated_since(None, since, apps_complete=False) is None
-    off = App(id="a05", label="Reporting Bot", status="INACTIVE", client_id="0oaBOT", credentials_created=[since])
-    assert rotated_since(off, since) is True
-    assert rotated_since(replace(off, status="ACTIVE"), since) is False
+    assert _findings(_ctx(events=[_held(target="a05")]), "AR-18")
+    assert _findings(_ctx(events=[_held(target="0oaBOT")]), "AR-18")

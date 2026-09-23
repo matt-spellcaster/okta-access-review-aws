@@ -38,11 +38,12 @@ CREATION_EVENTS = ("application.lifecycle.create", "app.oauth2.client.lifecycle.
 # Someone held a client's credentials: created the client, added or activated a
 # secret or key, or read the secret back. Custody, not ownership -- whoever did
 # any of these may still have a working copy, which is a different question from
-# who answers for the client and has a different fix (rotate it, not hand it
-# over). Never read these as creation: an admin who once opened a colleague's
-# client is not its owner.
+# who answers for the client. Never read these as creation: an admin who once
+# opened a colleague's client is not its owner. Deactivating or deleting a
+# secret shows nobody anything, so those two lifecycle events are left out.
 CREDENTIAL_EVENTS = CREATION_EVENTS + (
-    "app.oauth2.credentials.lifecycle.", "app.oauth2.client.read_client_secret",
+    "app.oauth2.credentials.lifecycle.create", "app.oauth2.credentials.lifecycle.activate",
+    "app.oauth2.client.read_client_secret",
 )
 
 
@@ -148,11 +149,6 @@ class App:
     # When each direct assignment in `users` was made. A user missing here has
     # an unknown assignment date, which is not the same as an old one.
     assigned: dict[str, datetime | None] = field(default_factory=dict)
-    # When each of the client's live secrets and keys was made, read only for
-    # clients a leaver held the credentials of. None means not read, which is
-    # "may still be the one they saw", never "rotated". The secrets themselves
-    # are never kept.
-    credentials_created: list[datetime] | None = None
 
     def matches(self, target_id: str | None) -> bool:
         """Whether a System Log target names this app. Events name an app by its
@@ -173,10 +169,6 @@ class App:
             service_client=d.get("serviceClient", False),
             client_id=d.get("clientId", ""),
             assigned={k: parse_time(v) for k, v in (d.get("assigned") or {}).items()},
-            credentials_created=(
-                None if d.get("credentialsCreated") is None
-                else [parse_time(t) for t in d["credentialsCreated"]]
-            ),
         )
 
     def to_dict(self) -> dict:
@@ -192,8 +184,6 @@ class App:
             "serviceClient": self.service_client,
             "clientId": self.client_id,
             "assigned": {k: format_time(v) for k, v in sorted(self.assigned.items())},
-            **({} if self.credentials_created is None
-               else {"credentialsCreated": [format_time(t) for t in sorted(self.credentials_created)]}),
         }
 
 

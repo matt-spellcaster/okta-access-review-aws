@@ -14,7 +14,7 @@ from access_review.jira import JiraClient, JiraConfigError, JiraError, adf, chec
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
-from access_review.tickets import Remediation, quarter, what_to_do
+from access_review.tickets import REVIEW_CHECKS, Remediation, quarter, what_to_do
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 BASE = "https://acme.atlassian.net"
@@ -129,7 +129,7 @@ def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     counts = {"total": 16, "keep": 6, "revoke": 7, "decide": 3}
 
     parent = rem.open_parent(run.run_dir.name, manifest, run.manifest_sha256, counts, NOW)
-    assert rem.open_urgent(run.run_dir.name, parent, findings) == 3  # 6 findings about 3 people
+    assert rem.open_urgent(run.run_dir.name, parent, findings) == 2  # 5 findings about 2 people
     # Running the step again finds the labels and opens nothing new.
     assert rem.open_parent(run.run_dir.name, manifest, run.manifest_sha256, counts, NOW) == parent
     assert rem.open_urgent(run.run_dir.name, parent, findings) == 0
@@ -142,7 +142,7 @@ def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     body = json.dumps(marcus["description"])
     assert "AR-01" in body and "AR-12" in body and "AR-13" in body
     records = store.list_records(s3, "evidence", run.run_dir.name, "tickets")
-    assert len(records) == 4 and {r["issue"] for _, r in records} == set(fields)
+    assert len(records) == 3 and {r["issue"] for _, r in records} == set(fields)
 
 
 def test_revoke_tickets_follow_the_signed_decisions(signed_review):
@@ -407,26 +407,24 @@ def test_a_leaver_ticket_does_not_promise_to_close_a_way_in_it_cannot_see(graph_
     assert record["outside_okta"], record
 
 
-def test_a_leaver_ticket_asks_for_a_held_client_secret_to_be_rotated_never_removed(graph_review):
-    """victor held Reporting Bot's secret (AR-12) and built it (AR-18). The
-    leaver ticket may ask for the secret to be rotated -- the daily Okta re-read
-    sees that -- but never for the client to go: AR-18 asks for it to be handed
-    over, and one assignee holding both got opposite instructions."""
+def test_a_held_client_secret_is_ar18s_ticket_never_the_leaver_ticket(graph_review):
+    """victor held Reporting Bot's secret and built it. Whether the secret was
+    rotated is not something the leaver ticket's daily Okta re-read can see, so
+    it is AR-18's fix ticket, settled by a reviewer; no leaver ticket carries it,
+    and every leaver ticket says where it went."""
     rem, session, run, s3 = graph_review
     deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
-    rem.open_urgent(run.run_dir.name, "UAR-99", workflow.urgent_findings(deps, run.run_dir.name),
-                    workflow.people(deps, run.run_dir.name), outside_okta_by_login(run.items))
-    record = next(r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
-                  if r.get("subject") == "victor.nguyen@acme.example")
-    assert "AR-12" in record["checks"]
-    todo = record["todo"].lower()
-    assert "rotated secret" in todo and "ar-18" in todo
-    assert "set up" not in todo and "delete" not in todo and "remove" not in todo.split("(", 1)[1]
-    victor = next(f for f in session.issues.values()
-                  if f["summary"] == "Remove access for leaver victor.nguyen@acme.example")
-    body = " ".join(_paragraphs(victor["description"])).lower()
-    assert "rotate" in body and "delete" not in body
+    findings = workflow.urgent_findings(deps, run.run_dir.name)
+    assert not any(f["subject"] == "victor.nguyen@acme.example" for f in findings)
+    rem.open_urgent(run.run_dir.name, "UAR-99", findings, workflow.people(deps, run.run_dir.name),
+                    outside_okta_by_login(run.items))
+    records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
+               if r.get("kind") == "leaver"]
+    assert records and all("ar-18" in r["todo"].lower() and "held_secrets" not in r for r in records)
+    [bot] = [f for f in run.findings if f.check_id == "AR-18" and f.subject == "okta/a05"]
+    assert "holding its credentials" in bot.detail and "rotate" in bot.remediation
+    assert "AR-18" in REVIEW_CHECKS
 
 
 def test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket():

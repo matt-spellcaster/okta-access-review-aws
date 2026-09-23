@@ -48,16 +48,14 @@ class _Optional:
         self.gaps = gaps
         self.allowed = True
 
-    def get(self, path: str, missing_ok: bool = False, missing: list | None = []) -> list | None:  # noqa: B006
-        """`missing` is what a 404 returns when `missing_ok`: [] where absence
-        is an answer (a client with no roles), None where it is not."""
+    def get(self, path: str, missing_ok: bool = False) -> list | None:
         if not self.allowed:
             return None
         try:
             return self.client.get_all(path)
         except OktaError as e:
             if missing_ok and e.status == 404:
-                return missing
+                return []
             self._refused(e)
             return None
 
@@ -100,14 +98,13 @@ def _collect_activity(
     lookback_days: int,
     tz: tzinfo,
     gaps: list[str],
-) -> tuple[list[ActivityEvent], datetime | None, set[str], set[str]]:
+) -> tuple[list[ActivityEvent], datetime | None, set[str]]:
     """Read what the org's leavers, and the API clients they held the
     credentials of, have done.
 
     Queried per leaver rather than across the org, so the volume follows the
     number of people who left, not the size of the org. Returns the events, the
-    window they cover, the actors whose activity was read, and the ids of the
-    live apps whose credentials a leaver held.
+    window they cover, and the actors whose activity was read.
     """
     horizon = datetime.combine(as_of - timedelta(days=lookback_days), time.min, tzinfo=timezone.utc)
     events: list[ActivityEvent] = []
@@ -136,7 +133,7 @@ def _collect_activity(
         if truncated:
             gaps.append(
                 f"More than {MAX_EVENTS} credential events for {who} since {horizon.date()}; "
-                f"the API clients AR-12 lists for them may be incomplete."
+                f"the API clients AR-18 lists for them may be incomplete."
             )
 
     def last_use(client_id: str) -> None:
@@ -201,29 +198,7 @@ def _collect_activity(
 
     # A refused log read has no window: returning the horizon anyway would let a
     # caller read 'no events' as 'nothing happened' rather than 'nothing was read'.
-    return events, (horizon if logs_api.allowed else None), actors, held
-
-
-def _credentials_created(creds_api: _Optional, app: App) -> list[datetime] | None:
-    """When each of a client's live secrets and signing keys was made, or None
-    if either read failed. Only the dates are kept: the secrets endpoint returns
-    the plaintext secret, and it goes no further than this function."""
-    # A 404 is "not read", not "none": an empty answer would clear a leaver.
-    secrets = creds_api.get(f"/api/v1/apps/{app.id}/credentials/secrets", missing_ok=True, missing=None)
-    keys = creds_api.get(f"/api/v1/apps/{app.id}/credentials/jwks", missing_ok=True, missing=None)
-    if secrets is None or keys is None:
-        return None
-    made = []
-    for c in secrets + keys:
-        # A status Okta does not state is a live credential: the milder reading
-        # would clear a leaver who may still hold it.
-        if c.get("status", "ACTIVE") == "INACTIVE":
-            continue
-        when = parse_time(c.get("created"))
-        if when is None:
-            return None
-        made.append(when)
-    return made
+    return events, (horizon if logs_api.allowed else None), actors
 
 
 def _collect_app_usage(
@@ -270,23 +245,16 @@ def collect(
     lookback_days: int = 90,
     tz: tzinfo = timezone.utc,
     app_usage_days: int | None = None,
-    secrets_for: frozenset[str] = frozenset(),
 ) -> Snapshot:
     """app_usage_days turns on the org-wide app sign-in read (AR-14 and review
-    proposals). None leaves it off, and AR-14 is skipped.
-
-    secrets_for names apps whose secret and key dates to read whatever the log
-    says: the clients open leaver tickets are waiting to see rotated. The log
-    forgets custody after 90 days, and the ticket must not close because the
-    event that opened it aged out."""
+    proposals). None leaves it off, and AR-14 is skipped."""
     collected_at = datetime.now(timezone.utc)
     gaps: list[str] = []
     factors_api = _Optional(client, "MFA factors", "okta.users.read", "AR-04", gaps)
     roles_api = _Optional(client, "admin role assignments", "okta.roles.read", "AR-10 and AR-11", gaps)
     grants_api = _Optional(client, "app API scope grants", "okta.appGrants.read", "AR-10", gaps)
     tokens_api = _Optional(client, "Okta API tokens", "okta.apiTokens.read", "AR-12", gaps)
-    logs_api = _Optional(client, "System Log events", "okta.logs.read", "AR-12 and AR-13", gaps)
-    creds_api = _Optional(client, "OAuth client secrets and keys", "okta.apps.read", "AR-12", gaps)
+    logs_api = _Optional(client, "System Log events", "okta.logs.read", "AR-13 and AR-18", gaps)
     usage_api = _Optional(
         client, "System Log app sign-ins", "okta.logs.read", "AR-14 and review proposals", gaps
     )
@@ -372,17 +340,9 @@ def collect(
     activity_since = None
     actors: set[str] | None = None
     if roster is not None:
-        events, activity_since, actors, held = _collect_activity(
+        events, activity_since, actors = _collect_activity(
             logs_api, users, apps, roster, as_of or collected_at.date(), lookback_days, tz, gaps
         )
-        secrets_for = secrets_for | held
-    # Whether a rotation since the leaver last held it has retired the copy
-    # they saw. Read per held client, never org-wide: the secrets endpoint
-    # returns the secret itself, and Okta logs every such read against this
-    # review's client (docs/security.md).
-    for app in apps:
-        if app.id in secrets_for:
-            app.credentials_created = _credentials_created(creds_api, app)
 
     usage: dict[tuple[str, str], datetime] = {}
     usage_since, usage_complete = None, True

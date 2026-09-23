@@ -135,7 +135,7 @@ def test_overdue_tickets_are_sent_to_the_ciso_once_a_day(world):
     deps, run, _, clock, jira, _ = world
     clock.now = OPENED + timedelta(days=2)
     jira.today = "2026-09-18"  # the 24-hour leaver tickets were due on the 17th
-    assert watch.hourly(deps, jira)["overdue_tickets"] == 3
+    assert watch.hourly(deps, jira)["overdue_tickets"] == 2
     assert "UAR-2" in dms_to(deps, R.ciso)[-1]
     assert watch.hourly(deps, jira)["overdue_tickets"] == 0
 
@@ -237,7 +237,6 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
         app.groups.clear()
     gone.users = [u for u in gone.users if not u.login.startswith(("marcus", "sofia", "victor"))]
     gone.events = []
-    rotated(gone)  # victor held Reporting Bot's secret, and somebody has rotated it
 
     # Fix tickets aren't verified while their findings are still reported.
     watch.daily(deps, jira, gone, leavers(gone), current={("AR-04", "lee.chen@acme.example")})
@@ -253,14 +252,14 @@ def test_a_review_closes_its_tracking_ticket_once_everything_is_verified(world):
     # The two kinds of evidence, counted apart. A single "everything was verified
     # in Okta" covered four tickets (AR-05/06/07/10) that settled on the
     # reviewer's word, and that sentence is the one an auditor reads.
-    assert "13 verified against a fresh Okta snapshot" in last
+    assert "12 verified against a fresh Okta snapshot" in last
     assert "6 resolved on the reviewer's word" in last  # AR-18's two among them
     assert "verified in Okta" not in last
     closing = [b for k, b in jira.comments if k == parent][-1]
-    assert "13 verified against a fresh Okta snapshot" in closing
+    assert "12 verified against a fresh Okta snapshot" in closing
     assert "6 resolved on the reviewer's word" in closing
     assert "Everything under this review was verified in Okta" not in closing
-    # 13 + 4 accounts for all 17, so "every ticket" is a claim the counts support.
+    # 12 + 6 accounts for all 18, so "every ticket" is a claim the counts support.
     assert "Every ticket under this review is settled" in closing
 
 
@@ -271,7 +270,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
     [(channel, checklist, _)] = [(c, p, ts) for c, p, ts in deps.bot.posts if "To close" in json.dumps(p)]
     text = json.dumps(checklist)
     assert checklist["thread_ts"] == state["approve"]["ts"]  # in the approval message's thread
-    assert "0 of 19 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
+    assert "0 of 18 done" in text and "Unassign lee.chen@acme.example from the app Salesforce" in text
     assert any(k == state["parent_issue"] and "To close this ticket" in body for k, body in jira.comments)
 
     lee = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
@@ -284,7 +283,7 @@ def test_the_checklist_ticks_off_verified_tickets(world):
 
     ts = state["checklist"]["ts"] if "checklist" in state else load_state(deps.s3, "work", run)[0]["checklist"]["ts"]
     updated = [p for c, t, p in deps.bot.updates if t == ts][-1]
-    assert "1 of 19 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
+    assert "1 of 18 done" in json.dumps(updated) and ":white_check_mark:" in json.dumps(updated)
 
 
 def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):
@@ -302,62 +301,19 @@ def test_a_fix_ticket_is_verified_when_its_finding_is_gone(world):
     assert watch.still_present(mfa, snapshot, {}, None, None) == (None, {})
 
 
-def rotated(snapshot, when=datetime(2026, 9, 17, tzinfo=timezone.utc)):
-    bot = next(a for a in snapshot.apps if a.label == "Reporting Bot")
-    bot.credentials_created = [when]
-
-
-def test_a_held_secret_is_settled_against_the_client_not_the_log(world):
-    """The System Log keeps 90 days. Re-derived from it, a leaver whose only
-    remaining way in is a client secret they held dropped out of the leaver
-    checks the day the event that showed it aged out -- and the ticket was
-    signed off "done in Okta" with the secret still working. The ticket record
-    names the secret, and that is what the daily check reads."""
-    deps, run, items, clock, jira, snapshot = world
-    finish_review(deps, run, items)
-    victor = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
-                  if r["kind"] == "leaver" and r["subject"].startswith("victor"))
-    assert [h["label"] for h in victor["held_secrets"]] == ["Reporting Bot"]
-    assert watch.held_clients(deps) == {"a05"}
-    jira.issues[victor["issue"]]["done"] = True
-    forgot = copy.deepcopy(snapshot)
-    forgot.events = []  # the custody event is past the window now
-    assert victor["subject"] not in (leavers(forgot) or set())
-
-    clock.now = OPENED + timedelta(days=2)
-    assert watch.daily(deps, jira, forgot, leavers(forgot))["verified"] == 0
-    # A read that saw no live secrets at all proves nothing either.
-    blank = copy.deepcopy(forgot)
-    rotated(blank)
-    next(a for a in blank.apps if a.label == "Reporting Bot").credentials_created = []
-    clock.now += timedelta(days=1)
-    assert watch.daily(deps, jira, blank, leavers(blank))["verified"] == 0
-    # Rotated: the copy he saw no longer works, and that is the evidence.
-    rotated(forgot)
-    clock.now += timedelta(days=1)
-    assert watch.daily(deps, jira, forgot, leavers(forgot))["verified"] >= 1
-    rec = store.list_records(deps.s3, "evidence", run, "verifications")
-    [rec] = [r for n, r in rec if n == f"{victor['label']}-verified.json"]
-    assert rec["observed"]["client_secrets_rotated"] == {"Reporting Bot": True}
-
-
-def test_a_leaver_with_a_working_api_client_is_not_cleared(world):
-    """Victor's account is deactivated and holds no API tokens, but the API client
-    he set up still works. That ticket must not be verified."""
-    deps, run, items, clock, jira, snapshot = world
-    finish_review(deps, run, items)
-    victor = next(r for _, r in store.list_records(deps.s3, "evidence", run, "tickets")
-                  if r.get("subject", "").startswith("victor"))
-    jira.issues[victor["issue"]]["done"] = True
-    clock.now = OPENED + timedelta(days=2)
-
-    assert watch.daily(deps, jira, snapshot, leavers(snapshot))["verified"] == 0
-    # And if the System Log couldn't be read, nobody is cleared either way.
-    unread = copy.deepcopy(snapshot)
-    unread.gaps.append("Could not read System Log events; AR-12 and AR-13 may be incomplete.")
-    assert leavers(unread) is None
-    clock.now += timedelta(days=1)
-    assert watch.daily(deps, jira, unread, None) == {"verified": 0, "still_present": 0}
+def test_a_leaver_ticket_waits_on_the_token_read_not_the_system_log(world):
+    """The leaver ticket asks for the account and API tokens, which the daily
+    Okta read sees without the System Log. A client secret a leaver held is
+    AR-18's, settled by a reviewer, so a failed log read no longer holds every
+    leaver ticket open -- but a failed token read still clears nobody."""
+    _, _, _, _, _, snapshot = world
+    no_log = copy.deepcopy(snapshot)
+    no_log.gaps.append("Could not read System Log events; AR-13 and AR-18 may be incomplete.")
+    no_log.activity_since = None
+    assert leavers(no_log) is not None
+    no_tokens = copy.deepcopy(snapshot)
+    no_tokens.gaps.append("Could not read Okta API tokens; AR-12 may be incomplete.")
+    assert leavers(no_tokens) is None
 
 
 def test_the_hourly_check_reposts_a_lost_approve_message(world):

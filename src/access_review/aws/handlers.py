@@ -182,10 +182,8 @@ def verify_daily(event, context):
     with tempfile.TemporaryDirectory() as tmp_name:
         config, _, roster = _inputs(Path(tmp_name))
     as_of = datetime.now(timezone.utc).date()
-    deps = _deps(tickets=True)
-    snapshot = collect_okta(_okta(), roster, as_of, config.activity_lookback_days, config.timezone(),
-                            secrets_for=watch.held_clients(deps))
+    snapshot = collect_okta(_okta(), roster, as_of, config.activity_lookback_days, config.timezone())
     findings, _ = run_checks(ReviewContext(snapshot, roster, config, as_of))
     jira = _jira()
-    return watch.daily(deps, jira, snapshot, watch.leaver_access(findings, snapshot),
+    return watch.daily(_deps(tickets=True), jira, snapshot, watch.leaver_access(findings, snapshot),
                        watch.finding_keys(findings))

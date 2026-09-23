@@ -82,9 +82,10 @@ that area.
 
 ## Leaver checks
 
-- A service account a leaver owned is AR-18's (hand it over), never AR-17's (revoke). Custody of a
-  secret is AR-12 (rotate it). AR-13 reads the leaver's own account only. Any new check about an
-  account a leaver was accountable for must fit this partition.
+- A service account a leaver owned or held the secret of is AR-18's (answer for it, rotate what they
+  held; settled by reviewer), never AR-17's (revoke) or AR-12's (API tokens only, verified in Okta).
+  AR-13 reads the leaver's own account only. Any new check about an account a leaver was accountable
+  for must fit this partition. Nothing reads the client secrets endpoint.
 
 ## Review items and tickets
 

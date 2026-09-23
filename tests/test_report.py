@@ -29,7 +29,7 @@ def test_writes_evidence_with_matching_hashes(tmp_path):
     }
     for name, digest in manifest["files"].items():
         assert hashlib.sha256((d / name).read_bytes()).hexdigest() == digest
-    assert manifest["finding_counts"]["critical"] == 5
+    assert manifest["finding_counts"]["critical"] == 4
 
 
 def test_access_matrix_shows_group_and_direct_app_access(tmp_path):

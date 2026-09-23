@@ -32,9 +32,8 @@ from datetime import datetime, timedelta
 from . import slack_review as msgs
 from . import store
 from .decisions import outstanding
-from .checks import rotated_since
 from .jira import adf
-from .models import LIVE_STATUSES, Snapshot, parse_time
+from .models import LIVE_STATUSES, Snapshot
 from .state import CLOSED, OPEN, SIGNED_OFF, claim_once, load_state, runs_with_status, update_state
 from .tickets import record_verify_mode
 from .workflow import (
@@ -149,11 +148,13 @@ LEAVER_ACCESS_CHECKS = ("AR-01", "AR-02", "AR-12")
 
 def leaver_access(findings, snapshot: Snapshot) -> set[str] | None:
     """Logins the leaver checks still report on a fresh snapshot, or None when
-    that can't be trusted: an API client secret a leaver held is only found
-    through the System Log, and only known rotated through the client's own
-    credential read, so if either couldn't be read in full, nobody is cleared.
-    AR-12 names both, which is what the gap test below keys on."""
-    if snapshot.activity_since is None or any("System Log" in g or "AR-12" in g for g in snapshot.gaps):
+    that can't be trusted: if the API token read was refused, a leaver with no
+    tokens listed is not a leaver whose tokens were revoked, so nobody is
+    cleared. The tokens read names AR-12 in its gap, which the test keys on.
+
+    Nothing here reads the System Log: an API client secret a leaver held is
+    AR-18's, settled by a reviewer, because Okta cannot show its rotation."""
+    if any("AR-12" in g for g in snapshot.gaps):
         return None
     return {f.subject.lower() for f in findings if f.check_id in LEAVER_ACCESS_CHECKS}
 
@@ -179,23 +180,9 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
             return None, {}
         user = next((u for u in snapshot.users if u.login.lower() == record["subject"].lower()), None)
         present = record["subject"].lower() in leavers
-        # The client secrets they held, settled against the clients themselves
-        # rather than today's System Log, which no longer shows the custody
-        # once it is 90 days old -- and a leaver who drops out of `leavers`
-        # because the log forgot is not a leaver whose secret was rotated.
-        apps = {a.id: a for a in snapshot.apps}
-        rotated = {h["label"]: rotated_since(apps.get(h["app_id"]), parse_time(h["since"]), snapshot.apps_complete)
-                   for h in record.get("held_secrets", [])}
-        if not present and any(r is False for r in rotated.values()):
-            present = True
-        elif not present and any(r is None for r in rotated.values()):
-            return None, {}
-        seen = {"account_status": user.status if user else "not found",
-                "api_tokens": len(snapshot.tokens_for(user.id)) if user else 0,
-                "leaver_checks_clear": record["subject"].lower() not in leavers}
-        if rotated:
-            seen["client_secrets_rotated"] = rotated
-        return present, seen
+        return present, {"account_status": user.status if user else "not found",
+                         "api_tokens": len(snapshot.tokens_for(user.id)) if user else 0,
+                         "leaver_checks_clear": not present}
     item = items[record["item_key"]]
     user = next((u for u in snapshot.users if u.id == item.user_id), None)
     if user is None:
@@ -217,18 +204,6 @@ def still_present(record: dict, snapshot: Snapshot, items: dict,
     else:
         present = any(g.id == item.target_id for g in snapshot.groups_for(user.id))
     return present, {"account_status": user.status, "still_present": present}
-
-
-def held_clients(deps: Deps) -> frozenset[str]:
-    """App ids whose secret and key dates the daily collect must read: every
-    client named by a leaver ticket still waiting to be verified."""
-    out: set[str] = set()
-    for run in runs_with_status(deps.s3, deps.work_bucket, SIGNED_OFF, OPEN):
-        checked = {n for n, _ in store.list_records(deps.s3, deps.evidence_bucket, run, "verifications")}
-        for _, rec in store.list_records(deps.s3, deps.evidence_bucket, run, "tickets"):
-            if rec.get("kind") == "leaver" and f"{rec['label']}-verified.json" not in checked:
-                out.update(h["app_id"] for h in rec.get("held_secrets", []))
-    return frozenset(out)
 
 
 def done_labels(jira, labels: list[str]) -> set[str]:

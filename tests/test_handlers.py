@@ -108,7 +108,7 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
 
     opened = handlers.open_review({"run": out["run"], "task_token": "tok"}, None)
     no_personal_data(opened)
-    assert opened["urgent_tickets"] == 3
+    assert opened["urgent_tickets"] == 2
 
 
 def test_settings_module_has_no_default_secret_values():

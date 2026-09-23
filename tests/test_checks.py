@@ -80,7 +80,7 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-11": {"priya.shah", "jordan.kim"},
         # victor held Reporting Bot's secret: custody, rotated not handed over.
         # The bot running after he left is not his activity.
-        "AR-12": {"marcus.lee", "victor.nguyen"},
+        "AR-12": {"marcus.lee"},
         "AR-13": {"marcus.lee"},
         "AR-14": {"lee.chen"},
         # Graph subjects are the source's own id, not the login: see graph_subject.
@@ -388,12 +388,14 @@ def test_cross_source_checks_map_to_the_controls_they_actually_evidence():
         "AR-17": ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18",
                   "ISO 27001 A.8.2"],
         "AR-18": ["SOC 2 CC6.1", "SOC 2 CC6.2", "SOC 2 CC6.3",
-                  "ISO 27001 A.5.16", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
+                  "ISO 27001 A.5.16", "ISO 27001 A.5.17", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
     }
-    # A.5.17 and A.5.11 are the two that were wrong; neither belongs on a
-    # cross-source check, and nothing else in CHECKS cites them either.
+    # A.5.11 is wrong everywhere. A.5.17 was wrong on AR-15-17 and stays off
+    # them; AR-18 carries it because its fix includes rotating a secret a leaver
+    # held, which is the handling of authentication information.
     cited = {control for c in CHECKS for control in c.controls}
-    assert "ISO 27001 A.5.17" not in cited and "ISO 27001 A.5.11" not in cited
+    assert "ISO 27001 A.5.11" not in cited
+    assert [c.id for c in CHECKS if "ISO 27001 A.5.17" in c.controls] == ["AR-18"]
 
 
 def test_ar15s_remediation_is_an_instruction_that_works(demo):

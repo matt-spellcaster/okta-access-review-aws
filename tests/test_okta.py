@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import json
 from datetime import date, datetime, timezone
 
 import jwt
@@ -323,7 +322,9 @@ def test_activity_is_read_only_for_leavers(keypair):
     sent = [p for url, p in session.gets if url.endswith("/api/v1/logs")]
     assert all('actor.id eq "u1"' in p["filter"] for p in sent)
     credentials, activity = sent
-    assert 'eventType sw "app.oauth2.credentials.lifecycle."' in credentials["filter"]
+    assert 'eventType sw "app.oauth2.credentials.lifecycle.create"' in credentials["filter"]
+    # Switching a secret off shows nobody anything, so it is not custody.
+    assert "lifecycle.delete" not in credentials["filter"]
     assert credentials["since"] == "2026-06-17T00:00:00Z"
     assert "eventType" not in activity["filter"]
     assert activity["since"] == "2026-08-01T23:59:59.999999Z"
@@ -370,53 +371,14 @@ def test_a_client_the_leaver_set_up_is_queried_too(keypair):
     assert snap.activity_actors == {"u1", "0oaBOT"}
 
 
-def test_a_held_client_secret_is_read_for_its_dates_and_nothing_else(keypair):
-    """Whether a rotation retired the copy a leaver saw needs the client's live
-    secrets and keys. Okta returns the secret itself in that response; only the
-    creation dates may reach the snapshot, which is written to disk as evidence."""
-    session = _leaver_org({
-        "/api/v1/logs": [_log("app.oauth2.client.read_client_secret", "2026-07-02T10:00:00.000Z", "u1",
-                              targets=["0oaBOT"])],
-        "/api/v1/apps/a1/credentials/secrets": [
-            {"id": "ocs1", "status": "ACTIVE", "created": "2026-08-05T09:00:00.000Z",
-             "client_secret": "NOT-A-REAL-SECRET-xyz", "secret_hash": "NOT-A-REAL-HASH"},
-            {"id": "ocs0", "status": "INACTIVE", "created": "2026-01-05T09:00:00.000Z",
-             "client_secret": "NOT-A-REAL-SECRET-old"},
-        ],
-        "/api/v1/apps/a1/credentials/jwks": [],
-    })
+def test_a_held_clients_secrets_are_never_read(keypair):
+    """The secrets endpoint returns the secret itself. Whether a leaver's copy
+    was rotated is AR-18's, confirmed by a reviewer, so nothing reads it."""
+    session = _held_org()
 
-    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15))
+    collect(client(session, keypair), _roster(), date(2026, 9, 15))
 
-    [app] = snap.apps
-    assert app.credentials_created == [datetime(2026, 8, 5, 9, tzinfo=timezone.utc)]
-    written = json.dumps(snap.to_dict())
-    assert "NOT-A-REAL-SECRET" not in written and "NOT-A-REAL-HASH" not in written
-
-
-def test_a_client_nobody_who_left_held_is_not_read(keypair):
-    """The read follows the leavers, not the size of the org."""
-    session = _leaver_org({"/api/v1/logs": []})
-
-    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15))
-
-    assert snap.apps[0].credentials_created is None
     assert not any("/credentials/" in url for url, _ in session.gets)
-
-
-def test_a_refused_secret_read_is_a_gap_that_names_ar12(keypair):
-    """AR-12 is what `watch.leaver_access` keys on: a leaver ticket must not be
-    signed off because the read that would show the secret still live failed."""
-    session = _leaver_org({
-        "/api/v1/logs": [_log("app.oauth2.credentials.lifecycle.create", "2026-07-02T10:00:00.000Z", "u1",
-                              targets=["0oaBOT"])],
-        "/api/v1/apps/a1/credentials/secrets": FakeResponse({"errorSummary": "no"}, status=403),
-    })
-
-    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15))
-
-    assert snap.apps[0].credentials_created is None
-    assert any("OAuth client secrets" in g and "AR-12" in g for g in snap.gaps)
 
 
 def test_a_termination_older_than_the_window_is_reported_as_a_gap(keypair):
@@ -469,7 +431,7 @@ def test_review_still_runs_when_logs_and_tokens_are_forbidden(keypair, capsys):
     assert snap.events == [] and snap.api_tokens == []
     gaps = " ".join(snap.gaps)
     assert "okta.apiTokens.read" in gaps and "okta.logs.read" in gaps
-    assert "AR-12 and AR-13" in gaps
+    assert "AR-13 and AR-18" in gaps
 
 
 def _usage_org(logs):
@@ -545,30 +507,11 @@ def test_admin_console_links_only_for_okta_orgs():
     assert admin_url("https://acme.okta.com", "user", "../../x") is None
 
 
-def _held_org(secrets, keys=()):
+def _held_org():
     return _leaver_org({
         "/api/v1/logs": [_log("app.oauth2.client.read_client_secret", "2026-07-02T10:00:00.000Z", "u1",
                               targets=["0oaBOT"])],
-        "/api/v1/apps/a1/credentials/secrets": secrets,
-        "/api/v1/apps/a1/credentials/jwks": list(keys) if not isinstance(keys, FakeResponse) else keys,
     })
-
-
-@pytest.mark.parametrize("secrets, keys, why", [
-    (FakeResponse({"errorSummary": "Not found"}, status=404), [], "a 404 is not an empty list"),
-    ([{"id": "s", "status": "ACTIVE", "created": "2026-08-05T09:00:00.000Z"}],
-     FakeResponse({"errorSummary": "no"}, status=403), "one of the two reads failing is not read"),
-    ([{"id": "s", "status": "ACTIVE"}], [], "an undated secret cannot be shown newer"),
-])
-def test_what_cannot_be_read_is_never_a_date_list(keypair, secrets, keys, why):
-    snap = collect(client(_held_org(secrets, keys), keypair), _roster(), date(2026, 9, 15))
-    assert snap.apps[0].credentials_created is None, why
-
-
-def test_a_credential_with_no_stated_status_counts_as_live(keypair):
-    snap = collect(client(_held_org([{"id": "s", "created": "2026-01-05T09:00:00.000Z"}]), keypair),
-                   _roster(), date(2026, 9, 15))
-    assert snap.apps[0].credentials_created == [datetime(2026, 1, 5, 9, tzinfo=timezone.utc)]
 
 
 def test_a_refused_log_read_records_no_actors(keypair):
@@ -582,18 +525,9 @@ def test_a_held_clients_last_use_is_one_newest_first_read_of_the_whole_window(ke
     """Oldest-first from the day they left spent the cap on a busy client's
     first calls, signed an understated date, and raised a gap that stopped every
     leaver ticket closing; and it never looked before they left at all."""
-    session = _held_org([])
+    session = _held_org()
     collect(client(session, keypair), _roster(), date(2026, 9, 15))
     [bot] = [p for url, p in session.gets if url.endswith("/api/v1/logs") and '"0oaBOT"' in p["filter"]]
     assert bot["sortOrder"] == "DESCENDING" and bot["limit"] == 1
     assert bot["since"] == "2026-06-17T00:00:00Z"
     assert "app.oauth2.token" in bot["filter"]
-
-
-def test_the_daily_read_covers_clients_an_open_ticket_names_even_once_the_log_forgets(keypair):
-    session = _leaver_org({"/api/v1/logs": [],
-                           "/api/v1/apps/a1/credentials/secrets": [
-                               {"id": "s", "status": "ACTIVE", "created": "2026-09-01T00:00:00.000Z"}],
-                           "/api/v1/apps/a1/credentials/jwks": []})
-    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15), secrets_for=frozenset({"a1"}))
-    assert snap.apps[0].credentials_created == [datetime(2026, 9, 1, tzinfo=timezone.utc)]

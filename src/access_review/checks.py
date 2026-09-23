@@ -32,6 +32,7 @@ from .identity import (
     IdentityGraph,
     Link,
     Principal,
+    PrincipalKey,
     PrincipalKind,
     Status,
     identity_key,
@@ -297,44 +298,17 @@ def _privileged_service_app(ctx: ReviewContext, check: Check) -> list[Finding]:
     return out
 
 
-# How much later than the custody event a secret has to be made to count as a
-# rotation. Okta stamps a secret's `created` and the log event that recorded its
-# creation independently, so the secret a leaver made can read as a few
-# milliseconds newer than the event -- and, compared exactly, as a rotation
-# that cleared them. Nobody rotates a secret minutes after making it.
-ROTATION_MARGIN = timedelta(minutes=5)
-
-
-def rotated_since(app: App | None, since: datetime, apps_complete: bool = True) -> bool | None:
-    """Whether the copy of this client's credentials someone held at `since`
-    no longer works. None when that cannot be told, which is never "rotated".
-
-    The one answer, for AR-12 at review time and for `watch.still_present`
-    settling a leaver ticket, so the two cannot disagree about what rotated
-    means. Gone, or deactivated, is retired: it issues no tokens. An empty list
-    of live secrets and keys is unknown, not retired: a service client has to
-    authenticate somehow, and one whose keys live at a `jwks_uri` shows none
-    here while the leaver who made the keypair may still hold the private key.
-    """
-    if app is None:
-        return True if apps_complete else None
-    if app.status != "ACTIVE":
-        return True
-    made = app.credentials_created
-    if not made:
-        return None
-    return all(t > since + ROTATION_MARGIN for t in made)
-
-
-def secrets_held_by(snapshot: Snapshot, user_id: str) -> list[tuple[App, datetime, bool | None]]:
+def secrets_held_by(snapshot: Snapshot, user_id: str) -> list[tuple[App, datetime]]:
     """Live API clients whose credentials this person held -- created the
-    client, added a secret or key, or read the secret back -- as (app, when
-    they last did, retired), `retired` being `rotated_since`.
+    client, added or activated a secret or key, or read the secret back -- as
+    (app, when they last did), by label.
 
-    Custody, not ownership. Who answers for the client is AR-18's question and
-    has a different fix; this is only whether they may still have a working
-    copy, which rotating settles -- and rotating is something the daily Okta
-    re-read can see, so the leaver ticket this lands in can close on it.
+    Custody, not ownership: whoever did any of these may still have a working
+    copy. Only as far back as the System Log reaches, so an empty answer is "no
+    custody in the window", never "held nothing". Whether a copy was rotated
+    since is not read here: Okta cannot show it reliably (a key published at a
+    `jwks_uri` is invisible to it), so AR-18 asks for the rotation and a
+    reviewer confirms it.
     """
     clients = [a for a in snapshot.apps if a.client_id and a.status == "ACTIVE"]
     last: dict[str, tuple[App, datetime]] = {}
@@ -345,7 +319,7 @@ def secrets_held_by(snapshot: Snapshot, user_id: str) -> list[tuple[App, datetim
             for app in clients:
                 if app.matches(target.get("id")) and (app.id not in last or event.published > last[app.id][1]):
                     last[app.id] = (app, event.published)
-    return [(app, when, rotated_since(app, when)) for app, when in sorted(last.values(), key=lambda p: p[0].label)]
+    return sorted(last.values(), key=lambda p: p[0].label)
 
 
 def _left_on(entry: RosterEntry) -> str:
@@ -367,21 +341,9 @@ def _leaver_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
             noun = "API token" if len(tokens) == 1 else "API tokens"
             parts.append(f"{noun} {', '.join(tokens)}")
         # Groups and apps are AR-09's job; this check is only about credentials
-        # that keep working on their own, whatever the account status is.
-        #
-        # A client's secret they held is theirs to lose, whoever built the
-        # client: the fix is to rotate it, which leaves the client running and
-        # so never contradicts AR-18's "hand it over" on the same client. The
-        # client itself -- who answers for it now -- is AR-18's alone, and this
-        # never names it as something to delete.
-        held = [(app, retired) for app, _, retired in secrets_held_by(ctx.snapshot, user.id) if not retired]
-        if held:
-            noun = "the secret of API client" if len(held) == 1 else "the secrets of API clients"
-            part = f"{noun} {', '.join(app.label for app, _ in held)}"
-            unread = [app.label for app, retired in held if retired is None]
-            if unread:
-                part += f" (whether {', '.join(unread)} was rotated since could not be read)"
-            parts.append(part)
+        # that keep working on their own, whatever the account status is. An
+        # API client secret they held is AR-18's: rotating it is not something
+        # the daily Okta re-read that closes this ticket can see.
         if parts:
             out.append(check.finding(user.login, f"{_left_on(entry)} but still holds {'; '.join(parts)}."))
     return out
@@ -797,47 +759,68 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
 
 
 def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Finding]:
-    """A service account whose accountable person has left.
+    """A service account a leaver was accountable for, or held the credentials of.
 
     The other half of a departure, and the half no deactivation reaches. The
     bot is supposed to keep running -- something in CI depends on it -- so the
-    fix is to hand it to somebody, or to decide it is finished and take it
+    fix is to make sure somebody still here answers for it and to rotate any
+    secret or key the leaver held, or to decide it is finished and take it
     down. That is the opposite of AR-17, which asks for a leaver's own access
     to be removed, which is why the two are reported apart and why AR-17 leaves
     service accounts here.
 
+    Two reasons, one finding per account. *Ownership*: the strongest link for
+    the account names the leaver (the register, or the System Log's record of
+    who created it). *Custody*: the System Log shows the leaver created the
+    client, added a secret or key, or read the secret back (`secrets_held_by`),
+    so a copy may still work whoever owns it. Custody used to be AR-12's, on the
+    leaver ticket, but that ticket closes on a daily Okta re-read and Okta
+    cannot show a rotation reliably, so the rotation is confirmed by a reviewer
+    here instead.
+
     Okta's own service clients are what AR-17 structurally cannot see: it skips
     `source == OKTA` because Okta deactivation is what the rest of the review
     verifies, and an API client is not touched by anything that happens to the
-    account of the person who owns it. The demo has both shapes -- one declared
-    in the register to someone who left, one whose only attribution is the
-    audit log's record of who created it.
+    account of the person who owns it.
 
     Every source and every status, unlike AR-17. A disabled service account is
     not a settled one: `CredentialKind` is the set of things that outlive the
     account they were created under, so a blocked sign-in says nothing about
     the token, and somebody still has to decide between handover and shutdown.
 
-    Disjoint from AR-15 by construction rather than by a filter: this walks
-    `principals_of`, which is indexed on identities some source attested, and
-    AR-15 walks the principals whose best link reaches nobody.
+    The ownership half is disjoint from AR-15 by construction: it walks
+    `principals_of`, indexed on identities some source attested, and AR-15
+    walks the principals whose best link reaches nobody. The custody half can
+    report an account AR-15 also reports; the two remediations agree.
     """
     graph = ctx.graph
     out = []
     # By identity, not by leaver, for the reason `_leaver_access_outside_okta`
     # gives: one person with two Okta logins would otherwise be two findings
-    # about the one service account, and so two tickets.
-    leavers: dict[str, RosterEntry] = {}
+    # about the one service account, and so two tickets. A leaver with no
+    # identity still has custody, read off their own account.
+    leavers: dict[str, tuple[RosterEntry, list[User]]] = {}
     for user, entry in _leavers(ctx):
-        identity = identity_key(user)
-        if identity:
-            leavers.setdefault(identity, entry)
-    for identity, entry in leavers.items():
-        for principal in graph.principals_of(identity):
+        leavers.setdefault(identity_key(user) or f"user:{user.id}", (entry, []))[1].append(user)
+    for who, (entry, users) in leavers.items():
+        why: dict[PrincipalKey, list[str]] = {}
+        for principal in graph.principals_of(who):
             if principal.kind is not PrincipalKind.SERVICE:
                 continue
             link = graph.link_for(principal.key)
             if link is None:  # principals_of is built from these; belt and braces
+                continue
+            why.setdefault(principal.key, []).append(
+                f"the strongest evidence of who answers for this {principal.source} service account "
+                f"names them -- {link.evidence}")
+        for user in users:
+            for app, when in secrets_held_by(ctx.snapshot, user.id):
+                why.setdefault((OKTA, app.id), []).append(
+                    f"the System Log shows them holding its credentials on {when.date()}, so a copy "
+                    f"may still work")
+        for key, reasons in why.items():
+            principal = graph.principal(key)
+            if principal is None:
                 continue
             credentials = graph.credentials_for(principal.key)
             known = _credential_evidence_complete(graph, principal.source)
@@ -849,9 +832,8 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
             # link actually joined on -- never a name from the register entry,
             # which is a string somebody typed.
             gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
-            detail = (f"{principal.label}: {entry.name or identity} {gone}, and the strongest "
-                      f"evidence of who answers for this {principal.source} service account names "
-                      f"them -- {link.evidence}.")
+            name = entry.name or (who if not who.startswith("user:") else users[0].login)
+            detail = f"{principal.label}: {name} {gone}, and {'; and '.join(reasons)}."
             carries = []
             if roles:
                 carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
@@ -868,14 +850,11 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
                 detail += (f" The {principal.source} credential read did not complete, so what it "
                            f"holds is unknown.")
             # Graded on what the account can change, not on the owner's rank.
-            # `_elevated_roles` is "above ordinary membership", which is the
-            # adapter's judgement and the right one for AR-17, but this check
-            # also sees Okta, where a read-only admin role is above ordinary
-            # membership and still cannot change a thing. READ_ONLY_ROLES names
-            # those; a role from any source that is not one of them is treated
-            # as elevated, the same way `_elevated_roles` treats a role it does
-            # not recognise. Unknown write access is not the milder case: see
-            # _write_access.
+            # `_elevated_roles` is "above ordinary membership", which for Okta
+            # includes a read-only admin role that cannot change a thing, so
+            # READ_ONLY_ROLES is filtered out; a role that is not one of them is
+            # treated as elevated. Unknown write access is not the milder case:
+            # see _write_access.
             elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
             writes = _write_access(credentials, known) is not False
             out.append(check.finding(
@@ -956,9 +935,8 @@ CHECKS: list[Check] = [
     Check(
         "AR-12", "Leaver still holds a working credential", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.18"],
-        "Revoke the API token, and rotate the secret or key of each API client listed: they "
-        "have held it, and deactivating the account does not stop a copy working. Rotating "
-        "leaves the client running; who answers for it now is AR-18's question.",
+        "Revoke the API token: deactivating the account does not stop it working. An API client "
+        "secret they held is AR-18's, because rotating it is confirmed by a reviewer, not by Okta.",
         _leaver_credentials, needs_roster=True,
     ),
     Check(
@@ -1014,22 +992,23 @@ CHECKS: list[Check] = [
         _leaver_access_outside_okta, needs_graph=True, needs_roster=True,
     ),
     Check(
-        "AR-18", "Service account owned by someone who left", "high",
+        "AR-18", "Service account a leaver owned or held the credentials of", "high",
         # CC6.1 is the one this fails against most directly: a credential in
         # the estate with no authorized person behind it. CC6.2 and CC6.3
         # because a departure is what put it there and nothing in the
         # termination reached it. A.5.16 covers the lifecycle of non-human
-        # identities, which is exactly what an unowned service account is;
-        # A.5.18 the access it still carries; A.8.2 because the finding reports
-        # the admin roles these accounts hold, the same reason AR-17 has it.
+        # identities; A.5.17 (authentication information) because the fix
+        # includes rotating a secret the leaver held; A.5.18 the access it
+        # still carries; A.8.2 because the finding reports the admin roles
+        # these accounts hold, the same reason AR-17 has it.
         ["SOC 2 CC6.1", "SOC 2 CC6.2", "SOC 2 CC6.3",
-         "ISO 27001 A.5.16", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
-        "Record a new owner for this account in the service account register "
-        "(config.service_accounts), or decommission it: revoke its credentials and remove its "
-        "access. Deactivating the leaver's own account did not touch this one -- it is still "
-        "running, and the person this review holds accountable for it has gone. An entry naming a "
-        "new owner ties it to that person's access review and to their departure bundle if they "
-        "leave in turn.",
+         "ISO 27001 A.5.16", "ISO 27001 A.5.17", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
+        "Make sure somebody still here answers for this account, and rotate every secret and key "
+        "the leaver held or could have read; or decommission it: revoke its credentials and remove "
+        "its access. Deactivating the leaver's own account did not touch this one -- it is still "
+        "running. Record the owner in the service account register (config.service_accounts), "
+        "which ties it to that person's access review and to their departure bundle if they leave "
+        "in turn.",
         _leaver_owned_service_accounts, needs_graph=True, needs_roster=True,
     ),
 ]

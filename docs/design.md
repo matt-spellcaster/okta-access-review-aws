@@ -172,19 +172,20 @@ access to be revoked; AR-18 asks for the account to be handed to somebody, becau
 depends on it still running, so two findings on one principal would be two tickets whose
 remediations contradict. `_leaver_access_outside_okta` skips `PrincipalKind.SERVICE` and AR-18
 takes it, across **every source and every status** -- a strict superset of what AR-17 drops, which
-is what makes the skip safe. **AR-12 is the same partition, split on custody rather than
-ownership.** A System Log credential event carries two facts, and they have different fixes.
-*Custody* -- the leaver created the client, added a secret or key, or read the secret back
-(`models.CREDENTIAL_EVENTS`) -- means they may hold a working copy: AR-12, "rotate it", on the
-leaver ticket, whoever built the client. *Ownership* -- only `models.CREATION_EVENTS` -- is the
-CREATOR link AR-18 reads: "hand it over". Rotating leaves the client running, so the two never
-contradict, and it is something the daily Okta re-read can see (`App.credentials_created`, the
-dates of the live secrets and keys, read only for held clients; never the secret itself, which
-the endpoint returns in plain text). `_secrets_held_by` clears a leaver only when every live
-credential postdates the last time they held one, and never on an unread date. The first version
-of this partition moved every client to AR-18, which dropped custody on a colleague's client from
-every check, let a leaver ticket close "done in Okta" with the secret still valid, and made
-anyone who once read a secret its CREATOR. AR-13 reads the leaver's own account only: a client
+is what makes the skip safe. A System Log credential event carries two facts. *Custody* -- the
+leaver created the client, added or activated a secret or key, or read the secret back
+(`models.CREDENTIAL_EVENTS`; deactivating or deleting a secret shows nobody anything and is left
+out) -- means they may hold a working copy. *Ownership* -- only `models.CREATION_EVENTS` -- is the
+CREATOR link. Both land on **AR-18**, one finding per client with both reasons in the detail, and
+its remediation asks for somebody still here to answer for the client and for every secret the
+leaver held to be rotated. That settles by reviewer, and it has to: the first version put custody
+on AR-12 and the leaver ticket, which closes on a daily Okta re-read, and Okta cannot show a
+rotation reliably. Re-deriving custody from the log closed the ticket once the event aged past 90
+days; reading secret and key creation dates instead could never see a key published at a
+`jwks_uri`, left the ticket waiting forever on a read that 404'd, and told the CISO "Okta still
+shows the problem" when it showed nothing. AR-12 is API tokens alone, which the re-read does see.
+Reading a secret never makes anyone a CREATOR: that version named whoever once opened a colleague's
+client as the person who answers for it. AR-13 reads the leaver's own account only: a client
 running after its builder leaves is what it is for, and reading it as theirs raised a critical
 "possible incident, revoke it" against AR-18's "hand it over". Where the register has since named
 a different owner the account is that person's, which is the handover AR-18 asks for, and where it
@@ -197,7 +198,7 @@ is not an answer here the way it is for AR-17: `CredentialKind` is the set of th
 the account they were created under. Severity grades on what the **account** can change, not on it
 having a role: `_elevated_roles` means "above ordinary membership", which for Okta includes
 Read-Only Administrator, so AR-18 filters `READ_ONLY_ROLES` out of it and grades critical on an
-elevated role **or** write access, unknown counting as the worse case. Disjoint from AR-15 by
+elevated role **or** write access, unknown counting as the worse case. The ownership half is disjoint from AR-15 by
 construction, not by a filter -- AR-18 walks `principals_of`, indexed on attested identities, and
 AR-15 walks the principals whose best link reaches nobody.
 
