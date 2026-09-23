@@ -54,6 +54,10 @@ that area.
   `ReviewRun.gaps` / `.complete`, never `snapshot.gaps`.
 - `watch.still_present` returns `None` when the data behind a ticket wasn't read; each branch needs
   its own signal (`admin_roles is None`, `apps_complete`, `snapshot.gaps`, `leavers is None`).
+- Credentials and roles each have their own completeness signal (`activity_complete`,
+  `roles_complete`). AR-17 and AR-18 ask `_credential_evidence_complete` /
+  `_roles_evidence_complete` before grading (an Okta user answers with its own
+  `admin_roles is None`); an unread list grades as the worse case.
 - `items.py` never proposes Revoke on missing or truncated data; the item becomes "decide".
 - `history.py` and `attest` never write outside the report folder, never change a hashed file,
   never send anything, and never count a review they couldn't verify. `reopened` is never set
@@ -122,6 +126,7 @@ that area.
 - New source adapter: snapshot shape with `from_dict`/`to_dict`, a hand-written fixture, a
   projection into `IdentityGraph`, any new `CredentialKind`s, a re-export from `identity/__init__.py`,
   and tests, all before a live collector. If it emits `GrantKind.GROUP`, it populates `group_apps`.
+  It sets `activity_complete` and `roles_complete` on its `SourceMeta`; both default to True.
 - Fixtures match the shape the real API returns; check the vendor docs for every field.
 - `findings.csv` columns are `FINDING_COLUMNS`; changing them means updating
   `test_findings_csv_header_is_explicit`.

@@ -308,6 +308,12 @@ class Snapshot:
     app_usage: dict[tuple[str, str], datetime] = field(default_factory=dict)
     app_usage_since: datetime | None = None
     app_usage_complete: bool = True
+    # False when the admin role assignment read was refused. A user's unread
+    # roles are None on the user, but an App has no such tri-state, so a
+    # service client's empty list is otherwise indistinguishable from "holds no
+    # role" -- the severity judgement AR-18 makes. Separate from apps_complete
+    # and app_usage_complete: three optional reads that fail independently.
+    roles_complete: bool = True
     # False when the admin role running the collection was hiding apps, so
     # `apps` and every app's assignment list are a subset of the estate. A
     # missing assignment then means "not visible", not "not assigned", and
@@ -342,10 +348,11 @@ class Snapshot:
 
     @classmethod
     def from_dict(cls, d: dict) -> Snapshot:
+        users = [User.from_dict(u) for u in d["users"]]
         return cls(
             org_url=d["org_url"],
             collected_at=parse_time(d["collected_at"]),
-            users=[User.from_dict(u) for u in d["users"]],
+            users=users,
             groups=[Group.from_dict(g) for g in d["groups"]],
             apps=[App.from_dict(a) for a in d["apps"]],
             gaps=list(d.get("gaps", [])),
@@ -358,6 +365,14 @@ class Snapshot:
             },
             app_usage_since=parse_time(d.get("app_usage_since")),
             app_usage_complete=d.get("app_usage_complete", True),
+            # A snapshot written before this flag existed still shows a refused
+            # read: the collector reads every user's roles but a DEPROVISIONED
+            # user's, so a None anywhere else is a read that did not happen, and
+            # a refusal on a client call alone still left its gap.
+            roles_complete=(d["roles_complete"] if "roles_complete" in d else
+                            all(u.admin_roles is not None for u in users if u.status != "DEPROVISIONED")
+                            and not any(g.startswith("Could not read admin role assignments")
+                                        for g in d.get("gaps", []))),
             apps_complete=d.get("apps_complete", True),
         )
 
@@ -379,5 +394,6 @@ class Snapshot:
             ],
             "app_usage_since": format_time(self.app_usage_since),
             "app_usage_complete": self.app_usage_complete,
+            "roles_complete": self.roles_complete,
             "apps_complete": self.apps_complete,
         }

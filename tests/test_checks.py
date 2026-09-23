@@ -184,12 +184,12 @@ def test_cross_source_findings_carry_the_planted_severities(demo):
         # account can do, not on the fact that it has a role at all: put every
         # ROLE grant into the critical branch and only this line moves.
         ("AR-18", "Reporting Bot"): "high",
-        # No role and no credential of its own -- it is an Okta user account,
-        # not an API client -- so nothing it holds can write and it grades
-        # high. What it *reaches* is deliberately not in the grade: a group
-        # everybody is in does not make an account more dangerous, and AR-09
-        # never graded on group membership either.
-        ("AR-18", "svc-legacy-etl"): "high",
+        # An Okta user account, not an API client, and DEPROVISIONED, so the
+        # collector never read its roles -- and Okta keeps group-assigned admin
+        # roles through deactivation and restores them on reactivation. Unknown
+        # is the worse case. What it *reaches* is deliberately not in the grade:
+        # a group everybody is in does not make an account more dangerous.
+        ("AR-18", "svc-legacy-etl"): "critical",
     }
 
 
@@ -455,7 +455,7 @@ LEFT = "marcus.lee@acme.example"
 
 def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
           kind=PrincipalKind.SERVICE, method=LinkMethod.DECLARED, identity=LEFT,
-          credentials=True, activity_complete=True):
+          credentials=True, activity_complete=True, roles_complete=True):
     """The demo graph with one more service account on it, owned by a leaver.
 
     The demo fixture's own two cases are Okta API clients, which is the shape
@@ -481,7 +481,8 @@ def _owns(demo, *, write_access=None, roles=(), status=Status.ACTIVE,
         grants=(*graph.grants, *(Grant(GH, "bot-1", GrantKind.ROLE, r.lower(), r) for r in roles)),
         links=(*graph.links, Link((GH, "bot-1"), method, identity,
                                   "declared a service account in the review register")),
-        sources=tuple(replace(m, activity_complete=activity_complete) if m.source == GH else m
+        sources=tuple(replace(m, activity_complete=activity_complete, roles_complete=roles_complete)
+                      if m.source == GH else m
                       for m in graph.sources),
     )
     return [f for f in run_checks(demo)[0] if f.subject == f"{GH}/bot-1"]
@@ -590,6 +591,128 @@ def test_a_leavers_service_account_whose_credential_read_failed_is_not_ranked_cl
     [complete] = _owns(demo, credentials=False, activity_complete=True)
     assert complete.severity == "high"
     assert "did not complete" not in complete.detail
+
+
+def test_a_leavers_service_account_whose_role_read_did_not_complete_is_critical(demo):
+    """The roles half of the same rule the credential half already follows.
+
+    `_elevated_roles` reads ROLE grants, and a source whose role read never ran
+    emits none -- identical to a client that genuinely holds nothing. Graded
+    together, an account that could be an organization owner or a Super
+    Administrator dropped a rung because a call failed, which is the milder
+    answer derived from a read that did not happen.
+
+    `write_access=False` is what makes this a test of the roles branch alone:
+    the credential is known read-only, so `critical` can only come from the
+    unread roles. Delete `not roles_known` from the severity and only this
+    case and its AR-17 twin move.
+    """
+    [found] = _owns(demo, write_access=False, roles_complete=False)
+    assert found.check_id == "AR-18"
+    assert found.severity == "critical", "an unread role list is not the read-only case"
+    # And the finding says why, next to the credential sentence: "holds pat
+    # ...aa11" reads as the whole of what the account can do otherwise.
+    assert f"The {GH} role read did not complete, so whether the account holds an elevated role is unknown." in found.detail
+
+
+def test_a_leavers_own_access_is_critical_when_the_role_read_did_not_complete(demo):
+    """AR-17's half of it, kept in step with AR-18's by being fixed alongside.
+
+    The two checks grade the same silence, so the same mutation kills them
+    separately: this one is the departed person's own account rather than a
+    service account they owned, and it reaches the other expression.
+    """
+    [found] = _owns(demo, write_access=False, kind=PrincipalKind.HUMAN, roles_complete=False)
+    assert found.check_id == "AR-17"
+    assert found.severity == "critical", "an unread role list is not the read-only case"
+    assert f"The {GH} role read did not complete, so whether the account holds an elevated role is unknown." in found.detail
+
+
+@pytest.mark.parametrize("kind, check_id", [(PrincipalKind.SERVICE, "AR-18"), (PrincipalKind.HUMAN, "AR-17")])
+def test_an_unread_role_list_beside_a_returned_role_says_further(demo, kind, check_id):
+    """A source can return the base role and fail the read that holds the rest.
+    Saying "an elevated role is unknown" right after naming one reads as a
+    contradiction, so the sentence says "further" -- and says it at all: the
+    returned role is not the whole list."""
+    [found] = _owns(demo, write_access=False, kind=kind, roles=("Owner",), roles_complete=False)
+    assert found.check_id == check_id
+    assert f"The {GH} role read did not complete, so whether the account holds any further elevated role is unknown." in found.detail
+
+
+def _okta_ar18(demo, login):
+    [found] = [f for f in run_checks(demo)[0]
+               if f.check_id == "AR-18" and GRAPH_LOGINS.get(f.subject) == login]
+    return found
+
+
+def test_an_okta_client_with_no_roles_under_a_refused_read_is_critical(demo):
+    """The Okta client half of the rule, at check level. Reporting Bot's
+    credential cannot write, so only its roles can make it critical. Its list
+    is one call that yields [] on any failure: empty under a refused read is
+    unknown -- said as the source's failure, since nothing on the client says
+    its own call failed. Refused without a gap, so write access stays known."""
+    [bot] = [a for a in demo.snapshot.apps if a.label == "Reporting Bot"]
+    bot.admin_roles = []
+    demo.snapshot.roles_complete = False
+    demo.graph = _compose(demo)
+    found = _okta_ar18(demo, "Reporting Bot")
+    assert found.severity == "critical"
+    assert ("The okta role read did not complete, so whether the account holds an elevated role "
+            "is unknown.") in found.detail
+
+
+def test_an_okta_client_whose_list_names_a_role_was_read(demo):
+    """The control: a role in an Okta client's list proves its own call ran, so
+    a refusal on some other client says nothing about it. Reporting Bot keeps
+    its planted `high`, and no sentence doubts the role it just named."""
+    demo.snapshot.roles_complete = False
+    demo.graph = _compose(demo)
+    found = _okta_ar18(demo, "Reporting Bot")
+    assert found.severity == "high"
+    assert "role read did not complete" not in found.detail
+
+
+def test_an_okta_user_answers_for_its_own_roles(demo):
+    """An Okta user carries its own answer, and the source flag must not
+    override it either way. svc-legacy-etl is DEPROVISIONED, so its roles were
+    never read: unknown although the source says the read ran. Give it a read
+    that found nothing and it is `high` although the source says the read was
+    refused elsewhere -- a user read before a client's roles call hit a 403."""
+    found = _okta_ar18(demo, "svc-legacy-etl")
+    assert found.severity == "critical"
+    assert "Its okta roles were not read, so whether it holds an elevated role is unknown." in found.detail
+
+    [user] = [u for u in demo.snapshot.users if u.login.startswith("svc-legacy-etl")]
+    user.admin_roles = []
+    demo.snapshot.roles_complete = False
+    demo.graph = _compose(demo)
+    found = _okta_ar18(demo, "svc-legacy-etl")
+    assert found.severity == "high"
+    assert "roles were not read" not in found.detail
+    assert "role read did not complete" not in found.detail
+
+
+def test_a_source_the_graph_does_not_know_has_unread_roles(demo):
+    assert checks._roles_evidence_complete(demo.graph, "github:nowhere") is False
+
+
+def test_a_role_read_that_completed_and_found_nothing_grades_on_write_access_alone(demo):
+    """The control for both, and the half that keeps this from being a
+    constant. Emptiness IS evidence once the read that would have said so ran,
+    so an account with no roles and a credential known to be read-only is
+    `high` -- work, because nobody is accountable for a live credential, but
+    not an investigation. Grade every empty role list critical and only this
+    case moves, in both checks at once.
+    """
+    original = demo.graph
+    [service] = _owns(demo, write_access=False, roles_complete=True)
+    assert (service.check_id, service.severity) == ("AR-18", "high")
+    assert "role read" not in service.detail
+
+    demo.graph = original  # `_owns` adds to the graph it is handed
+    [person] = _owns(demo, write_access=False, kind=PrincipalKind.HUMAN, roles_complete=True)
+    assert (person.check_id, person.severity) == ("AR-17", "high")
+    assert "role read" not in person.detail
 
 
 def test_one_leaver_with_two_okta_accounts_owns_their_service_account_once(demo):

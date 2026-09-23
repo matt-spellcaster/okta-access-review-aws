@@ -133,7 +133,7 @@ those and nothing else.
 | AR-15 | Credential nobody is accountable for: no evidence ties the account to a person (high if it can write and may be in use) | medium | SOC 2 CC6.1, CC6.2 · ISO A.5.16, A.5.18 |
 | AR-16 | Access held by an account the source's own user read never returned | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18 |
 | AR-17 | Someone who left still has access in another source, such as GitHub | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
-| AR-18 | Service account a leaver owned, or held the secret of (critical if it can change anything) | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.17, A.5.18, A.8.2 |
+| AR-18 | Service account a leaver owned, or held the secret of (critical if it can change anything, or if that is unknown) | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.17, A.5.18, A.8.2 |
 
 AR-01 to AR-03, AR-12 and AR-13 compare Okta with an HR roster: a CSV exported from the HR system
 and passed in with `--roster` (there's no live HR integration yet). Without it they're skipped, and

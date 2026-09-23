@@ -233,7 +233,7 @@ def test_collect_marks_roles_unknown_and_skips_grants_when_forbidden(keypair, ca
     err = capsys.readouterr().err
     assert "okta.roles.read" in err and "okta.appGrants.read" in err and "insufficient_scope" in err
     assert len(snap.gaps) == 3
-    assert "AR-10 and AR-11" in snap.gaps[0]
+    assert "AR-10, AR-11 and AR-18" in snap.gaps[0]
     assert "hiding apps" in snap.gaps[2]
     # As a flag, not only as prose: watch.still_present reads it to refuse to
     # verify a revoke from a read that could not see the app, and a gap string is
@@ -242,6 +242,53 @@ def test_collect_marks_roles_unknown_and_skips_grants_when_forbidden(keypair, ca
     # And it survives being written and read back, which is how every consumer
     # after the collector gets it.
     assert Snapshot.from_dict(snap.to_dict()).apps_complete is False
+    # The roles read is the same shape of problem and needs the same flag.
+    # `User.admin_roles` is None above, but an App has no tri-state: a service
+    # client whose roles were refused carries `[]`, exactly as one holding none
+    # does, and AR-18 grades on that list. Without this, the refusal is visible
+    # only as prose in `gaps`.
+    assert snap.roles_complete is False
+    assert Snapshot.from_dict(snap.to_dict()).roles_complete is False
+
+
+def test_a_refusal_on_a_client_roles_call_alone_marks_roles_incomplete(keypair):
+    """The case the flag exists for. No user's roles call runs first, so the
+    only refusal is on a service client's, and that client's `[]` is exactly
+    what a client holding nothing carries. `missing_ok` turns a 404 into `[]`;
+    a 403 must still be a refusal."""
+    session = FakeSession({
+        "/api/v1/apps": [{
+            "id": "a1", "label": "Svc", "status": "ACTIVE", "signOnMode": "OPENID_CONNECT",
+            "credentials": {"oauthClient": {"client_id": "a1"}},
+            "settings": {"oauthClient": {"grant_types": ["client_credentials"]}},
+        }],
+        "/oauth2/v1/clients/a1/roles": FakeResponse({}, status=403),
+    })
+    snap = collect(client(session, keypair))
+    assert snap.apps[0].admin_roles == []
+    assert snap.roles_complete is False
+    # Every user's roles were read, so only the flag carries this refusal
+    # through a write and read back; deriving it would lose it.
+    assert Snapshot.from_dict(snap.to_dict()).roles_complete is False
+
+
+def test_a_snapshot_from_before_the_flag_still_shows_a_refused_roles_read():
+    """Older snapshots carry no `roles_complete`. A refusal shows there anyway,
+    as a user who is not DEPROVISIONED with roles nobody read, and a missing key
+    must not be read as "the read ran"."""
+    def old(*users):
+        return {"org_url": "https://x.okta.com", "collected_at": "2026-09-01T00:00:00Z",
+                "users": list(users), "groups": [], "apps": []}
+    def user(uid, status, roles):
+        return {"id": uid, "login": f"{uid}@x.test", "status": status, "adminRoles": roles}
+    read = user("u1", "ACTIVE", [])
+    unread = user("u2", "ACTIVE", None)
+    gone = user("u3", "DEPROVISIONED", None)
+    assert Snapshot.from_dict(old(read, gone)).roles_complete is True
+    assert Snapshot.from_dict(old(read, unread, gone)).roles_complete is False
+    # A refusal on a client call alone left no None on a user, only its gap.
+    refused = old(read, gone) | {"gaps": ["Could not read admin role assignments; AR-10 may be incomplete."]}
+    assert Snapshot.from_dict(refused).roles_complete is False
 
 
 def test_no_gap_when_review_app_is_visible(keypair):
@@ -250,6 +297,10 @@ def test_no_gap_when_review_app_is_visible(keypair):
     assert snap.gaps == []
     assert snap.apps_complete is True
     assert Snapshot.from_dict(snap.to_dict()).apps_complete is True
+    # The control: a read that ran says so, or the flag would be a constant and
+    # every review would report its roles as unknown.
+    assert snap.roles_complete is True
+    assert Snapshot.from_dict(snap.to_dict()).roles_complete is True
 
 
 def test_get_capped_stops_at_the_limit(keypair):

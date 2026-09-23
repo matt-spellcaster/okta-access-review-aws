@@ -52,15 +52,14 @@ def access_matrix(snapshot: Snapshot) -> list[dict]:
     for u in sorted(snapshot.users, key=lambda u: u.login):
         groups = sorted(g.name for g in snapshot.groups_for(u.id) if g.type != "BUILT_IN")
         apps = sorted({f"{app.label} ({how})" for app, how in snapshot.apps_for(u.id)})
-        # Factors are only collected for users who can sign in, and roles for users who aren't deprovisioned.
+        # Factors are only collected for users who can sign in, and roles for users who aren't
+        # deprovisioned. A deprovisioned user's roles are unknown, not n/a: Okta keeps
+        # group-assigned admin roles through deactivation and restores them on reactivation.
         if u.status not in SIGN_IN_STATUSES:
             mfa = "n/a"
         else:
             mfa = "unknown" if u.factors is None else (", ".join(u.factors) or "none")
-        if u.status == "DEPROVISIONED":
-            admin_roles = "n/a"
-        else:
-            admin_roles = "unknown" if u.admin_roles is None else "; ".join(u.admin_roles)
+        admin_roles = "unknown" if u.admin_roles is None else "; ".join(u.admin_roles)
         rows.append({
             "login": u.login,
             "name": u.name,

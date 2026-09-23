@@ -669,6 +669,43 @@ def _credential_evidence_complete(graph: IdentityGraph, source: str) -> bool:
     return bool(meta and meta.activity_complete)
 
 
+def _roles_evidence_complete(graph: IdentityGraph, source: str) -> bool:
+    """Whether an empty role list from this source can be believed.
+
+    Its own signal, and neither of the other two. `complete` is identity and
+    `activity_complete` is credential activity; roles are a third read that
+    fails on its own -- `okta.roles.read` in Okta, the organization-roles
+    endpoints in GitHub -- and both sources hand back an empty list when it
+    does. So a principal with no ROLE grant is "not known to hold one", not
+    "holds none", and every severity that grades on roles asks this first. A
+    source the graph does not know is not a complete one.
+    """
+    meta = graph.source(source)
+    return bool(meta and meta.roles_complete)
+
+
+def _roles_unread_note(source: str, roles: list[str], own: bool = False) -> str:
+    """The sentence a finding carries when nobody read the roles.
+
+    One helper for both leaver checks, alongside the credential one they each
+    word themselves: an auditor reading "holding pat ...aa11" needs to be told
+    that the account could be an organization owner and no one looked.
+
+    "Further" when the finding already names a role: a source can return the
+    base role and fail the read that would have returned the rest, and a
+    sentence saying an elevated role is unknown directly after naming one
+    reads as a contradiction rather than as what it is.
+
+    `own` when the account itself says its roles were never read (an Okta user
+    whose `admin_roles` is None); otherwise all that is known is that the
+    source's read did not complete, and the sentence claims no more.
+    """
+    what = "any further elevated role" if roles else "an elevated role"
+    if own:
+        return f" Its {source} roles were not read, so whether it holds {what} is unknown."
+    return f" The {source} role read did not complete, so whether the account holds {what} is unknown."
+
+
 def _describe(credentials: list[Credential], as_of: date) -> str:
     """The credentials a principal holds, worst first, for a finding's detail."""
     parts = []
@@ -865,6 +902,7 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
             known = _credential_evidence_complete(graph, principal.source)
             held = _describe(credentials, ctx.as_of)
             roles = _elevated_roles(graph, principal)
+            roles_known = _roles_evidence_complete(graph, principal.source)
             detail = (f"{_left_on(entry)}, but {principal.source} still shows {principal.label} "
                       f"{principal.source_status or 'with access'}")
             carries = []
@@ -874,6 +912,8 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
             if held:
                 carries.append(held)
             detail += f" holding {' and '.join(carries)}." if carries else "."
+            if not roles_known:
+                detail += _roles_unread_note(principal.source, roles)
             out.append(check.finding(
                 graph_subject(principal), detail,
                 # An elevated role is write access to the organization itself.
@@ -881,7 +921,9 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
                 # owner below a departed ordinary member holding one token,
                 # because the owner's own token happened to be read-only.
                 # Unknown write access is not the milder case: see _write_access.
-                severity="critical" if roles or _write_access(credentials, known) is not False else "high",
+                # Nor is an unread role list: see _roles_evidence_complete.
+                severity=("critical" if roles or not roles_known
+                          or _write_access(credentials, known) is not False else "high"),
             ))
     return out
 
@@ -1041,6 +1083,19 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         credentials = graph.credentials_for(principal.key)
         known = _credential_evidence_complete(graph, principal.source)
         roles = _elevated_roles(graph, principal)
+        user = users_by_id.get(principal.id) if principal.source == OKTA else None
+        # An Okta user carries its own answer: `admin_roles` is None when its
+        # roles were not read, which the collector never does for a
+        # DEPROVISIONED user, and Okta keeps group-assigned admin roles
+        # through deactivation and restores them on reactivation. The source
+        # flag would be wrong both ways -- True over that None, and False
+        # over a user whose roles were read before a client's roles call was
+        # refused. An Okta client's list is one call that yields [] on any
+        # failure, so a role in it proves that client's read ran; an empty one
+        # and other sources fall back to the source.
+        roles_known = (user.admin_roles is not None if user
+                       else (principal.source == OKTA and bool(roles))
+                       or _roles_evidence_complete(graph, principal.source))
         held = _describe(credentials, ctx.as_of)
         # The source's own word for the account's state, the way AR-17 reports
         # it. The remediation branches on it -- a live account is presumably
@@ -1064,13 +1119,19 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         if not credentials and not known:
             detail += (f" The {principal.source} credential read did not complete, so what it "
                        f"holds is unknown.")
+        # Added whenever roles are unread, even beside a role that was
+        # returned, unlike the credential sentence, which only has to cover
+        # an empty list because `_describe` marks each unread credential.
+        # Nothing marks an unread role, and a role the source did return says
+        # nothing about the ones it never fetched.
+        if not roles_known:
+            detail += _roles_unread_note(principal.source, roles, own=user is not None)
         # The blast radius, which is the half of the decision the roles and
         # credentials do not show: handover or decommission turns on what
         # stops working. For a disabled Okta user it is what AR-09 would have
         # listed, and AR-09 stands down for these, so this sentence is the
         # only place that access is reported: in full, in AR-09's words, and
         # as what reactivation restores rather than what it reaches today.
-        user = users_by_id.get(principal.id) if principal.source == OKTA else None
         leftover = _leftover_access(ctx.snapshot, user) if user and user.status in DISABLED_STATUSES else None
         reaches = [] if leftover is not None else _reachable(graph, principal)
         if leftover:
@@ -1087,12 +1148,13 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         # treated as elevated. Unknown write access is not the milder case:
         # see _write_access. What the account reaches is deliberately not
         # graded on: an account is not more dangerous for being in a group
-        # everyone is in, and AR-09 never graded on it either.
+        # everyone is in, and AR-09 never graded on it either. Nor is an
+        # unread role list the milder case: see _roles_evidence_complete.
         elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
         writes = _write_access(credentials, known) is not False
         out.append(check.finding(
             graph_subject(principal), detail,
-            severity="critical" if elevated or writes else "high",
+            severity="critical" if elevated or not roles_known or writes else "high",
         ))
     return out
 

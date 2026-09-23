@@ -596,6 +596,18 @@ def test_a_truncated_or_absent_activity_read_travels_as_incomplete(demo_snapshot
     assert not project_snapshot(demo_snapshot).source(OKTA).activity_complete
 
 
+def test_a_refused_role_read_travels_as_incomplete(demo_snapshot):
+    """Its own flag, carried across on its own. `okta.roles.read` is optional
+    and refused independently of everything else, and when it is every service
+    client's `admin_roles` is `[]` -- the same list a client holding no role
+    has. Left off the meta, AR-18 reads the graph's default and grades a
+    possible Super Administrator as the milder case."""
+    assert project_snapshot(demo_snapshot).source(OKTA).roles_complete
+
+    demo_snapshot.roles_complete = False
+    assert not project_snapshot(demo_snapshot).source(OKTA).roles_complete
+
+
 # --- composition -------------------------------------------------------------
 
 
@@ -716,4 +728,5 @@ def test_every_record_serialises_its_own_fields(graph):
     assert (terraform["write_access"], terraform["kind"]) == (True, "oauth_client")
     assert set(blob["sources"][0]) == {
         "source", "org", "collected_at", "gaps", "activity_since", "activity_complete",
+        "roles_complete",
     }

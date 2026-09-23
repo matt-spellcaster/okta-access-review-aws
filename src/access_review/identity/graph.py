@@ -275,6 +275,15 @@ class SourceMeta:
     # not run or was cut short, so "no last-used" means "not known to have been
     # used" rather than "not used". Every dormancy judgement reads this first.
     activity_complete: bool = True
+    # Whether an empty role list can be believed. A third thing again: `complete`
+    # is identity, `activity_complete` is credential activity, and this is the
+    # roles read, which in both sources is its own call and fails on its own.
+    # False means a principal holding no ROLE grant is "not known to hold one",
+    # and every severity that reads a role list checks this first -- an
+    # organization owner whose roles were never read must not grade as an
+    # ordinary member. Empty is only evidence when the read that would have
+    # said so ran.
+    roles_complete: bool = True
 
     @property
     def complete(self) -> bool:
@@ -288,6 +297,7 @@ class SourceMeta:
             "gaps": self.gaps,
             "activity_since": format_time(self.activity_since),
             "activity_complete": self.activity_complete,
+            "roles_complete": self.roles_complete,
         }
 
 

@@ -14,7 +14,7 @@
    | `okta.groups.read` | Groups and members |
    | `okta.apps.read` | Apps and their user and group assignments |
    | `okta.appGrants.read` | API scopes granted to other apps (AR-10) |
-   | `okta.roles.read` | Admin roles of users and API apps (AR-10, AR-11) |
+   | `okta.roles.read` | Admin roles of users and API apps (AR-10, AR-11; AR-18 grades critical without it) |
 | `okta.logs.read` | System Log: what a leaver did after they left, and whose API client secrets they held (AR-13, AR-18) |
 | `okta.apiTokens.read` | API tokens and who owns them (AR-12) |
 
