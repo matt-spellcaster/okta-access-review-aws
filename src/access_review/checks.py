@@ -684,7 +684,7 @@ def _roles_evidence_complete(graph: IdentityGraph, source: str) -> bool:
     return bool(meta and meta.roles_complete)
 
 
-def _roles_unread_note(source: str, roles: list[str]) -> str:
+def _roles_unread_note(source: str, roles: list[str], own: bool = False) -> str:
     """The sentence a finding carries when nobody read the roles.
 
     One helper for both leaver checks, alongside the credential one they each
@@ -695,8 +695,14 @@ def _roles_unread_note(source: str, roles: list[str]) -> str:
     base role and fail the read that would have returned the rest, and a
     sentence saying an elevated role is unknown directly after naming one
     reads as a contradiction rather than as what it is.
+
+    `own` when the account itself says its roles were never read (an Okta user
+    whose `admin_roles` is None); otherwise all that is known is that the
+    source's read did not complete, and the sentence claims no more.
     """
     what = "any further elevated role" if roles else "an elevated role"
+    if own:
+        return f" Its {source} roles were not read, so whether it holds {what} is unknown."
     return f" The {source} role read did not complete, so whether the account holds {what} is unknown."
 
 
@@ -915,10 +921,7 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
                 # owner below a departed ordinary member holding one token,
                 # because the owner's own token happened to be read-only.
                 # Unknown write access is not the milder case: see _write_access.
-                # Neither is an unread role list -- the roles half was the
-                # asymmetry, reading an empty list from a call that never ran
-                # as "holds no elevated role" while the credential half next to
-                # it took the same silence as the worse case.
+                # Nor is an unread role list: see _roles_evidence_complete.
                 severity=("critical" if roles or not roles_known
                           or _write_access(credentials, known) is not False else "high"),
             ))
@@ -1080,7 +1083,19 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         credentials = graph.credentials_for(principal.key)
         known = _credential_evidence_complete(graph, principal.source)
         roles = _elevated_roles(graph, principal)
-        roles_known = _roles_evidence_complete(graph, principal.source)
+        user = users_by_id.get(principal.id) if principal.source == OKTA else None
+        # An Okta user carries its own answer: `admin_roles` is None when its
+        # roles were not read, which the collector never does for a
+        # DEPROVISIONED user, and Okta keeps group-assigned admin roles
+        # through deactivation and restores them on reactivation. The source
+        # flag would be wrong both ways -- True over that None, and False
+        # over a user whose roles were read before a client's roles call was
+        # refused. An Okta client's list is one call that yields [] on any
+        # failure, so a role in it proves that client's read ran; an empty one
+        # and other sources fall back to the source.
+        roles_known = (user.admin_roles is not None if user
+                       else (principal.source == OKTA and bool(roles))
+                       or _roles_evidence_complete(graph, principal.source))
         held = _describe(credentials, ctx.as_of)
         # The source's own word for the account's state, the way AR-17 reports
         # it. The remediation branches on it -- a live account is presumably
@@ -1104,21 +1119,19 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         if not credentials and not known:
             detail += (f" The {principal.source} credential read did not complete, so what it "
                        f"holds is unknown.")
-        # Unconditional where the credential sentence is not, and for the
-        # same reason it is conditional: `_describe` marks an individual
-        # credential whose permissions were unread, so that sentence only
-        # has to cover an empty list. Nothing marks an unread role, so the
-        # only place the absence can be qualified is here -- and a role the
-        # source did return says nothing about the ones it never fetched.
+        # Added whenever roles are unread, even beside a role that was
+        # returned, unlike the credential sentence, which only has to cover
+        # an empty list because `_describe` marks each unread credential.
+        # Nothing marks an unread role, and a role the source did return says
+        # nothing about the ones it never fetched.
         if not roles_known:
-            detail += _roles_unread_note(principal.source, roles)
+            detail += _roles_unread_note(principal.source, roles, own=user is not None)
         # The blast radius, which is the half of the decision the roles and
         # credentials do not show: handover or decommission turns on what
         # stops working. For a disabled Okta user it is what AR-09 would have
         # listed, and AR-09 stands down for these, so this sentence is the
         # only place that access is reported: in full, in AR-09's words, and
         # as what reactivation restores rather than what it reaches today.
-        user = users_by_id.get(principal.id) if principal.source == OKTA else None
         leftover = _leftover_access(ctx.snapshot, user) if user and user.status in DISABLED_STATUSES else None
         reaches = [] if leftover is not None else _reachable(graph, principal)
         if leftover:
@@ -1135,13 +1148,8 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         # treated as elevated. Unknown write access is not the milder case:
         # see _write_access. What the account reaches is deliberately not
         # graded on: an account is not more dangerous for being in a group
-        # everyone is in, and AR-09 never graded on it either.
-        # A role list nobody read is not a short one: `roles` comes back
-        # empty from a refused `okta.roles.read` exactly as it does from a
-        # client that holds nothing, and grading those the same way ranked
-        # a possible Super Administrator as the milder case on the strength
-        # of a call that failed. The write half already read None as the
-        # worse case; this is the half that did not.
+        # everyone is in, and AR-09 never graded on it either. Nor is an
+        # unread role list the milder case: see _roles_evidence_complete.
         elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
         writes = _write_access(credentials, known) is not False
         out.append(check.finding(

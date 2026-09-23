@@ -29,7 +29,7 @@ def test_writes_evidence_with_matching_hashes(tmp_path):
     }
     for name, digest in manifest["files"].items():
         assert hashlib.sha256((d / name).read_bytes()).hexdigest() == digest
-    assert manifest["finding_counts"]["critical"] == 4
+    assert manifest["finding_counts"]["critical"] == 5
 
 
 def test_access_matrix_shows_group_and_direct_app_access(tmp_path):
@@ -39,7 +39,9 @@ def test_access_matrix_shows_group_and_direct_app_access(tmp_path):
     assert rows["hannah.ortiz@acme.example"]["apps"] == "AWS (direct)"
     assert rows["priya.shah@acme.example"]["groups"] == "Engineering"  # built-in groups hidden
     assert rows["omar.haddad@acme.example"]["mfa"] == "n/a"  # PROVISIONED: can't sign in yet
-    assert rows["victor.nguyen@acme.example"]["admin_roles"] == "n/a"
+    # Never read for a DEPROVISIONED user, and not n/a: Okta keeps group-assigned admin
+    # roles through deactivation and restores them on reactivation.
+    assert rows["victor.nguyen@acme.example"]["admin_roles"] == "unknown"
     assert rows["lee.chen@acme.example"]["mfa"] == "none"
     assert rows["omar.haddad@acme.example"]["last_login"] == "never"
     assert rows["lee.chen@acme.example"]["decision"] == ""

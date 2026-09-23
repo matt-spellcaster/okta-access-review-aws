@@ -384,7 +384,8 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             items.append(item("app", user, app.id, app.label, via,
                               *_app_proposal(ctx, user, app, via, handover), app=app))
         if user.status == "DEPROVISIONED":
-            # Okta drops admin roles on deactivation; the leftover groups are
+            # Okta drops directly assigned admin roles on deactivation but keeps
+            # group-assigned ones for reactivation; the leftover groups are
             # AR-09's, or AR-18's where the account is one it has taken over.
             continue
         for role in user.admin_roles or []:

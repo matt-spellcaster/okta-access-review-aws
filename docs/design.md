@@ -75,11 +75,17 @@ asks `_roles_evidence_complete` (`SourceMeta.roles_complete`) first. `.complete`
 its own -- `okta.roles.read` in Okta, the organization-roles endpoints in GitHub -- and both
 sources hand back an empty list when it does. `_elevated_roles` therefore cannot tell "holds no
 elevated role" from "nobody read the roles", so AR-17 and AR-18 grade `critical` on an unread list
-exactly as they do on unknown write access, and say so in the detail (`_roles_unread_note`). The
-half-fixed version of this shipped: the write half already read None as the worse case while the
-roles half beside it read `[]` as the milder one, so a departed organization owner whose roles
-were never fetched graded `high` with a detail naming only a read-only token. Both adapters
-populate the flag -- `Snapshot.roles_complete` comes off `roles_api.allowed` in `collect`, because
+exactly as they do on unknown write access, and say so in the detail (`_roles_unread_note`).
+Otherwise a departed organization owner whose roles were never fetched grades `high` with a
+detail naming only a read-only token. An Okta **user** answers for itself instead: AR-18 reads
+`User.admin_roles is None`, because the collector never reads a DEPROVISIONED user's roles and Okta
+keeps group-assigned admin roles through deactivation and restores them on reactivation, while
+the source flag can be False over a user whose roles were read before a client's call was
+refused. An Okta client whose list names a role proves its own read ran. The note says "its roles
+were not read" only on the account's own evidence, and "the role read did not complete" on the
+source's. `Snapshot.from_dict` derives a missing flag from those Nones and the refusal gap rather
+than assuming the read ran. Both adapters populate the flag -- `Snapshot.roles_complete` comes off
+`roles_api.allowed` in `collect`, because
 `User.admin_roles` has a None for this and `App.admin_roles` does not -- and each wiring point has
 a test that kills its removal, since a projection that drops the field falls back to the
 permissive default and the whole fix goes silently inert.
@@ -214,7 +220,8 @@ is not an answer here the way it is for AR-17: `CredentialKind` is the set of th
 the account they were created under. Severity grades on what the **account** can change, not on it
 having a role: `_elevated_roles` means "above ordinary membership", which for Okta includes
 Read-Only Administrator, so AR-18 filters `READ_ONLY_ROLES` out of it and grades critical on an
-elevated role **or** write access, unknown counting as the worse case. The ownership half is disjoint from AR-15 by
+elevated role **or** write access, unknown -- including an unread role list -- counting as the
+worse case. The ownership half is disjoint from AR-15 by
 construction, not by a filter -- AR-18 walks `principals_of`, indexed on attested identities, and
 AR-15 walks the principals whose best link reaches nobody.
 

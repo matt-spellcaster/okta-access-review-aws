@@ -251,7 +251,7 @@ def collect(
     collected_at = datetime.now(timezone.utc)
     gaps: list[str] = []
     factors_api = _Optional(client, "MFA factors", "okta.users.read", "AR-04", gaps)
-    roles_api = _Optional(client, "admin role assignments", "okta.roles.read", "AR-10 and AR-11", gaps)
+    roles_api = _Optional(client, "admin role assignments", "okta.roles.read", "AR-10, AR-11 and AR-18", gaps)
     grants_api = _Optional(client, "app API scope grants", "okta.appGrants.read", "AR-10", gaps)
     tokens_api = _Optional(client, "Okta API tokens", "okta.apiTokens.read", "AR-12", gaps)
     logs_api = _Optional(client, "System Log events", "okta.logs.read", "AR-13 and AR-18", gaps)
@@ -366,8 +366,8 @@ def collect(
         app_usage_since=usage_since,
         app_usage_complete=usage_complete,
         # The roles read is shared between a user's own assignments and a
-        # service client's, and a refusal leaves both as empty lists. Recorded
-        # here so a check can tell "holds no admin role" from "nobody looked".
+        # service client's. A refusal leaves each user's `admin_roles` None but
+        # each client's `[]`, so this flag is the only record of the second.
         roles_complete=roles_api.allowed,
         apps_complete=apps_complete,
     )
