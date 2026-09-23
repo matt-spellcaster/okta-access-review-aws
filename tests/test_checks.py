@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from collections import defaultdict
 from dataclasses import replace
 from datetime import date
@@ -7,9 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from access_review import checks
 from access_review.checks import (
     CHECKS,
     Config,
+    STANDS_DOWN_FOR,
     Disposition,
     ReviewContext,
     leaver_accountable_accounts,
@@ -84,7 +87,7 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-06": {"omar.haddad"},
         "AR-07": {"sofia.ramos"},
         "AR-08": {"grace.park"},
-        # svc-legacy-etl is DEPROVISIONED and still in Finance with Salesforce,
+        # svc-legacy-etl is DEPROVISIONED and still in Sales with Salesforce,
         # which is this check exactly -- and it is not here. Its register owner
         # has left, so AR-18 has the account and this check stands down: the
         # two remediations contradict. AR-18's detail names the groups and apps
@@ -795,6 +798,30 @@ def test_every_check_says_what_its_remediation_does_to_the_account():
         "AR-01", "AR-02", "AR-07", "AR-09", "AR-12", "AR-13", "AR-14", "AR-17"}
 
 
+def test_only_a_remove_check_stands_down_and_only_for_a_retain_check():
+    """`STANDS_DOWN_FOR` is what history reads to tell a stand-down from a fix,
+    and it is written by hand. A pair the other way round, or with a check that
+    no longer exists, would bridge streaks and hide reopens for nothing."""
+    disposition = {c.id: c.disposition for c in CHECKS}
+    for standing_down, holder in STANDS_DOWN_FOR.items():
+        assert disposition[standing_down] is Disposition.REMOVE
+        assert disposition[holder] is Disposition.RETAIN
+
+
+def test_the_partition_is_computed_once_per_review(demo, monkeypatch):
+    """AR-09, AR-18 and `build_items` all read it, and each computation scans
+    the System Log once per leaver. Swapping an input recomputes it, so a stale
+    partition cannot outlive the graph it was read from."""
+    calls = []
+    compute = checks._leaver_accountable_accounts
+    monkeypatch.setattr(checks, "_leaver_accountable_accounts", lambda ctx: calls.append(1) or compute(ctx))
+    findings, _ = run_checks(demo)
+    build_items(demo, findings)
+    assert len(calls) == 1
+    demo.graph = replace(demo.graph)
+    assert leaver_accountable_accounts(demo) and len(calls) == 2
+
+
 @pytest.mark.parametrize("status", WORST_CASE_STATUSES)
 def test_no_account_is_told_to_go_and_to_stay(demo, tmp_path, status):
     """One account, two findings, opposite remediations: the defect this repo
@@ -840,17 +867,19 @@ def test_the_worst_case_really_does_put_the_two_checks_on_one_account(tmp_path, 
         assert user.status == status
         if status in DISABLED_STATUSES:
             assert ctx.snapshot.groups_for(user.id) and ctx.snapshot.apps_for(user.id)
-            # The group and the app it reaches: `_reachable` has to expand
-            # app-via-group access, which for a deactivated account is the
+            # AR-09's list, in AR-09's words: the group, and the app it gives
+            # back on reactivation, which for a deactivated account is the
             # whole of what is left.
-            assert "Sales" in details[f"{OKTA}/{user.id}"]
+            groups, apps = _restores(details[f"{OKTA}/{user.id}"])
+            assert "Sales" in groups and "Everyone" not in groups
+            assert apps == ["Salesforce"]
         else:
             # Exactly AR-14's case, but for the register entry that exempts it.
             [salesforce] = [a for a in ctx.snapshot.apps if a.label == "Salesforce"]
             assert user.id in salesforce.users and salesforce.assigned[user.id].year == 2022
             assert ctx.snapshot.last_app_sign_in(user.id, salesforce.id) is None
             assert ctx.is_service_account(user)
-        assert "Salesforce" in details[f"{OKTA}/{user.id}"]
+            assert "Salesforce" in _reaches(details[f"{OKTA}/{user.id}"])
     assert not {f.subject for f in findings if f.check_id in {"AR-09", "AR-14"}} & {
         s for u in stood_down for s in (u.login, f"{u.login} / Salesforce")}
 
@@ -873,6 +902,25 @@ def test_a_register_entry_cannot_take_a_leavers_own_account(tmp_path):
     assert proposed["Salesforce"] == REVOKE
 
 
+def test_a_bot_sharing_a_current_employees_email_keeps_its_ar18():
+    """The leaver's-own-account exclusion keys on a roster entry that is gone,
+    not on any roster match. `entry_for` matches on the profile email, which a
+    bot can share with somebody still employed; excluded on that match, the bot
+    lost AR-18 and, being active, was reported by no removal check either."""
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    bot = next(u for u in raw["users"] if u["id"] == "u12")
+    bot["status"] = "ACTIVE"
+    bot["profile"]["email"] = "priya.shah@acme.example"  # active in the roster
+    cfg = Config.load(FIXTURES / "demo_config.json")
+    snapshot = Snapshot.from_dict(raw)
+    ctx = ReviewContext(snapshot, load_roster(FIXTURES / "demo_roster.csv", cfg.timezone()), cfg, AS_OF)
+    ctx.graph = _compose(ctx, snapshot)
+    user = next(u for u in snapshot.users if u.id == "u12")
+    assert ctx.roster_entry(user) is not None and not ctx.roster_entry(user).is_gone(AS_OF)
+    findings, _ = run_checks(ctx)
+    assert f"{OKTA}/u12" in {f.subject for f in findings if f.check_id == "AR-18"}
+
+
 def test_the_partition_says_what_state_the_account_is_in(demo):
     """AR-09's whole finding was the status -- "DEPROVISIONED but still has
     groups" -- and the threat it names is reactivation, not use. AR-18 takes
@@ -885,6 +933,58 @@ def test_the_partition_says_what_state_the_account_is_in(demo):
     assert "(ACTIVE)" in detail["okta/a04"]
     remediation = next(c.remediation for c in CHECKS if c.id == "AR-18")
     assert "still running" not in remediation  # it is not, for the account above
+
+
+def _restores(detail):
+    """The (groups, apps) of AR-18's "Reactivating it restores ..." sentence."""
+    match = re.search(r"Reactivating it restores (.*?)\.(?: |$)", detail)
+    assert match, detail
+    parts = dict(p.split(": ", 1) for p in match.group(1).split("; "))
+    return parts.get("groups", "").split(", "), parts.get("apps", "").split(", ")
+
+
+def _reaches(detail):
+    match = re.search(r"It reaches (.*?)\.(?: |$)", detail)
+    assert match, detail
+    return match.group(1)
+
+
+def test_a_taken_over_disabled_account_lists_what_ar09_would_have(demo, monkeypatch):
+    """AR-09 stands down for these, so AR-18's sentence is the only place the
+    leftover groups and apps are reported. In full, whatever MAX_REACHED_SHOWN
+    says, because on the decommission branch it is the list of what to remove;
+    without Everyone, which nobody can remove; and as what reactivation
+    restores, because Okta has already unassigned a deactivated user from its
+    apps and "reaches" would say otherwise."""
+    monkeypatch.setattr(checks, "MAX_REACHED_SHOWN", 1)
+    detail = {f.subject: f.detail for f in run_checks(demo)[0] if f.check_id == "AR-18"}
+    assert "Reactivating it restores groups: Sales; apps: Salesforce." in detail["okta/u12"]
+    assert "It reaches" not in detail["okta/u12"]
+    assert "Reactivating" not in detail["okta/a04"]  # a live API client
+
+
+def test_a_live_accounts_reach_is_truncated_and_says_so(tmp_path, monkeypatch):
+    """An org-wide group over 250 apps would put 250 labels in a ticket body,
+    so a live account's reach is cut -- and says so, or the cut list reads as
+    the whole of it."""
+    ctx = _worst_case(tmp_path, "ACTIVE")
+    [user] = [u for u in ctx.snapshot.users if u.login == "svc-legacy-etl@acme.example"]
+    full = _reaches(next(f.detail for f in run_checks(ctx)[0] if f.subject == f"{OKTA}/{user.id}"))
+    reach = full.split(", ")
+    assert "Salesforce" in reach and len(reach) > 1
+    monkeypatch.setattr(checks, "MAX_REACHED_SHOWN", 1)
+    cut = _reaches(next(f.detail for f in run_checks(ctx)[0] if f.subject == f"{OKTA}/{user.id}"))
+    assert cut == f"{reach[0]} and {len(reach) - 1} more"
+
+
+def test_a_state_the_source_did_not_word_still_reaches_the_record(demo):
+    """AR-18's remediation branches on whether the account is live, so a
+    principal the source gave no status word for still says it is disabled."""
+    principals = tuple(replace(p, source_status="") if p.key == (OKTA, "u12") else p
+                       for p in demo.graph.principals)
+    demo.graph = replace(demo.graph, principals=principals)
+    detail = {f.subject: f.detail for f in run_checks(demo)[0] if f.check_id == "AR-18"}
+    assert detail["okta/u12"].startswith("svc-legacy-etl@acme.example (disabled):")
 
 
 def test_the_partition_is_inert_without_a_graph(demo):

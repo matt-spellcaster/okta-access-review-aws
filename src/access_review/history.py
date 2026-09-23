@@ -190,21 +190,33 @@ def repeat_summary(findings: list[Finding]) -> str | None:
 
 
 def age_findings(findings: list[Finding], history: History, as_of: date,
-                 okta_subjects: dict[str, str] | None = None) -> None:
+                 okta_subjects: dict[str, str]) -> None:
     """Set first_seen, reviews_open and reopened on each finding. Leaves them unset with no history.
 
     `okta_subjects` is `checks.okta_user_subjects` for this review: how an Okta
-    login is named by a graph check, which `_taken_over` needs."""
+    login is named by a graph check, which `_held` needs. Required, because
+    leaving it out cannot join any login and so could not tell one account's
+    stand-down from another's."""
     if not history.reviews:
         return
     previous = history.reviews[-1]
     for f in findings:
         key = (f.check_id, subject_key(f.subject))
-        streak = 1  # this review
+        # A review where the check this one stands down for held the account
+        # bridges a streak rather than breaking it: the finding was reported
+        # there under the other check's name, so it never went away. Only as a
+        # bridge -- held reviews count once the walk reaches a review that
+        # reported this finding itself, so a finding this check never reported
+        # before is still "New", not "3 reviews in a row, first seen today".
+        streak, bridged = 1, 0  # this review
         for review in reversed(history.reviews):
-            if review.keys is None or key not in review.keys:
+            if review.keys is not None and key in review.keys:
+                streak += bridged + 1
+                bridged = 0
+            elif _held(f, review, okta_subjects):
+                bridged += 1
+            else:
                 break
-            streak += 1
         seen = [r.review_date for r in history.reviews if r.keys is not None and key in r.keys]
         f.reviews_open = streak
         f.first_seen = seen[0] if seen else as_of.isoformat()
@@ -218,31 +230,34 @@ def age_findings(findings: list[Finding], history: History, as_of: date,
             and previous.keys is not None
             and key not in previous.keys
             and f.check_id not in previous.skipped
-            and not _taken_over(f, previous, okta_subjects or {})
+            and _held(f, previous, okta_subjects) is False
         )
 
 
-def _taken_over(finding: Finding, previous: PriorReview, okta_subjects: dict[str, str]) -> bool:
-    """Whether another check was holding this finding's account last review.
+def _held(finding: Finding, review: PriorReview, okta_subjects: dict[str, str]) -> bool | None:
+    """Whether another check was holding this finding's account in `review`.
 
     The other way a check can be absent from a review without having found
     nothing. AR-09 stands down for the accounts AR-18 reports
     (`checks.STANDS_DOWN_FOR`), so an AR-09 finding that vanished while AR-18
     held the account, and came back once somebody recorded a new owner, never
     went away at all. "Back again" would assert the access was removed and
-    returned, on evidence that says the opposite.
+    returned, on evidence that says the opposite, and "New" would hide how long
+    it has been open.
 
     Per account and per check. The finding names the account by its login and
     the holding check by `graph_subject`, so the two are joined through
-    `okta_subjects`; every other check, and every other account, keeps its
-    "Back again". Where the login cannot be joined (no graph was built), any
-    finding by the holding check last review is taken as holding it: this file
-    counts lower when unsure.
+    `okta_subjects`; every other check, and every other account, is never held.
+    None when the login cannot be joined and the holding check did report
+    something that review, which `run_review` cannot produce (the graph holds
+    every Okta user): not held for the streak, which needs the evidence to
+    carry it, and not clear for "Back again", which needs the evidence to
+    assert it.
     """
     holder = STANDS_DOWN_FOR.get(finding.check_id)
-    if holder is None or previous.keys is None:
+    if holder is None or review.keys is None:
         return False
     subject = okta_subjects.get(subject_key(finding.subject))
     if subject is None:
-        return any(check_id == holder for check_id, _ in previous.keys)
-    return (holder, subject_key(subject)) in previous.keys
+        return None if any(check_id == holder for check_id, _ in review.keys) else False
+    return (holder, subject_key(subject)) in review.keys

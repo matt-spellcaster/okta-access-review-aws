@@ -19,7 +19,7 @@
     {
       "id": "svc-legacy-etl@acme.example",
       "owner": "marcus.lee@acme.example",
-      "purpose": "Nightly Salesforce extract",
+      "purpose": "Nightly CRM extract",
       "reviewed": "2026-07-01"
     },
     {

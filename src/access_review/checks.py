@@ -7,6 +7,7 @@ SOC 2 and ISO 27001:2022 controls it provides evidence for.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -137,6 +138,11 @@ class ReviewContext:
     # Okta, which is every review until the other sources have collectors, so
     # checks that need it are skipped rather than run against half an estate.
     graph: IdentityGraph | None = None
+    # `leaver_accountable_accounts`, kept with the inputs it was computed from:
+    # AR-09, AR-18 and `items.build_items` all read it, and each computation
+    # scans the System Log once per leaver. Recomputed if any input is swapped,
+    # which tests do to `graph` after construction.
+    _accountable: tuple | None = field(default=None, init=False, repr=False, compare=False)
 
     def roster_entry(self, user: User) -> RosterEntry | None:
         return entry_for(self.roster, user.email, user.login)
@@ -311,7 +317,8 @@ def _disabled_with_access(ctx: ReviewContext, check: Check) -> list[Finding]:
     # Two subjects for one account -- the login here, `okta/<id>` there -- so no
     # hashed ticket label could ever collapse them, and the reviewer got both.
     # AR-18 takes over the whole account and names the groups and apps this
-    # finding would have listed, so nothing is dropped by standing down.
+    # finding would have listed, through the same `_leftover_access`, so
+    # nothing is dropped by standing down.
     # `STANDS_DOWN_FOR` records this for history.
     #
     # Read from the one helper AR-18 itself walks rather than re-derived here:
@@ -323,16 +330,29 @@ def _disabled_with_access(ctx: ReviewContext, check: Check) -> list[Finding]:
     for u in ctx.snapshot.users:
         if u.status not in DISABLED_STATUSES or (OKTA, u.id) in taken:
             continue
-        groups = [g.name for g in ctx.snapshot.groups_for(u.id) if g.type != "BUILT_IN"]
-        apps = sorted({app.label for app, _ in ctx.snapshot.apps_for(u.id)})
-        if groups or apps:
-            parts = []
-            if groups:
-                parts.append(f"groups: {', '.join(sorted(groups))}")
-            if apps:
-                parts.append(f"apps: {', '.join(apps)}")
-            out.append(check.finding(u.login, f"Status {u.status} but still has {'; '.join(parts)}."))
+        leftover = _leftover_access(ctx.snapshot, u)
+        if leftover:
+            out.append(check.finding(u.login, f"Status {u.status} but still has {leftover}."))
     return out
+
+
+def _leftover_access(snapshot: Snapshot, user: User) -> str:
+    """A disabled Okta user's groups and apps, in full, as AR-09 lists them;
+    empty when it holds none.
+
+    AR-18 lists them the same way for the disabled accounts AR-09 stands down
+    for, so what the reviewer is told to remove on the decommission branch is
+    exactly what AR-09 would have said. BUILT_IN groups are left out: nobody
+    can remove a user from Everyone.
+    """
+    groups = sorted(g.name for g in snapshot.groups_for(user.id) if g.type != "BUILT_IN")
+    apps = sorted({app.label for app, _ in snapshot.apps_for(user.id)})
+    parts = []
+    if groups:
+        parts.append(f"groups: {', '.join(groups)}")
+    if apps:
+        parts.append(f"apps: {', '.join(apps)}")
+    return "; ".join(parts)
 
 
 def _privileged_service_app(ctx: ReviewContext, check: Check) -> list[Finding]:
@@ -586,24 +606,8 @@ def graph_findings_by_identity(
     be a second, separate opinion about the format, and the day a source name
     contains a slash it would be a wrong one.
     """
-    if graph is None:
-        return {}
-    principals = {graph_subject(p): p for p in graph.principals}
     out: dict[str, list[tuple[Finding, Link]]] = {}
-    for f in findings:
-        if f.check_id not in GRAPH_CHECKS:
-            continue
-        principal = principals.get(f.subject)
-        if principal is None:
-            continue
-        link = graph.link_for(principal.key)
-        # Unlinked or contested, or declared with nobody named: there is no
-        # person to show this to. It is still in the report and still gets a
-        # ticket -- AR-15 exists for exactly this -- but it cannot be put on
-        # somebody's review item without inventing the attribution the graph
-        # deliberately refused to make.
-        if link is None or not link.identity:
-            continue
+    for f, link in _attributed(graph, findings):
         out.setdefault(link.identity, []).append((f, link))
     return out
 
@@ -620,14 +624,21 @@ def graph_findings_by_subject(
     otherwise say nothing is flagged while a high finding names it.
 
     An exact match on the principal id, not an inference: the subject is that
-    principal. Unlinked and contested principals are kept out for the same
-    reason as there, so that the two lists cannot disagree about which findings
-    a reviewer may be shown.
+    principal. Both go through `_attributed`, so the two cannot disagree about
+    which findings a reviewer may be shown.
     """
-    if graph is None:
-        return {}
-    principals = {graph_subject(p): p for p in graph.principals}
     out: dict[str, list[tuple[Finding, Link]]] = {}
+    for f, link in _attributed(graph, findings):
+        out.setdefault(f.subject, []).append((f, link))
+    return out
+
+
+def _attributed(graph: IdentityGraph | None, findings) -> Iterator[tuple[Finding, Link]]:
+    """The graph findings a reviewer may be shown, each with the link that
+    ties its principal to a person."""
+    if graph is None:
+        return
+    principals = {graph_subject(p): p for p in graph.principals}
     for f in findings:
         if f.check_id not in GRAPH_CHECKS:
             continue
@@ -635,10 +646,14 @@ def graph_findings_by_subject(
         if principal is None:
             continue
         link = graph.link_for(principal.key)
+        # Unlinked or contested, or declared with nobody named: there is no
+        # person to show this to. It is still in the report and still gets a
+        # ticket -- AR-15 exists for exactly this -- but it cannot be put on
+        # somebody's review item without inventing the attribution the graph
+        # deliberately refused to make.
         if link is None or not link.identity:
             continue
-        out.setdefault(f.subject, []).append((f, link))
-    return out
+        yield f, link
 
 
 def _credential_evidence_complete(graph: IdentityGraph, source: str) -> bool:
@@ -881,11 +896,10 @@ def _reachable(graph: IdentityGraph, principal: Principal) -> list[str]:
     credentials does not show one -- but not the same list: that one includes
     ROLE grants and never truncates.
 
-    Whatever the source stated, plus what its groups reach. For a deactivated
-    Okta account app-via-group is the whole of what is left, because Okta
-    unassigns a deactivated user from every app and keeps only its group
-    memberships, so reading the stated grants alone would report the groups and
-    miss what they open.
+    Whatever the source stated, plus what its groups reach. Not used for a
+    disabled Okta user: Okta has unassigned it from every app, so "reaches"
+    would overstate it, and what its surviving groups give back on reactivation
+    is `_leftover_access`, listed in full as AR-09 lists it.
     """
     return sorted({g.target_label or g.target
                    for g in graph.grants_for(principal.key)
@@ -908,17 +922,32 @@ def leaver_accountable_accounts(ctx: ReviewContext) -> dict[PrincipalKey, dict[s
     no roster, which is the direction that fails safe: AR-18 runs on neither,
     so nothing stands down for a check that did not report.
 
-    An Okta account with a roster entry of its own is never in it. HR lists
-    that account as a person, so a register entry calling it a service account
-    is contradicted by the stronger record, and the account is the removal
-    checks' to report (AR-01, AR-09, AR-13) -- which they do, so it is not
-    silence. Taken here, a leaver's own account declared with an owner was told
-    to go by AR-13 and to stay by AR-18, and AR-09 went quiet.
+    A leaver's own Okta account is never in it: an account whose roster entry
+    says it is gone. HR lists that account as a person who left, so a register
+    entry calling it a service account is contradicted by the stronger record,
+    and the account is the removal checks' to report (AR-01, AR-02, AR-09,
+    AR-13) -- which they do, because every one of them fires on a gone entry, so
+    it is not silence. Taken here, a leaver's own account declared with an owner
+    was told to go by AR-13 and to stay by AR-18, and AR-09 went quiet.
+
+    Only a *gone* entry, not any roster match. `entry_for` matches on the
+    profile email, which a bot can share with a person still here, and for an
+    active entry no removal check fires: excluding it dropped AR-18 from the
+    whole review with no gap to say so.
     """
+    inputs = (ctx.snapshot, ctx.roster, ctx.config, ctx.graph, ctx.as_of)
+    if ctx._accountable is not None and all(a is b for a, b in zip(ctx._accountable[0], inputs)):
+        return ctx._accountable[1]
+    why = _leaver_accountable_accounts(ctx)
+    ctx._accountable = (inputs, why)
+    return why
+
+
+def _leaver_accountable_accounts(ctx: ReviewContext) -> dict[PrincipalKey, dict[str, list[str]]]:
     if ctx.graph is None or ctx.roster is None:
         return {}
     graph = ctx.graph
-    rostered = {(OKTA, u.id) for u in ctx.snapshot.users if ctx.roster_entry(u) is not None}
+    leavers_own = {(OKTA, u.id) for u, _ in _leavers(ctx)}
     # By identity, not by leaver, for the reason `_leaver_access_outside_okta`
     # gives: one person with two Okta logins would otherwise be two findings
     # about the one service account, and so two tickets. A leaver with no
@@ -940,7 +969,7 @@ def leaver_accountable_accounts(ctx: ReviewContext) -> dict[PrincipalKey, dict[s
         gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
         person = f"{entry.name or (users[0].login if who.startswith('user:') else who)} {gone}"
         for principal in graph.principals_of(who):
-            if principal.kind is not PrincipalKind.SERVICE or principal.key in rostered:
+            if principal.kind is not PrincipalKind.SERVICE or principal.key in leavers_own:
                 continue
             link = graph.link_for(principal.key)
             if link is None:  # principals_of is built from these; belt and braces
@@ -983,7 +1012,7 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
     It takes the whole account, not just its credentials: `_disabled_with_access`
     stands down for these and `items._app_proposal` stops proposing Revoke on
     them, so the groups and apps a disabled one still holds are reported here or
-    nowhere. That is what `_reachable` is for.
+    nowhere. That is what `_leftover_access` is for.
 
     The ownership half is disjoint from AR-15 by construction: it walks
     `principals_of`, indexed on identities some source attested, and AR-15
@@ -993,6 +1022,7 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
     graph = ctx.graph
     out = []
     apps = {a.id: a for a in ctx.snapshot.apps}
+    users_by_id = {u.id: u for u in ctx.snapshot.users}
     for key, people in sorted(leaver_accountable_accounts(ctx).items()):
         said = "; ".join(f"{person}, and {'; and '.join(reasons)}" for person, reasons in people.items())
         principal = graph.principal(key)
@@ -1036,11 +1066,16 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
                        f"holds is unknown.")
         # The blast radius, which is the half of the decision the roles and
         # credentials do not show: handover or decommission turns on what
-        # stops working. It is also what AR-09 would have listed for a
-        # disabled Okta service account, and AR-09 stands down for these, so
-        # this sentence is the only place that access is reported.
-        reaches = _reachable(graph, principal)
-        if reaches:
+        # stops working. For a disabled Okta user it is what AR-09 would have
+        # listed, and AR-09 stands down for these, so this sentence is the
+        # only place that access is reported: in full, in AR-09's words, and
+        # as what reactivation restores rather than what it reaches today.
+        user = users_by_id.get(principal.id) if principal.source == OKTA else None
+        leftover = _leftover_access(ctx.snapshot, user) if user and user.status in DISABLED_STATUSES else None
+        reaches = [] if leftover is not None else _reachable(graph, principal)
+        if leftover:
+            detail += f" Reactivating it restores {leftover}."
+        elif reaches:
             shown = ", ".join(reaches[:MAX_REACHED_SHOWN])
             more = (f" and {len(reaches) - MAX_REACHED_SHOWN} more"
                     if len(reaches) > MAX_REACHED_SHOWN else "")

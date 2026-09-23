@@ -151,9 +151,9 @@ whether the leaver's own account was used after their last working day. A client
 after they leave is what it is for, not their activity. Okta keeps 90 days of log data, so a
 termination older than that is reported as a gap rather than as nothing to see.
 
-AR-09 is in the same partition, for a declared bot account that is deactivated and still holds groups
-and apps: AR-18 takes the account and names its state and what it reaches, so the reviewer sees the
-blast radius while deciding between handover and decommission. Every check declares whether its
+AR-09 stands down the same way for a declared bot account that is deactivated and still holds groups
+and apps: AR-18 takes the account, names its state and lists the groups and apps reactivating it
+would restore, so the reviewer sees the blast radius while deciding between handover and decommission. Every check declares whether its
 remediation removes the account's access, keeps the account running, or neither, and a test asserts
 that no account is the subject of both a removal and a keep.
 

@@ -375,14 +375,7 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     # walks rather than from its findings: `findings` is optional here, and an
     # item that prejudged a handover only when somebody remembered to pass them
     # would be the silent half of the partition.
-    #
-    # Narrowed to user ids. An Okta principal is a user or an API client, the
-    # two share the `okta` source, and this set is tested against `user.id` --
-    # real Okta ids keep the namespaces apart (`00u...` against `0oa...`) but
-    # that is the API's habit, not a guarantee this file should rest on.
-    okta_users = {u.id for u in ctx.snapshot.users}
-    handover = frozenset(pid for source, pid in leaver_accountable_accounts(ctx)
-                         if source == OKTA and pid in okta_users)
+    handover = frozenset(pid for source, pid in leaver_accountable_accounts(ctx) if source == OKTA)
     items: list[ReviewItem] = []
     for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
         for app, via in ctx.snapshot.apps_for(user.id):

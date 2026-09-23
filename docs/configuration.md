@@ -96,10 +96,11 @@ What each field changes:
   accountable for it. The same finding asks for every secret the leaver held to be rotated, which
   leaves the client running for its new owner. An ordinary Okta *user* account listed here is
   covered too: declaring it makes it a service account, so if it is deactivated and still holds
-  groups and apps, AR-09 leaves it to AR-18 and AR-18 names its state and what it reaches — the
-  reviewer needs the blast radius to choose between handover and decommission, and the proposal on
-  the review screen becomes "decide" rather than "revoke". An account the HR roster lists as a
-  person is never taken this way: it stays with the leaver checks, whatever the register says.
+  groups and apps, AR-09 leaves it to AR-18, and AR-18 names its state and lists the groups and apps
+  reactivating it would restore — the reviewer needs the blast radius to choose between handover and
+  decommission, and the proposal on the review screen becomes "decide" rather than "revoke". An
+  account the HR roster lists as a person who has left is never taken this way: it stays with the
+  leaver checks, whatever the register says.
   A `reviewed` date on the entry is what tells the reviewer how old the claim they are replacing is.
 - **No owner** is reported by AR-15 one severity milder than an undeclared account, never silently.
   Somebody wrote the account down and named nobody; that is worth a rung and no more.

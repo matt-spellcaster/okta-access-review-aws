@@ -231,26 +231,43 @@ of AR-18's accounts; AR-18 walks it, `_disabled_with_access` stands down for the
 and `items._app_proposal` proposes `decide` rather than Revoke on them, because approving a revoke
 would take the decommission branch as a signed decision. It is empty without a graph or a roster, so
 the partition switches off rather than silencing anything. Standing down is safe only because AR-18
-names the account's state and what it reaches (`_reachable`): a deactivated Okta user keeps its group
-memberships and loses its apps and API tokens, so app-via-group is what survives. An Okta account
-with a roster entry of its own is never in the set: HR lists it as a person, so the leaver checks
-report it, and a register entry declaring a leaver's own account cannot move it from Okta-verified
-removal to a reviewer's handover.
+names the account's state and, for a disabled Okta user, lists the groups and apps AR-09 would have
+listed, through the same `_leftover_access`, in full and without BUILT_IN groups. It says
+"reactivating it restores" rather than "reaches": Okta unassigns a deactivated user from every app and
+keeps its group memberships, so the apps are what those groups give back. A leaver's own Okta account,
+one whose roster entry is gone, is never in the set: HR lists it as a person who left, so the leaver
+checks report it, and a register entry declaring it cannot move it from Okta-verified removal to a
+reviewer's handover. Only a gone entry: `entry_for` matches on the profile email, a bot can share one
+with somebody still employed, and for an active entry no removal check fires, so excluding it would
+drop AR-18 with nothing in its place.
 
-Two consequences outside the checks. `history._taken_over`: an AR-09 finding that vanished while
-AR-18 held **that** account is not "Back again" -- it never went. It is per check
-(`checks.STANDS_DOWN_FOR`) and per account (`checks.okta_user_subjects` joins the login to the graph
-subject); keyed on "any AR-18 finding last review" it hid every genuine reopen on eight checks. And
-`handlers.verify_daily` builds no graph: with one, AR-09 would stand down, an AR-09 ticket an earlier
-review opened would read as absent, and `watch.daily` would close it as done in Okta for groups
-nobody touched. `test_the_daily_recheck_keeps_an_ar09_ticket_open` calls the handler.
+Two consequences outside the checks. `history._held`: an AR-09 finding that vanished while AR-18
+held **that** account is not "Back again" -- it never went -- and not "New" either: the held review
+bridges its streak, so first_seen and reviews_open carry across it. Only as a bridge: a finding AR-09
+never reported before is still new. It is per check (`checks.STANDS_DOWN_FOR`) and per account
+(`checks.okta_user_subjects` joins the login to the graph subject); keyed on "any AR-18 finding last
+review" it hid every genuine reopen on eight checks. And `handlers.verify_daily` builds no graph: with
+one, AR-09 would stand down, an AR-09 ticket an earlier review opened would read as absent, and
+`watch.daily` would close it as done in Okta for groups nobody touched.
+`test_the_daily_recheck_keeps_an_ar09_ticket_open` calls the handler.
+
+Two limits this leaves, stated rather than hidden. The partition holds within one review, not across
+reviews: if an earlier review opened an AR-09 ticket for an account a later review hands to AR-18
+(its owner left in between), that ticket stays open and keeps asking for the groups to go, next to
+AR-18's handover ticket, because `verify_daily` still sees AR-09. Nothing yet links or supersedes the
+older ticket. And the register is trusted: an entry naming a leaver as owner moves a disabled account
+with no gone roster entry from AR-09, which closes on an Okta read, to AR-18, which closes on the
+reviewer's word. The account is still reported, and at a higher severity, but the proof it was
+cleaned up is weaker. Anyone who can edit the register can already declare accounts, so this is a
+trust assumption about the register, not a new capability.
 
 ## Review items and cross-source findings
 
 Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes
 "decide" instead.
 A cross-source finding reaches the reviewer through `checks.graph_findings_by_identity`, which goes
-subject -> principal -> strongest link -> identity. Never match a graph finding to a person by
+subject -> principal -> strongest link -> identity, or, on the account's own item, through
+`checks.graph_findings_by_subject`, which matches the subject to that exact principal. Never match a graph finding to a person by
 login, label or email similarity: the link already carries the evidence. A principal that is
 unlinked or contested, or declared with nobody named, reaches no one's review item -- putting it
 on somebody's screen would assert the attribution the graph refused to make. `GRAPH_CHECKS` is
