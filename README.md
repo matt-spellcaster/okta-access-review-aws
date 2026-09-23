@@ -124,7 +124,7 @@ those and nothing else.
 | AR-06 | Created 14+ days ago and never used | medium | SOC 2 CC6.2 · ISO A.5.16 |
 | AR-07 | Contractor in an employee-only group | medium | SOC 2 CC6.3 · ISO A.5.15 |
 | AR-08 | Missing manager or department | low | SOC 2 CC6.2 · ISO A.5.16 |
-| AR-09 | Suspended or deprovisioned, but still in groups or apps | medium | SOC 2 CC6.2 · ISO A.5.18 |
+| AR-09 | Suspended or deprovisioned, but still in groups or apps (unless it is a service account AR-18 has) | medium | SOC 2 CC6.2 · ISO A.5.18 |
 | AR-10 | Service app with write scopes or an admin role that can make changes (high if Super Administrator) | medium | SOC 2 CC6.3 · ISO A.8.2 |
 | AR-11 | Admin user, for the reviewer to confirm | info | SOC 2 CC6.3 · ISO A.8.2 |
 | AR-12 | Leaver still holds a working API token | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
@@ -150,6 +150,12 @@ not its owner. AR-13 reads the System Log to say
 whether the leaver's own account was used after their last working day. A client going on running
 after they leave is what it is for, not their activity. Okta keeps 90 days of log data, so a
 termination older than that is reported as a gap rather than as nothing to see.
+
+AR-09 is in the same partition, for a declared bot account that is deactivated and still holds groups
+and apps: AR-18 takes the account and names its state and what it reaches, so the reviewer sees the
+blast radius while deciding between handover and decommission. Every check declares whether its
+remediation removes the account's access, keeps the account running, or neither, and a test asserts
+that no account is the subject of both a removal and a keep.
 
 ## Evidence produced
 

@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from . import csvsafe
-from .checks import Finding
+from .checks import STANDS_DOWN_FOR, Finding
 
 MAX_FINDINGS_BYTES = 50 * 1024 * 1024
 
@@ -189,8 +189,12 @@ def repeat_summary(findings: list[Finding]) -> str | None:
     return f"Open since the last review: {len(repeats)} of {len(findings)} (longest: {max(repeats)} reviews in a row)"
 
 
-def age_findings(findings: list[Finding], history: History, as_of: date) -> None:
-    """Set first_seen, reviews_open and reopened on each finding. Leaves them unset with no history."""
+def age_findings(findings: list[Finding], history: History, as_of: date,
+                 okta_subjects: dict[str, str] | None = None) -> None:
+    """Set first_seen, reviews_open and reopened on each finding. Leaves them unset with no history.
+
+    `okta_subjects` is `checks.okta_user_subjects` for this review: how an Okta
+    login is named by a graph check, which `_taken_over` needs."""
     if not history.reviews:
         return
     previous = history.reviews[-1]
@@ -214,4 +218,31 @@ def age_findings(findings: list[Finding], history: History, as_of: date) -> None
             and previous.keys is not None
             and key not in previous.keys
             and f.check_id not in previous.skipped
+            and not _taken_over(f, previous, okta_subjects or {})
         )
+
+
+def _taken_over(finding: Finding, previous: PriorReview, okta_subjects: dict[str, str]) -> bool:
+    """Whether another check was holding this finding's account last review.
+
+    The other way a check can be absent from a review without having found
+    nothing. AR-09 stands down for the accounts AR-18 reports
+    (`checks.STANDS_DOWN_FOR`), so an AR-09 finding that vanished while AR-18
+    held the account, and came back once somebody recorded a new owner, never
+    went away at all. "Back again" would assert the access was removed and
+    returned, on evidence that says the opposite.
+
+    Per account and per check. The finding names the account by its login and
+    the holding check by `graph_subject`, so the two are joined through
+    `okta_subjects`; every other check, and every other account, keeps its
+    "Back again". Where the login cannot be joined (no graph was built), any
+    finding by the holding check last review is taken as holding it: this file
+    counts lower when unsure.
+    """
+    holder = STANDS_DOWN_FOR.get(finding.check_id)
+    if holder is None or previous.keys is None:
+        return False
+    subject = okta_subjects.get(subject_key(finding.subject))
+    if subject is None:
+        return any(check_id == holder for check_id, _ in previous.keys)
+    return (holder, subject_key(subject)) in previous.keys

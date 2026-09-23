@@ -202,6 +202,49 @@ elevated role **or** write access, unknown counting as the worse case. The owner
 construction, not by a filter -- AR-18 walks `principals_of`, indexed on attested identities, and
 AR-15 walks the principals whose best link reaches nobody.
 
+## No account is told to go and to stay
+
+Every check declares what its remediation does to the account itself (`Check.disposition`, no
+default): REMOVE takes the access or the account away, RETAIN keeps it running under somebody new,
+NEITHER takes no position. REMOVE and RETAIN on one account are two tickets telling one assignee
+opposite things, and the REMOVE one closes on a fresh Okta read that only the removal satisfies, so
+the handover is signed off as done by something that asked for the opposite. That was found by a
+person reading two remediations side by side three times (AR-17, AR-12, AR-09), so
+`test_no_account_is_told_to_go_and_to_stay` asserts it instead. When classifying, the question is
+not whether the sentence says "remove": it is whether carrying out this remediation undoes the other
+one's premise. Narrowing an API client's scopes (AR-10) leaves the client running, so it is NEITHER;
+AR-02's "or get the end date extended" corrects the data rather than offering an equal branch, so it
+is REMOVE; AR-15 asks who is accountable, which is compatible with the groups having gone, so it is
+NEITHER though its sentence looks like AR-18's.
+
+The guard keys on the finding's **subject**, which is what a ticket is identified by, and resolves
+each subject to an account, failing on a shape it was not taught. It runs against the demo and
+against worst cases that bend the fixture until AR-18's Okta user account is also reachable by a
+removal check: deactivated in each of `DISABLED_STATUSES` (AR-09), and active with an old direct
+assignment (AR-14, which exempts register-declared accounts, and that exemption is what the test
+guards). The demo alone would pass on a review where nothing happened to overlap.
+
+**AR-09 stands down for AR-18.** The register makes any Okta user it declares a service account, so
+a declared bot that is deactivated and still in groups got AR-09's "remove them" under its login and
+AR-18's "hand it over" under `okta/<id>`. `checks.leaver_accountable_accounts` is the one computation
+of AR-18's accounts; AR-18 walks it, `_disabled_with_access` stands down for the Okta users in it,
+and `items._app_proposal` proposes `decide` rather than Revoke on them, because approving a revoke
+would take the decommission branch as a signed decision. It is empty without a graph or a roster, so
+the partition switches off rather than silencing anything. Standing down is safe only because AR-18
+names the account's state and what it reaches (`_reachable`): a deactivated Okta user keeps its group
+memberships and loses its apps and API tokens, so app-via-group is what survives. An Okta account
+with a roster entry of its own is never in the set: HR lists it as a person, so the leaver checks
+report it, and a register entry declaring a leaver's own account cannot move it from Okta-verified
+removal to a reviewer's handover.
+
+Two consequences outside the checks. `history._taken_over`: an AR-09 finding that vanished while
+AR-18 held **that** account is not "Back again" -- it never went. It is per check
+(`checks.STANDS_DOWN_FOR`) and per account (`checks.okta_user_subjects` joins the login to the graph
+subject); keyed on "any AR-18 finding last review" it hid every genuine reopen on eight checks. And
+`handlers.verify_daily` builds no graph: with one, AR-09 would stand down, an AR-09 ticket an earlier
+review opened would read as absent, and `watch.daily` would close it as done in Okta for groups
+nobody touched. `test_the_daily_recheck_keeps_an_ar09_ticket_open` calls the handler.
+
 ## Review items and cross-source findings
 
 Review proposals (`items.py`) never propose Revoke on missing or truncated data; the item becomes

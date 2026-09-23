@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .checks import Config, Finding, ReviewContext, run_checks
+from .checks import Config, Finding, ReviewContext, okta_user_subjects, run_checks
 from .history import age_findings, load_history
 from .identity import OKTA, GitHubSnapshot, IdentityGraph, project_github, project_snapshot
 from .items import ITEMS_FILE, ReviewItem, build_items, items_chunks
@@ -106,7 +106,7 @@ def run_review(
     ctx = ReviewContext(snapshot, roster, config, as_of, graph=graph)
     findings, skipped = run_checks(ctx)
     history = load_history(out_dir, run_dir_name(snapshot), snapshot.org_url, as_of, config.history_reviews)
-    age_findings(findings, history, as_of)
+    age_findings(findings, history, as_of, okta_user_subjects(graph, snapshot))
     items = build_items(ctx, findings) if require_items else None
     if items is not None:
         # The chunks, not the document: this is the one file in the folder

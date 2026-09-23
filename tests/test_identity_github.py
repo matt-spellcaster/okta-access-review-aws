@@ -372,7 +372,7 @@ def test_a_leaver_holds_access_in_both_sources(both):
 
 def test_composed_coverage_spans_both_sources(both):
     coverage = both.coverage()
-    assert coverage.total == 13 + 13
+    assert coverage.total == 14 + 13
     assert coverage.by_method["sso_identity"] == 10 + 5
     assert coverage.by_method["verified_email"] == 1
     # 0 unlinked in Okta: the register declares its one unlinked principal.
@@ -386,7 +386,8 @@ def test_nothing_joins_two_sources_by_a_similar_login(both):
     # Neither is his because "marcus-lee" looks like "marcus.lee" -- which is
     # what the second half of this test takes away.
     assert {p.label for p in marcus} == {
-        "marcus.lee@acme.example", "marcus-lee", "Terraform Automation"}
+        "marcus.lee@acme.example", "marcus-lee",
+        "Terraform Automation", "svc-legacy-etl@acme.example"}
 
     stripped = GitHubSnapshot.from_dict(json.loads((FIXTURES / "demo_github.json").read_text()))
     for member in stripped.members:

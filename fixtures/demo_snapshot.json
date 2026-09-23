@@ -215,6 +215,22 @@
       },
       "factors": null,
       "adminRoles": []
+    },
+    {
+      "id": "u12",
+      "login": "svc-legacy-etl@acme.example",
+      "status": "DEPROVISIONED",
+      "created": "2022-05-04T09:00:00Z",
+      "lastLogin": "2026-06-02T02:00:00Z",
+      "profile": {
+        "firstName": "Legacy ETL",
+        "lastName": "Service",
+        "email": "svc-legacy-etl@acme.example",
+        "login": "svc-legacy-etl@acme.example",
+        "userType": "Service"
+      },
+      "factors": null,
+      "adminRoles": null
     }
   ],
   "groups": [
@@ -233,7 +249,8 @@
         "u08",
         "u09",
         "u10",
-        "u11"
+        "u11",
+        "u12"
       ]
     },
     {
@@ -271,7 +288,8 @@
       "type": "OKTA_GROUP",
       "members": [
         "u04",
-        "u08"
+        "u08",
+        "u12"
       ]
     }
   ],

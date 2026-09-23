@@ -295,6 +295,54 @@ def test_a_review_that_skipped_the_check_is_not_called_reopened():
     assert g.reopened is True
 
 
+def _reopened(check_id, subject, previous_keys, okta_subjects=None):
+    history = History(reviews=[
+        PriorReview("2026-06-15", "a", "x", {(check_id, subject)}),
+        PriorReview("2026-07-15", "b", "y", previous_keys),
+    ])
+    f = Finding(check_id, "t", "medium", [], subject, "d", "r")
+    age_findings([f], history, date(2026, 9, 15), okta_subjects)
+    return f
+
+
+SUBJECTS = {"svc-legacy-etl@acme.example": "okta/u12", "victor.nguyen@acme.example": "okta/u09"}
+
+
+def test_a_finding_another_check_was_holding_is_not_called_reopened():
+    """The other way a check can be absent without having found nothing. AR-09
+    stands down for the accounts AR-18 reports, so an AR-09 finding that
+    vanished while AR-18 held the account and came back once a new owner was
+    recorded never went away: nobody removed the groups. "Back again" would
+    assert they were removed and returned."""
+    f = _reopened("AR-09", "svc-legacy-etl@acme.example", {("AR-18", "okta/u12")}, SUBJECTS)
+    assert f.reopened is False
+    assert label(f) == "New"  # not "Back again"
+
+
+def test_holding_one_account_does_not_hide_a_reopen_on_another():
+    """Per account and per check. Keyed on "any RETAIN finding last review", one
+    AR-18 finding anywhere in the org hid every genuine "Back again" on eight
+    removal checks: a terminated user reactivated after being fixed read "New"."""
+    # AR-18 held a different account, so this AR-09 finding really did go and come back.
+    assert _reopened("AR-09", "victor.nguyen@acme.example",
+                     {("AR-18", "okta/u12")}, SUBJECTS).reopened is True
+    # AR-01 never stands down for anything, whatever AR-18 reported.
+    assert _reopened("AR-01", "victor.nguyen@acme.example",
+                     {("AR-18", "okta/u12"), ("AR-18", "okta/u09")}, SUBJECTS).reopened is True
+    # Nothing was holding it at all.
+    assert _reopened("AR-09", "svc-legacy-etl@acme.example",
+                     {("AR-04", "lee.chen@acme.example")}, SUBJECTS).reopened is True
+
+
+def test_a_login_that_cannot_be_joined_errs_towards_not_reopened():
+    """Without a graph there is no join from a login to the holding check's
+    subject; any finding by the holding check last review is then taken as
+    holding it, which is the direction this file errs."""
+    assert _reopened("AR-09", "svc-legacy-etl@acme.example", {("AR-18", "okta/u12")}).reopened is False
+    assert _reopened("AR-09", "svc-legacy-etl@acme.example",
+                     {("AR-04", "lee.chen@acme.example")}).reopened is True
+
+
 def test_skipped_checks_are_read_back_from_a_prior_manifest(tmp_path):
     """load_history has to carry skipped_checks off the manifest, or the guard
     above can never fire on a real run."""

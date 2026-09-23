@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -28,6 +28,9 @@ from .checks import (
     ReviewContext,
     app_usage_covers,
     graph_findings_by_identity,
+    graph_findings_by_subject,
+    leaver_accountable_accounts,
+    okta_user_subjects,
     records_sign_ins,
 )
 from .identity import OKTA, Link, LinkMethod, identity_key
@@ -61,6 +64,10 @@ CROSS_SOURCE_TARGET = "Outside this decision"
 CROSS_SOURCE_REASON = ("They have no Okta access of their own left to decide, but a finding about them is "
                        "still open. This review cannot settle it: acknowledge it here, and the finding's "
                        "own ticket tracks the fix.")
+HANDOVER_REASON = (
+    "Service account whose accountable person has left. Whether its access should go depends on "
+    "whether the account is being handed to somebody or shut down, which is the decision AR-18 "
+    "asks for; revoking here would settle it without anybody choosing.")
 # Kinds settled by acknowledging rather than by keep/revoke: the review records
 # that the reviewer saw them, and the work happens elsewhere.
 ACKNOWLEDGE_ONLY = (HR_RECORD, CROSS_SOURCE)
@@ -141,9 +148,20 @@ def item_key(kind: str, user_id: str, target_id: str, via: str) -> str:
     return hashlib.sha256(f"{kind}\x1f{user_id}\x1f{target_id}\x1f{via}".encode()).hexdigest()[:16]
 
 
-def _app_proposal(ctx: ReviewContext, user: User, app: App, via: str) -> tuple[str, str]:
+def _app_proposal(ctx: ReviewContext, user: User, app: App, via: str,
+                  handover: frozenset[str]) -> tuple[str, str]:
     cfg = ctx.config
     entry = ctx.roster_entry(user)
+    # Before the DEPROVISIONED branch, which would otherwise propose Revoke on
+    # an account AR-18 has not finished asking about. AR-18's remediation is
+    # "hand it to somebody, or decommission it": approving a revoke here takes
+    # the second branch by default, and it does so as a signed decision that
+    # opens a ticket closing on an Okta re-read. This is the same partition
+    # `_disabled_with_access` observes, reaching the reviewer through the other
+    # door. Decide, which is what this file already does whenever the review
+    # cannot tell which answer is right.
+    if user.id in handover:
+        return DECIDE, HANDOVER_REASON
     if user.status == "DEPROVISIONED":
         return REVOKE, "Account is deactivated; remove so reactivating it doesn't restore access."
     if entry and entry.is_gone(ctx.as_of):
@@ -265,7 +283,9 @@ def outside_okta_gap(graph) -> str:
 
 
 def outside_okta_concerns(
-    user: User, graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None
+    user: User,
+    graph_by_identity: dict[str, list[tuple[Finding, Link]]] | None,
+    about_account: Iterable[tuple[Finding, Link]] = (),
 ) -> list[str]:
     """What is open about this person that deciding this item does not settle.
 
@@ -286,12 +306,24 @@ def outside_okta_concerns(
     would be signing off a fix nothing verified.
     """
     identity = identity_key(user)
-    if not identity or not graph_by_identity:
+    pairs = list(graph_by_identity.get(identity, ())) if (identity and graph_by_identity) else []
+    # Findings about this very account (`about_account`), which
+    # `graph_by_identity` files under whoever owns it rather than here. AR-18 on
+    # a declared Okta user account is the case: `_disabled_with_access` stands
+    # down for it, so without this the one screen that decides its access says
+    # nothing is flagged. Compared by (check, subject) rather than put in a set
+    # because a finding is unhashable, and the two lists can overlap -- an
+    # account somebody owns and is also the owner of does not need saying twice.
+    for pair in about_account:
+        if not any(f.check_id == pair[0].check_id and f.subject == pair[0].subject
+                   for f, _ in pairs):
+            pairs.append(pair)
+    if not pairs:
         return []
     return _worst_first([
         (f.severity, f"{f.detail} ({f.check_id} {f.title}{LINK_MARKER}"
                      f"{LINK_BASIS.get(link.method, str(link.method))})")
-        for f, link in graph_by_identity.get(identity, ())
+        for f, link in pairs
     ])
 
 
@@ -318,6 +350,8 @@ def role_concern(kind: str, target: str) -> list[str]:
 def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
     """findings are this review's findings (run_checks); they become each item's concerns."""
     graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
+    graph_by_subject = graph_findings_by_subject(ctx.graph, findings)
+    subjects = okta_user_subjects(ctx.graph, ctx.snapshot)
     gap = outside_okta_gap(ctx.graph)
 
     def item(kind: str, user: User, target_id: str, target: str, via: str, proposed: str, reason: str,
@@ -330,20 +364,36 @@ def build_items(ctx: ReviewContext, findings=()) -> list[ReviewItem]:
             target_id, target, via, proposed, reason, CISO,
             name=user.name, facts=tuple(facts),
             concerns=tuple(role_concern(kind, target) + concerns_for(findings, user, kind, app)),
-            outside_okta=tuple(outside_okta_concerns(user, graph_by_identity)),
+            outside_okta=tuple(outside_okta_concerns(
+                user, graph_by_identity, graph_by_subject.get(subjects.get(user.login.casefold()), ()))),
             outside_okta_gap=gap,
         )
 
     admin_groups = {n.lower() for n in ctx.config.admin_groups}
     no_hr_record = {f.subject.lower() for f in findings if f.check_id == "AR-03"}
+    # The Okta accounts AR-18 reports, read from the one helper that check
+    # walks rather than from its findings: `findings` is optional here, and an
+    # item that prejudged a handover only when somebody remembered to pass them
+    # would be the silent half of the partition.
+    #
+    # Narrowed to user ids. An Okta principal is a user or an API client, the
+    # two share the `okta` source, and this set is tested against `user.id` --
+    # real Okta ids keep the namespaces apart (`00u...` against `0oa...`) but
+    # that is the API's habit, not a guarantee this file should rest on.
+    okta_users = {u.id for u in ctx.snapshot.users}
+    handover = frozenset(pid for source, pid in leaver_accountable_accounts(ctx)
+                         if source == OKTA and pid in okta_users)
     items: list[ReviewItem] = []
     for user in sorted(ctx.snapshot.users, key=lambda u: u.login.lower()):
         for app, via in ctx.snapshot.apps_for(user.id):
             if app.service_client:
                 continue
-            items.append(item("app", user, app.id, app.label, via, *_app_proposal(ctx, user, app, via), app=app))
+            items.append(item("app", user, app.id, app.label, via,
+                              *_app_proposal(ctx, user, app, via, handover), app=app))
         if user.status == "DEPROVISIONED":
-            continue  # Okta drops admin roles on deactivation; AR-09 covers leftover groups
+            # Okta drops admin roles on deactivation; the leftover groups are
+            # AR-09's, or AR-18's where the account is one it has taken over.
+            continue
         for role in user.admin_roles or []:
             items.append(item("admin_role", user, role, role, "role", DECIDE, "Admin role; confirm it is still needed."))
         for group in ctx.snapshot.groups_for(user.id):

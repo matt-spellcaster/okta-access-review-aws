@@ -183,6 +183,13 @@ def verify_daily(event, context):
         config, _, roster = _inputs(Path(tmp_name))
     as_of = datetime.now(timezone.utc).date()
     snapshot = collect_okta(_okta(), roster, as_of, config.activity_lookback_days, config.timezone())
+    # No graph, deliberately. The daily re-check answers "is what this ticket
+    # asked for still there", and with a graph AR-09 would stand down for the
+    # accounts AR-18 has -- so an AR-09 ticket an earlier review opened would
+    # read as absent and be closed with "what this ticket asked for is done in
+    # Okta", for groups and apps nobody touched. The graph checks settle on the
+    # reviewer's word (`tickets.REVIEW_CHECKS`), so nothing here needs one.
+    # `test_the_daily_recheck_keeps_an_ar09_ticket_open` pins this.
     findings, _ = run_checks(ReviewContext(snapshot, roster, config, as_of))
     jira = _jira()
     return watch.daily(_deps(tickets=True), jira, snapshot, watch.leaver_access(findings, snapshot),

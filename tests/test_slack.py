@@ -93,7 +93,10 @@ def test_payload_has_summary_and_no_personal_data(demo_run):
     payload = slack.build_payload(snapshot, findings, run_dir, brand="Acme")
     assert payload["text"] == "Acme · Okta access review (complete): 3 critical, acme-demo.okta.com"
     text = all_text(payload)
-    assert "*Critical*   3" in text and "*High*   4" in text and "*15* total" in text
+    # This fixture runs the checks with no graph, so AR-18 is skipped and AR-09
+    # reports the service account it otherwise stands down for -- one finding
+    # either way, and medium rather than high.
+    assert "*Critical*   3" in text and "*High*   4" in text and "*16* total" in text
     assert run_dir.name in text
     for user in snapshot.users:
         assert user.login not in text
@@ -108,7 +111,7 @@ def test_repeat_findings_line_is_counts_only(demo_run):
     for f in findings:
         f.reviews_open, f.first_seen = 2, "2026-06-15"
     text = all_text(slack.build_payload(snapshot, findings, run_dir))
-    assert ":hourglass: Open since the last review: 15 of 15 (longest: 2 reviews in a row)" in text
+    assert ":hourglass: Open since the last review: 16 of 16 (longest: 2 reviews in a row)" in text
     for user in snapshot.users:
         assert user.login not in text
     for app in snapshot.apps:
