@@ -380,7 +380,21 @@
   ],
   "events": [
     {
-      "published": "2026-05-04T15:22:00Z",
+      "published": "2026-06-22T15:10:00Z",
+      "eventType": "application.lifecycle.create",
+      "actorId": "u09",
+      "actorType": "User",
+      "outcome": "SUCCESS",
+      "targets": [
+        {
+          "id": "a05",
+          "type": "AppInstance",
+          "label": "Reporting Bot"
+        }
+      ]
+    },
+    {
+      "published": "2026-06-22T15:12:00Z",
       "eventType": "app.oauth2.credentials.lifecycle.create",
       "actorId": "u09",
       "actorType": "User",
@@ -465,6 +479,12 @@
     }
   ],
   "activity_since": "2026-06-17T00:00:00Z",
+  "activity_actors": [
+    "0oaREPORTBOT",
+    "u02",
+    "u03",
+    "u09"
+  ],
   "app_usage": [
     {
       "userId": "u01",

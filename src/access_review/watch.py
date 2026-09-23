@@ -148,9 +148,13 @@ LEAVER_ACCESS_CHECKS = ("AR-01", "AR-02", "AR-12")
 
 def leaver_access(findings, snapshot: Snapshot) -> set[str] | None:
     """Logins the leaver checks still report on a fresh snapshot, or None when
-    that can't be trusted: API clients a leaver set up are only found through
-    the System Log, so if the log couldn't be read in full, nobody is cleared."""
-    if snapshot.activity_since is None or any("System Log" in g or "AR-12" in g for g in snapshot.gaps):
+    that can't be trusted: if the API token read was refused, a leaver with no
+    tokens listed is not a leaver whose tokens were revoked, so nobody is
+    cleared. The tokens read names AR-12 in its gap, which the test keys on.
+
+    Nothing here reads the System Log: an API client secret a leaver held is
+    AR-18's, settled by a reviewer, because Okta cannot show its rotation."""
+    if any("AR-12" in g for g in snapshot.gaps):
         return None
     return {f.subject.lower() for f in findings if f.check_id in LEAVER_ACCESS_CHECKS}
 
@@ -238,14 +242,17 @@ def daily(deps: Deps, jira, snapshot: Snapshot, leavers: set[str] | None,
                 continue
             stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             if record_verify_mode(rec) == "reviewer":
-                # A judgement call: resolving the ticket is the answer, and nothing in Okta can confirm it.
+                # Resolving the ticket is the answer. Not "nothing in Okta can
+                # confirm it" -- AR-18's can be an Okta API client and a fresh
+                # snapshot could see it go. What is true of every one of these is
+                # that this review does not look again, which is what it says.
                 store.put_record(deps.s3, deps.evidence_bucket, run, "verifications", f"{label}-verified.json", {
                     "issue": rec["issue"], "label": label, "checked_at": stamp, "result": "accepted",
                     "observed": {"resolved_by": "reviewer"},
                 })
                 jira.add_comment(rec["issue"], adf(
-                    f"Resolved on {now.date()}: this ticket asked for a decision, not a change that can be "
-                    f"checked in Okta, so it is taken as done on the reviewer's word."))
+                    f"Resolved on {now.date()}: this review does not re-read this one to confirm the "
+                    f"fix, so it is taken as done on the reviewer's word."))
                 result["verified"] += 1
                 unverified -= 1
                 continue

@@ -313,7 +313,16 @@ def test_nothing_is_matched_on_a_login_or_a_label(demo_graph):
     stripped = replace(graph, links=tuple(x for x in graph.links if x.principal[0] == "okta"))
     ctx = ReviewContext(demo_graph.snapshot, demo_graph.roster, demo_graph.config, AS_OF, graph=stripped)
     items = build_items(ctx, findings)
-    assert not any(graph_concerns(i) for i in items)
+    github = {f.detail for f in findings if f.subject.startswith("github:")}
+    assert github, "nothing from GitHub to strip, so this would pass on an empty set"
+    assert not any(any(detail in c for detail in github)
+                   for i in items for c in graph_concerns(i))
+    # Asserting no graph concern at all would now pass for the wrong reason.
+    # Only the GitHub links were stripped, and what the Okta ones evidence still
+    # has to reach people: the register's claim that marcus.lee owns Terraform
+    # Automation is a declaration, not two names looking alike.
+    marcus = next(i for i in items if i.user.startswith("marcus.lee"))
+    assert any("AR-18" in c for c in graph_concerns(marcus))
 
 
 def test_the_worst_concern_comes_first(demo_graph):

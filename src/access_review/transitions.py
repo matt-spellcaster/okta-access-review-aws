@@ -36,7 +36,7 @@ from datetime import date
 from enum import StrEnum
 
 from .checks import SEVERITIES, Finding, ReviewContext, graph_findings_by_identity
-from .identity import OKTA, identity_key
+from .identity import OKTA, PrincipalKind, identity_key
 from .roster import RosterEntry
 
 TRANSITIONS_FILE = "transitions.json"
@@ -87,8 +87,20 @@ class Transition:
 
     @property
     def outside_okta(self) -> list[dict]:
-        """What Okta deactivation does not reach, which is the whole point."""
-        return [p for p in self.principals if p["source"] != OKTA]
+        """What Okta deactivation does not reach, which is the whole point.
+
+        Not the same set as "not in Okta", which is what this used to return.
+        Deactivating someone's account does nothing to a service account they
+        owned even when that account is an Okta API client -- the token goes on
+        working and something in CI goes on calling it. Those are AR-18's
+        findings, and filtering on source alone counted a leaver who left one
+        behind among the finished departures, in the counts-only summary that
+        reaches Slack and the Step Functions output.
+
+        The field keeps its name, here and in the file: it is what the bundle
+        has always been called and the format is read back by `from_dict`.
+        """
+        return [p for p in self.principals if _unfinished(p)]
 
     def to_dict(self) -> dict:
         return {
@@ -127,6 +139,12 @@ class Transition:
         )
 
 
+def _unfinished(principal: dict) -> bool:
+    """Whether deactivating the person's Okta account leaves this one working:
+    anything in another source, and a service account anywhere."""
+    return principal["source"] != OKTA or principal.get("kind") == str(PrincipalKind.SERVICE)
+
+
 def _finding_row(f: Finding) -> dict:
     return {
         "check_id": f.check_id,
@@ -154,9 +172,10 @@ def _held(ctx: ReviewContext, identity: str) -> list[dict]:
         record["credentials"] = [c.to_dict() for c in graph.credentials_for(principal.key)]
         record["grants"] = [g.to_dict() for g in graph.grants_for(principal.key)]
         out.append(record)
-    # Okta last: the other sources are where the departure is unfinished, and a
-    # reviewer reads the top of the list.
-    out.sort(key=lambda p: (p["source"] == OKTA, p["source"], p["label"]))
+    # Unfinished first, because a reviewer reads the top of the list: what
+    # deactivation did not reach, which includes an Okta API client they owned,
+    # before their own deactivated Okta account.
+    out.sort(key=lambda p: (not _unfinished(p), p["source"], p["label"]))
     return out
 
 
@@ -188,12 +207,22 @@ def build_transitions(ctx: ReviewContext, findings, gaps: list[str]) -> list[Tra
     departure that completed is evidence too, and it is the denominator that
     makes the ones with residue mean anything.
 
-    None -- not an empty list -- when there is no graph or no roster, following
-    `ReviewRun.items`. "Nobody left" and "nothing looked" are different answers,
-    and `summary` of an empty list would report every departure clean and the
-    review complete for a run that never ran this at all.
+    None -- not an empty list -- when there is no roster, or when no source
+    beyond Okta was read, following `ReviewRun.items`. "Nobody left" and
+    "nothing looked" are different answers, and `summary` of an empty list would
+    report every departure clean and the review complete for a run that never
+    ran this at all.
+
+    A graph is no longer the test for that, because a graph is now built from
+    Okta alone so the checks that read one estate can run. The bundle is the
+    artifact about the estates Okta deactivation does not reach, so the thing it
+    needs is a second source, and it asks for that directly. Built from one
+    source it would report every leaver's residue elsewhere as empty, which is
+    silence read as absence in the file written to stop exactly that.
     """
     if ctx.graph is None or ctx.roster is None:
+        return None
+    if not any(m.source != OKTA for m in ctx.graph.sources):
         return None
     graph_by_identity = graph_findings_by_identity(ctx.graph, findings)
     # By identity, not by account: one person with two Okta logins is one

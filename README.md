@@ -127,19 +127,29 @@ those and nothing else.
 | AR-09 | Suspended or deprovisioned, but still in groups or apps | medium | SOC 2 CC6.2 · ISO A.5.18 |
 | AR-10 | Service app with write scopes or an admin role that can make changes (high if Super Administrator) | medium | SOC 2 CC6.3 · ISO A.8.2 |
 | AR-11 | Admin user, for the reviewer to confirm | info | SOC 2 CC6.3 · ISO A.8.2 |
-| AR-12 | Leaver still holds an API token, or an API client they set up | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
+| AR-12 | Leaver still holds a working API token | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.18 |
 | AR-13 | Signed in, or used a credential, after their last working day | critical | SOC 2 CC6.2, CC7.2 · ISO A.5.18, A.8.16 |
 | AR-14 | Directly assigned app with no sign-in to it for 90+ days (skipped if the System Log can't be read in full) | medium | SOC 2 CC6.2 · ISO A.5.18 |
+| AR-15 | Credential nobody is accountable for: no evidence ties the account to a person (high if it can write and may be in use) | medium | SOC 2 CC6.1, CC6.2 · ISO A.5.16, A.5.18 |
+| AR-16 | Access held by an account the source's own user read never returned | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.18 |
+| AR-17 | Someone who left still has access in another source, such as GitHub | critical | SOC 2 CC6.2, CC6.3 · ISO A.5.16, A.5.18, A.8.2 |
+| AR-18 | Service account a leaver owned, or held the secret of (critical if it can change anything) | high | SOC 2 CC6.1, CC6.2, CC6.3 · ISO A.5.16, A.5.17, A.5.18, A.8.2 |
 
 AR-01 to AR-03, AR-12 and AR-13 compare Okta with an HR roster: a CSV exported from the HR system
 and passed in with `--roster` (there's no live HR integration yet). Without it they're skipped, and
 the report says so. Thresholds and group names are configurable.
 
-AR-12 and AR-13 are about the leaver cases an account status doesn't show. An Okta API token keeps
-working after the account is deactivated, and so does an API client the leaver set up, on its own
-credentials. AR-13 reads the System Log to say whether any of it was actually used after their last
-working day. Okta keeps 90 days of log data, so a termination older than that is reported as a gap
-rather than as nothing to see.
+AR-12, AR-13 and AR-18 are about the leaver cases an account status doesn't show. An Okta API token keeps
+working after the account is deactivated: that is AR-12, and the daily check sees the revocation
+in Okta. A copy of an API client secret the leaver created, added or read also keeps working. That is AR-18's,
+together with any client they owned: somebody still here has to answer for it, and every secret they
+held has to be rotated. A reviewer confirms the rotation, because Okta can't show it reliably (a key
+published at a `jwks_uri` never appears there). Only the System Log records who created a client, so
+ownership comes from creation events alone: reading a colleague's secret makes someone its custodian,
+not its owner. AR-13 reads the System Log to say
+whether the leaver's own account was used after their last working day. A client going on running
+after they leave is what it is for, not their activity. Okta keeps 90 days of log data, so a
+termination older than that is reported as a gap rather than as nothing to see.
 
 ## Evidence produced
 
@@ -152,7 +162,7 @@ Each run writes a folder named after its collection time:
 | `findings.csv` | Tracking remediation, with how long each finding has been open |
 | `snapshot.json` | The exact Okta data the checks ran on |
 | `github_snapshot.json` | The GitHub data, when `--github` was given: the cross-source findings rest on it |
-| `transitions.json` | One bundle per departure (with `--github`): everything that person still holds across sources, the evidence linking each account to them, and every finding about them |
+| `transitions.json` | One bundle per departure (with `--github`): everything that person still holds across sources, the evidence linking each account to them, and every finding about them. A departure bundle needs a second estate to be worth writing, so an Okta-only run produces none |
 | `roster.csv` | A copy of the HR roster export the review compared against |
 | `manifest.json` | Config, roster name, row count and hash, completeness, the earlier reviews history was read from, and a SHA-256 hash of every file |
 | `attestations.json` | Added by `access-review attest <folder> --decision approved --reviewer NAME`: sign-offs tied to the manifest's hash ([details](docs/configuration.md#sign-off-attest)) |

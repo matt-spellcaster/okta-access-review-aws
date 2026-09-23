@@ -30,10 +30,19 @@ SIGN_IN_EVENTS = (
 )
 # A credential was exchanged for access: an API client acting, or an app token.
 TOKEN_EVENTS = ("app.oauth2.token.grant", "app.oauth2.authorize.code")
-# A client's credentials were created, rotated or read. These say who set an
-# API client up, which is the only record Okta keeps of who owns one.
-CREDENTIAL_EVENTS = (
-    "app.oauth2.client.lifecycle.create", "app.oauth2.credentials.lifecycle.",
+# An app or OAuth client was created. The only record Okta keeps of who set an
+# API client up, and so the only events that say who answers for one: Okta has
+# no owner field. `application.lifecycle.create` is what the Admin Console
+# writes, `app.oauth2.client.lifecycle.create` what the client API writes.
+CREATION_EVENTS = ("application.lifecycle.create", "app.oauth2.client.lifecycle.create")
+# Someone held a client's credentials: created the client, added or activated a
+# secret or key, or read the secret back. Custody, not ownership -- whoever did
+# any of these may still have a working copy, which is a different question from
+# who answers for the client. Never read these as creation: an admin who once
+# opened a colleague's client is not its owner. Deactivating or deleting a
+# secret shows nobody anything, so those two lifecycle events are left out.
+CREDENTIAL_EVENTS = CREATION_EVENTS + (
+    "app.oauth2.credentials.lifecycle.create", "app.oauth2.credentials.lifecycle.activate",
     "app.oauth2.client.read_client_secret",
 )
 
@@ -140,6 +149,11 @@ class App:
     # When each direct assignment in `users` was made. A user missing here has
     # an unknown assignment date, which is not the same as an old one.
     assigned: dict[str, datetime | None] = field(default_factory=dict)
+
+    def matches(self, target_id: str | None) -> bool:
+        """Whether a System Log target names this app. Events name an app by its
+        app id or by its OAuth client id depending on the event type."""
+        return bool(target_id) and target_id in (self.id, self.client_id)
 
     @classmethod
     def from_dict(cls, d: dict) -> App:
@@ -282,6 +296,11 @@ class Snapshot:
     # Oldest point the activity evidence covers. None means activity was not
     # collected at all, which is not the same as "nothing happened".
     activity_since: datetime | None = None
+    # Whose activity the System Log read covered: the leavers and the API clients
+    # they held the credentials of, never the whole org. A client outside this
+    # set has no last-used date because nobody asked, not because it is idle.
+    # None when the snapshot does not say, which reads as nobody.
+    activity_actors: set[str] | None = None
     # Last sign-in to each app, as {(user_id, app_id): when}, from the System
     # Log's SSO events. app_usage_since is how far back that reaches; None means
     # usage was not collected at all. app_usage_complete is False when the log
@@ -333,6 +352,7 @@ class Snapshot:
             api_tokens=[ApiToken.from_dict(t) for t in d.get("api_tokens", [])],
             events=[ActivityEvent.from_dict(e) for e in d.get("events", [])],
             activity_since=parse_time(d.get("activity_since")),
+            activity_actors=None if d.get("activity_actors") is None else set(d["activity_actors"]),
             app_usage={
                 (u["userId"], u["appId"]): parse_time(u["lastSignIn"]) for u in d.get("app_usage", [])
             },
@@ -352,6 +372,7 @@ class Snapshot:
             "api_tokens": [t.to_dict() for t in self.api_tokens],
             "events": [e.to_dict() for e in self.events],
             "activity_since": format_time(self.activity_since),
+            **({} if self.activity_actors is None else {"activity_actors": sorted(self.activity_actors)}),
             "app_usage": [
                 {"userId": uid, "appId": aid, "lastSignIn": format_time(when)}
                 for (uid, aid), when in sorted(self.app_usage.items())

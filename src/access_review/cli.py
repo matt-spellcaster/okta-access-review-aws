@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--snapshot", type=Path, help="review a saved snapshot JSON instead of calling Okta")
     p.add_argument("--roster", type=Path, help="HR roster CSV (enables AR-01..AR-03)")
     p.add_argument("--config", type=Path, help="review config JSON")
-    p.add_argument("--github", type=Path, help="GitHub snapshot JSON (enables AR-15..AR-17)")
+    p.add_argument("--github", type=Path, help="GitHub snapshot JSON (adds a second estate to AR-15..AR-18, enables departure bundles)")
     p.add_argument("--out", type=Path, default=Path("reports"), help="output directory (default: reports)")
     p.add_argument(
         "--as-of", type=date.fromisoformat, help="review date, YYYY-MM-DD (default: UTC date the data was collected)"
@@ -129,8 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     if review.transitions is not None:
         # Counts only: the names are in transitions.json, in the run folder.
         counts = transitions_summary(review.transitions)
-        print(f"Departures: {counts['total']} checked, {counts['unfinished']} still holding access "
-              f"outside Okta. See {TRANSITIONS_FILE}.")
+        print(f"Departures: {counts['total']} checked, {counts['unfinished']} with something "
+              f"deactivation did not reach. See {TRANSITIONS_FILE}.")
     if skipped:
         print(f"Skipped (needs data this run did not have): {', '.join(skipped)}")
     if review.gaps:

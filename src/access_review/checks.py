@@ -32,6 +32,7 @@ from .identity import (
     IdentityGraph,
     Link,
     Principal,
+    PrincipalKey,
     PrincipalKind,
     Status,
     identity_key,
@@ -62,7 +63,7 @@ class Config:
     # roster (AR-03), and who is accountable for each (AR-15). A flat list of
     # logins is still read and means declared with nobody named. See register.py.
     service_accounts: Register = field(default_factory=Register)
-    # How far back to read the System Log (AR-12, AR-13). Okta keeps 90 days.
+    # How far back to read the System Log (AR-13, AR-18). Okta keeps 90 days.
     activity_lookback_days: int = 90
     # Where the org is, for resolving an end_date with no time on it (AR-13).
     org_timezone: str = "America/Chicago"
@@ -151,8 +152,9 @@ class Check:
     needs_roster: bool = False
     # Needs complete app sign-in data covering app_unused_days.
     needs_app_usage: bool = False
-    # Reads ctx.graph rather than ctx.snapshot, so it only runs when sources
-    # beyond Okta were collected.
+    # Reads ctx.graph rather than ctx.snapshot. run_review builds one on every
+    # review (from Okta alone when nothing else was read), so this only skips
+    # the check for a caller that built no graph.
     needs_graph: bool = False
 
     def finding(self, subject: str, detail: str, severity: str | None = None) -> Finding:
@@ -207,7 +209,7 @@ def _mfa_missing(ctx: ReviewContext, check: Check) -> list[Finding]:
 def _inactive(ctx: ReviewContext, check: Check) -> list[Finding]:
     cutoff = ctx.as_of - timedelta(days=ctx.config.inactive_days)
     return [
-        check.finding(u.login, f"Last sign-in {u.last_login.date()} ({(ctx.as_of - u.last_login.date()).days} days ago).")
+        check.finding(u.login, f"Last sign-in {u.last_login.date()} ({_days_ago(u.last_login.date(), ctx.as_of)}).")
         for u in ctx.snapshot.users
         if u.status in SIGN_IN_STATUSES and u.last_login and u.last_login.date() < cutoff
     ]
@@ -296,20 +298,28 @@ def _privileged_service_app(ctx: ReviewContext, check: Check) -> list[Finding]:
     return out
 
 
-def _clients_set_up_by(snapshot: Snapshot, user_id: str) -> dict[str, str]:
-    """Active API clients this person created, rotated or read the secret of,
-    as {client_id: label}. Okta keeps no owner field on a client, so the log is
-    the only record of who set one up."""
-    by_client = {a.client_id: a for a in snapshot.apps if a.client_id and a.status == "ACTIVE"}
-    found = {}
+def secrets_held_by(snapshot: Snapshot, user_id: str) -> list[tuple[App, datetime]]:
+    """Live API clients whose credentials this person held -- created the
+    client, added or activated a secret or key, or read the secret back -- as
+    (app, when they last did), by label.
+
+    Custody, not ownership: whoever did any of these may still have a working
+    copy. Only as far back as the System Log reaches, so an empty answer is "no
+    custody in the window", never "held nothing". Whether a copy was rotated
+    since is not read here: Okta cannot show it reliably (a key published at a
+    `jwks_uri` is invisible to it), so AR-18 asks for the rotation and a
+    reviewer confirms it.
+    """
+    clients = [a for a in snapshot.apps if a.client_id and a.status == "ACTIVE"]
+    last: dict[str, tuple[App, datetime]] = {}
     for event in snapshot.events_for_actor(user_id):
-        if not event.is_kind(CREDENTIAL_EVENTS):
+        if not event.published or not event.is_kind(CREDENTIAL_EVENTS):
             continue
         for target in event.targets:
-            app = by_client.get(target.get("id"))
-            if app:
-                found[app.client_id] = app.label
-    return found
+            for app in clients:
+                if app.matches(target.get("id")) and (app.id not in last or event.published > last[app.id][1]):
+                    last[app.id] = (app, event.published)
+    return sorted(last.values(), key=lambda p: p[0].label)
 
 
 def _left_on(entry: RosterEntry) -> str:
@@ -330,12 +340,10 @@ def _leaver_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
         if tokens:
             noun = "API token" if len(tokens) == 1 else "API tokens"
             parts.append(f"{noun} {', '.join(tokens)}")
-        clients = sorted(_clients_set_up_by(ctx.snapshot, user.id).values())
-        if clients:
-            noun = "API client" if len(clients) == 1 else "API clients"
-            parts.append(f"{noun} they set up: {', '.join(clients)}")
         # Groups and apps are AR-09's job; this check is only about credentials
-        # that keep working on their own, whatever the account status is.
+        # that keep working on their own, whatever the account status is. An
+        # API client secret they held is AR-18's: rotating it is not something
+        # the daily Okta re-read that closes this ticket can see.
         if parts:
             out.append(check.finding(user.login, f"{_left_on(entry)} but still holds {'; '.join(parts)}."))
     return out
@@ -343,6 +351,10 @@ def _leaver_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
 
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _days_ago(when: date, as_of: date) -> str:
+    return _count((as_of - when).days, "day") + " ago"
 
 
 def _activity_after_leaving(ctx: ReviewContext, check: Check) -> list[Finding]:
@@ -356,9 +368,14 @@ def _activity_after_leaving(ctx: ReviewContext, check: Check) -> list[Finding]:
                 severity="info",
             ))
             continue
-        actors = {user.id} | set(_clients_set_up_by(ctx.snapshot, user.id))
+        # Their own account only. An API client they built or held the secret of
+        # goes on running after they leave -- that is what it is for -- so its
+        # activity is not theirs: read as theirs, every such client was a
+        # critical "possible incident, revoke it" in the leaver ticket while
+        # AR-18 asked for it to be handed over. Whether they may still use it is
+        # AR-18's held secret.
         after = sorted(
-            (e for a in actors for e in ctx.snapshot.events_for_actor(a) if e.published and e.published > cutoff),
+            (e for e in ctx.snapshot.events_for_actor(user.id) if e.published and e.published > cutoff),
             key=lambda e: e.published,
         )
         parts = []
@@ -534,7 +551,9 @@ def _describe(credentials: list[Credential], as_of: date) -> str:
         elif credential.write_access is None:
             notes.append("write access unknown")
         if credential.last_used:
-            notes.append(f"last used {credential.last_used.date()} ({(as_of - credential.last_used.date()).days} days ago)")
+            notes.append(f"last used {credential.last_used.date()} ({_days_ago(credential.last_used.date(), as_of)})")
+        elif not credential.usage_read:
+            notes.append("use not read")
         else:
             notes.append("no record of use")
         parts.append(f"{credential.label} ({'; '.join(notes)})")
@@ -547,7 +566,7 @@ def _maybe_recent(credentials: list[Credential], as_of: date, days: int, evidenc
     "not known to have been used", not "dormant", and dormant is the milder
     finding. Every dormancy judgement in this file reads completeness first
     (see `app_usage_covers`)."""
-    if not evidence_complete:
+    if not evidence_complete or any(not c.usage_read and not c.last_used for c in credentials):
         return True
     cutoff = as_of - timedelta(days=days)
     return any(c.last_used and c.last_used.date() >= cutoff for c in credentials)
@@ -614,6 +633,12 @@ def _unowned_credentials(ctx: ReviewContext, check: Check) -> list[Finding]:
             "the review register declares this account and names no owner, so nobody is "
             "accountable for it"
             if declared else
+            # Okta records who created a client only in the System Log, which
+            # this review reads for leavers alone and which forgets after 90
+            # days: "no evidence" there is also "nobody looked", and says so.
+            "no evidence ties this account to a person (who created an Okta API client is only "
+            "read for people who have left)"
+            if principal.source == OKTA else
             "no evidence ties this account to a person"
         )
         detail = (
@@ -699,6 +724,15 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
             # has not said the account is safe.
             if principal.source == OKTA or principal.status is Status.DISABLED:
                 continue
+            # A service account they were accountable for is not access they
+            # held, and its remediation is the opposite of this one: the bot is
+            # meant to go on running under a new owner, not be revoked. AR-18
+            # reports those, across every source and every status, so it is a
+            # strict superset of what is dropped here -- one principal, one
+            # finding, and never two tickets telling one assignee to revoke and
+            # reassign the same account.
+            if principal.kind is PrincipalKind.SERVICE:
+                continue
             credentials = graph.credentials_for(principal.key)
             known = _credential_evidence_complete(graph, principal.source)
             held = _describe(credentials, ctx.as_of)
@@ -721,6 +755,128 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
                 # Unknown write access is not the milder case: see _write_access.
                 severity="critical" if roles or _write_access(credentials, known) is not False else "high",
             ))
+    return out
+
+
+def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Finding]:
+    """A service account a leaver was accountable for, or held the credentials of.
+
+    The other half of a departure, and the half no deactivation reaches. The
+    bot is supposed to keep running -- something in CI depends on it -- so the
+    fix is to make sure somebody still here answers for it and to rotate any
+    secret or key the leaver held, or to decide it is finished and take it
+    down. That is the opposite of AR-17, which asks for a leaver's own access
+    to be removed, which is why the two are reported apart and why AR-17 leaves
+    service accounts here.
+
+    Two reasons, one finding per account. *Ownership*: the strongest link for
+    the account names the leaver (the register, or the System Log's record of
+    who created it). *Custody*: the System Log shows the leaver created the
+    client, added a secret or key, or read the secret back (`secrets_held_by`),
+    so a copy may still work whoever owns it. Custody used to be AR-12's, on the
+    leaver ticket, but that ticket closes on a daily Okta re-read and Okta
+    cannot show a rotation reliably, so the rotation is confirmed by a reviewer
+    here instead.
+
+    Okta's own service clients are what AR-17 structurally cannot see: it skips
+    `source == OKTA` because Okta deactivation is what the rest of the review
+    verifies, and an API client is not touched by anything that happens to the
+    account of the person who owns it.
+
+    Every source and every status, unlike AR-17. A disabled service account is
+    not a settled one: `CredentialKind` is the set of things that outlive the
+    account they were created under, so a blocked sign-in says nothing about
+    the token, and somebody still has to decide between handover and shutdown.
+
+    The ownership half is disjoint from AR-15 by construction: it walks
+    `principals_of`, indexed on identities some source attested, and AR-15
+    walks the principals whose best link reaches nobody. The custody half can
+    report an account AR-15 also reports; the two remediations agree.
+    """
+    graph = ctx.graph
+    out = []
+    # By identity, not by leaver, for the reason `_leaver_access_outside_okta`
+    # gives: one person with two Okta logins would otherwise be two findings
+    # about the one service account, and so two tickets. A leaver with no
+    # identity still has custody, read off their own account.
+    leavers: dict[str, tuple[RosterEntry, list[User]]] = {}
+    for user, entry in _leavers(ctx):
+        leavers.setdefault(identity_key(user) or f"user:{user.id}", (entry, []))[1].append(user)
+    # Keyed by account across every leaver, not per leaver: two people who left
+    # holding one client is one finding naming both. Per leaver it was two
+    # findings on one subject, and ticket identity is (check, subject), so the
+    # second person's reason never reached the ticket.
+    why: dict[PrincipalKey, dict[str, list[str]]] = {}
+    for who, (entry, users) in leavers.items():
+        # Named, not `_left_on`: this detail opens with the account rather than
+        # the person, so "Left 2026-08-29" would read as the account having
+        # left. The roster's name, falling back to the identity the link
+        # actually joined on -- never a name from the register entry, which is
+        # a string somebody typed.
+        gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
+        person = f"{entry.name or (users[0].login if who.startswith('user:') else who)} {gone}"
+        for principal in graph.principals_of(who):
+            if principal.kind is not PrincipalKind.SERVICE:
+                continue
+            link = graph.link_for(principal.key)
+            if link is None:  # principals_of is built from these; belt and braces
+                continue
+            why.setdefault(principal.key, {}).setdefault(person, []).append(
+                f"the strongest evidence of who answers for this {principal.source} service account "
+                f"names them -- {link.evidence}")
+        for user in users:
+            for app, when in secrets_held_by(ctx.snapshot, user.id):
+                why.setdefault((OKTA, app.id), {}).setdefault(person, []).append(
+                    f"the System Log shows them holding its credentials on {when.date()}, so a copy "
+                    f"may still work")
+    apps = {a.id: a for a in ctx.snapshot.apps}
+    for key, people in sorted(why.items()):
+        said = "; ".join(f"{person}, and {'; and '.join(reasons)}" for person, reasons in people.items())
+        principal = graph.principal(key)
+        if principal is None:
+            # A client with a secret that is not a service client -- a web or
+            # native OIDC app -- is not in the graph, and its secret works just
+            # as well. Reported ungraded rather than dropped: skipping it lost
+            # the custody AR-12 used to report, with no gap.
+            app = apps.get(key[1])
+            label = app.label if app else key[1]
+            out.append(check.finding(
+                f"{key[0]}/{key[1]}",
+                f"{label}: {said}. It is not a service client, so what it can reach was not graded.",
+            ))
+            continue
+        credentials = graph.credentials_for(principal.key)
+        known = _credential_evidence_complete(graph, principal.source)
+        roles = _elevated_roles(graph, principal)
+        held = _describe(credentials, ctx.as_of)
+        detail = f"{principal.label}: {said}."
+        carries = []
+        if roles:
+            carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
+                           else f"the {', '.join(roles)} roles")
+        if held:
+            carries.append(held)
+        if carries:
+            detail += f" It holds {' and '.join(carries)}."
+        # Independent of the line above, not an else: a principal can carry
+        # a role the source did return and credentials it did not, and the
+        # roles reading as the whole of what it holds is the same
+        # silence-is-absence claim in a smaller place.
+        if not credentials and not known:
+            detail += (f" The {principal.source} credential read did not complete, so what it "
+                       f"holds is unknown.")
+        # Graded on what the account can change, not on the owner's rank.
+        # `_elevated_roles` is "above ordinary membership", which for Okta
+        # includes a read-only admin role that cannot change a thing, so
+        # READ_ONLY_ROLES is filtered out; a role that is not one of them is
+        # treated as elevated. Unknown write access is not the milder case:
+        # see _write_access.
+        elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
+        writes = _write_access(credentials, known) is not False
+        out.append(check.finding(
+            graph_subject(principal), detail,
+            severity="critical" if elevated or writes else "high",
+        ))
     return out
 
 
@@ -795,8 +951,8 @@ CHECKS: list[Check] = [
     Check(
         "AR-12", "Leaver still holds a working credential", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.18"],
-        "Revoke the API token and rotate or delete the client's credentials. "
-        "Deactivating the account does not do either.",
+        "Revoke the API token: deactivating the account does not stop it working. An API client "
+        "secret they held is AR-18's, because rotating it is confirmed by a reviewer, not by Okta.",
         _leaver_credentials, needs_roster=True,
     ),
     Check(
@@ -850,6 +1006,26 @@ CHECKS: list[Check] = [
         "Remove the access and revoke the credentials in that system. Deactivating the Okta "
         "account did not reach them, which is why they are still here.",
         _leaver_access_outside_okta, needs_graph=True, needs_roster=True,
+    ),
+    Check(
+        "AR-18", "Service account a leaver owned or held the credentials of", "high",
+        # CC6.1 is the one this fails against most directly: a credential in
+        # the estate with no authorized person behind it. CC6.2 and CC6.3
+        # because a departure is what put it there and nothing in the
+        # termination reached it. A.5.16 covers the lifecycle of non-human
+        # identities; A.5.17 (authentication information) because the fix
+        # includes rotating a secret the leaver held; A.5.18 the access it
+        # still carries; A.8.2 because the finding reports the admin roles
+        # these accounts hold, the same reason AR-17 has it.
+        ["SOC 2 CC6.1", "SOC 2 CC6.2", "SOC 2 CC6.3",
+         "ISO 27001 A.5.16", "ISO 27001 A.5.17", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
+        "Make sure somebody still here answers for this account, and rotate every secret and key "
+        "the leaver held or could have read; or decommission it: revoke its credentials and remove "
+        "its access. Deactivating the leaver's own account did not touch this one -- it is still "
+        "running. Record the owner in the service account register (config.service_accounts), "
+        "which ties it to that person's access review and to their departure bundle if they leave "
+        "in turn.",
+        _leaver_owned_service_accounts, needs_graph=True, needs_roster=True,
     ),
 ]
 

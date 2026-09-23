@@ -322,7 +322,9 @@ def test_activity_is_read_only_for_leavers(keypair):
     sent = [p for url, p in session.gets if url.endswith("/api/v1/logs")]
     assert all('actor.id eq "u1"' in p["filter"] for p in sent)
     credentials, activity = sent
-    assert 'eventType sw "app.oauth2.credentials.lifecycle."' in credentials["filter"]
+    assert 'eventType sw "app.oauth2.credentials.lifecycle.create"' in credentials["filter"]
+    # Switching a secret off shows nobody anything, so it is not custody.
+    assert "lifecycle.delete" not in credentials["filter"]
     assert credentials["since"] == "2026-06-17T00:00:00Z"
     assert "eventType" not in activity["filter"]
     assert activity["since"] == "2026-08-01T23:59:59.999999Z"
@@ -365,6 +367,18 @@ def test_a_client_the_leaver_set_up_is_queried_too(keypair):
     assert actors == ["u1", "u1", "0oaBOT"]
     # Every query returns the same rows; events are deduplicated by uuid.
     assert len(snap.events) == 2
+    # Whose activity was read, so an unread client is never described as idle.
+    assert snap.activity_actors == {"u1", "0oaBOT"}
+
+
+def test_a_held_clients_secrets_are_never_read(keypair):
+    """The secrets endpoint returns the secret itself. Whether a leaver's copy
+    was rotated is AR-18's, confirmed by a reviewer, so nothing reads it."""
+    session = _held_org()
+
+    collect(client(session, keypair), _roster(), date(2026, 9, 15))
+
+    assert not any("/credentials/" in url for url, _ in session.gets)
 
 
 def test_a_termination_older_than_the_window_is_reported_as_a_gap(keypair):
@@ -417,7 +431,7 @@ def test_review_still_runs_when_logs_and_tokens_are_forbidden(keypair, capsys):
     assert snap.events == [] and snap.api_tokens == []
     gaps = " ".join(snap.gaps)
     assert "okta.apiTokens.read" in gaps and "okta.logs.read" in gaps
-    assert "AR-12 and AR-13" in gaps
+    assert "AR-13 and AR-18" in gaps
 
 
 def _usage_org(logs):
@@ -491,3 +505,29 @@ def test_admin_console_links_only_for_okta_orgs():
         "https://acme-admin.oktapreview.com/admin/group/00g1abcDEF"
     assert admin_url("https://evil.test", "user", "00u1abcDEF") is None
     assert admin_url("https://acme.okta.com", "user", "../../x") is None
+
+
+def _held_org():
+    return _leaver_org({
+        "/api/v1/logs": [_log("app.oauth2.client.read_client_secret", "2026-07-02T10:00:00.000Z", "u1",
+                              targets=["0oaBOT"])],
+    })
+
+
+def test_a_refused_log_read_records_no_actors(keypair):
+    """Actors are the claim that someone's activity was read."""
+    session = _leaver_org({"/api/v1/logs": FakeResponse({"errorSummary": "no"}, status=403)})
+    snap = collect(client(session, keypair), _roster(), date(2026, 9, 15))
+    assert not snap.activity_actors
+
+
+def test_a_held_clients_last_use_is_one_newest_first_read_of_the_whole_window(keypair):
+    """Oldest-first from the day they left spent the cap on a busy client's
+    first calls, signed an understated date, and raised a gap that stopped every
+    leaver ticket closing; and it never looked before they left at all."""
+    session = _held_org()
+    collect(client(session, keypair), _roster(), date(2026, 9, 15))
+    [bot] = [p for url, p in session.gets if url.endswith("/api/v1/logs") and '"0oaBOT"' in p["filter"]]
+    assert bot["sortOrder"] == "DESCENDING" and bot["limit"] == 1
+    assert bot["since"] == "2026-06-17T00:00:00Z"
+    assert "app.oauth2.token" in bot["filter"]

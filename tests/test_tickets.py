@@ -14,7 +14,7 @@ from access_review.jira import JiraClient, JiraConfigError, JiraError, adf, chec
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
-from access_review.tickets import Remediation, quarter, what_to_do
+from access_review.tickets import REVIEW_CHECKS, Remediation, quarter, what_to_do
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 BASE = "https://acme.atlassian.net"
@@ -129,7 +129,7 @@ def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     counts = {"total": 16, "keep": 6, "revoke": 7, "decide": 3}
 
     parent = rem.open_parent(run.run_dir.name, manifest, run.manifest_sha256, counts, NOW)
-    assert rem.open_urgent(run.run_dir.name, parent, findings) == 3  # 6 findings about 3 people
+    assert rem.open_urgent(run.run_dir.name, parent, findings) == 2  # 5 findings about 2 people
     # Running the step again finds the labels and opens nothing new.
     assert rem.open_parent(run.run_dir.name, manifest, run.manifest_sha256, counts, NOW) == parent
     assert rem.open_urgent(run.run_dir.name, parent, findings) == 0
@@ -142,7 +142,7 @@ def test_parent_and_leaver_tickets_are_opened_once(signed_review):
     body = json.dumps(marcus["description"])
     assert "AR-01" in body and "AR-12" in body and "AR-13" in body
     records = store.list_records(s3, "evidence", run.run_dir.name, "tickets")
-    assert len(records) == 4 and {r["issue"] for _, r in records} == set(fields)
+    assert len(records) == 3 and {r["issue"] for _, r in records} == set(fields)
 
 
 def test_revoke_tickets_follow_the_signed_decisions(signed_review):
@@ -193,7 +193,7 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     rows = workflow.all_findings(deps, run.run_dir.name)
 
-    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 7
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 9
     assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0  # never twice
     summaries = sorted(f["summary"] for f in session.issues.values())
     assert "Fix: No MFA factor enrolled — lee.chen@acme.example" in summaries
@@ -202,13 +202,17 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                                               or "HR record" in s)
                    for s in summaries)
     records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")]
+    # AR-18 among them on an Okta-only review: its two subjects are Okta API
+    # clients, which is the case it exists for, and each gets its own ticket
+    # rather than being folded into the owner's leaver ticket.
     assert {r["check_id"] for r in records if r["kind"] == "finding"} == {
-        "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10"}
+        "AR-04", "AR-05", "AR-06", "AR-07", "AR-08", "AR-09", "AR-10", "AR-18"}
     assert all(r.get("todo") for r in records)
     # Which ones the daily check can confirm in Okta, and which are the reviewer's call.
     assert {r["check_id"]: r["verify"] for r in records if r["kind"] == "finding"} == {
         "AR-04": "okta", "AR-05": "reviewer", "AR-06": "reviewer",
-        "AR-07": "reviewer", "AR-08": "okta", "AR-09": "okta", "AR-10": "reviewer"}
+        "AR-07": "reviewer", "AR-08": "okta", "AR-09": "okta", "AR-10": "reviewer",
+        "AR-18": "reviewer"}
 
 
 class TransitionSession(FakeJiraSession):
@@ -327,7 +331,7 @@ def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_revi
         assert any("AR-17" in ln for ln in lines), "the reviewer's evidence must not be dropped"
         # Not as a "Concern:", which is the list this ticket's Okta re-check settles.
         assert not [ln for ln in lines if ln.startswith("Concern: ") and "AR-17" in ln], lines
-        assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+        assert [ln for ln in lines if ln.startswith("Still open: ") and "AR-17" in ln], lines
         assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
         # The closing promise still stands, because it now covers only the Okta change.
         assert any("the next daily check confirms it in Okta" in ln for ln in lines)
@@ -335,9 +339,16 @@ def test_a_revoke_ticket_does_not_claim_to_settle_access_outside_okta(graph_revi
 
 
 def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
-    """No graph, so the review has nothing to say about other sources -- which is
-    not the same as saying there is nothing there. Silence would let the assignee
-    read an Okta-only ticket as the whole picture."""
+    """No second source, so the review has nothing to say about other estates --
+    which is not the same as saying there is nothing there. Silence would let the
+    assignee read an Okta-only ticket as the whole picture.
+
+    What it can still list is a finding this decision does not settle inside
+    Okta: AR-18 runs on an Okta-only review and its subjects here are Okta API
+    clients. So both halves have to hold at once -- the unknown about elsewhere,
+    and a named thing that is not elsewhere at all -- which is why none of this
+    wording may say "outside Okta".
+    """
     rem, session, run, _ = signed_review
     items = {i.key: i for i in run.items}
     rem.open_revokes(run.run_dir.name, "UAR-99", items,
@@ -347,8 +358,10 @@ def test_an_okta_only_review_says_it_never_looked_elsewhere(signed_review):
     assert lines
     assert any(ln.startswith("Not part of this ticket") for ln in lines)
     assert any(ln.startswith("Not known: ") and "No source other than Okta" in ln for ln in lines)
-    # And nothing is listed as held, because nothing was read.
-    assert not [ln for ln in lines if ln.startswith("Outside Okta: ")]
+    still_open = [ln for ln in lines if ln.startswith("Still open: ")]
+    assert still_open, "AR-18 fires on this review and must reach the ticket"
+    assert any("service account" in ln for ln in still_open)
+    assert not any("outside Okta" in ln for ln in lines)
 
 
 def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_review):
@@ -362,7 +375,7 @@ def test_everything_named_as_out_of_scope_really_does_get_its_own_ticket(graph_r
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     named = {c.split("(")[-1].split()[0]
              for i in run.items for c in i.outside_okta}
-    assert named, "no item names anything outside Okta, so this proves nothing"
+    assert named, "no item names anything this decision cannot settle, so this proves nothing"
     rem.open_findings(run.run_dir.name, "UAR-99", workflow.all_findings(deps, run.run_dir.name))
     ticketed = {r["check_id"] for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
                 if r["kind"] == "finding"}
@@ -385,13 +398,33 @@ def test_a_leaver_ticket_does_not_promise_to_close_a_way_in_it_cannot_see(graph_
     marcus = next(f for f in session.issues.values()
                   if f["summary"] == "Remove access for leaver marcus.lee@acme.example")
     lines = _paragraphs(marcus["description"])
-    assert [ln for ln in lines if ln.startswith("Outside Okta: ") and "AR-17" in ln], lines
+    assert [ln for ln in lines if ln.startswith("Still open: ") and "AR-17" in ln], lines
     assert any(ln.startswith("Not part of this ticket") for ln in lines), lines
     # The to-do recorded as evidence says Okta, because Okta is what gets checked.
     record = next(r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
                   if r.get("subject") == "marcus.lee@acme.example")
     assert "every way in through Okta" in record["todo"]
     assert record["outside_okta"], record
+
+
+def test_a_held_client_secret_is_ar18s_ticket_never_the_leaver_ticket(graph_review):
+    """victor held Reporting Bot's secret and built it. Whether the secret was
+    rotated is not something the leaver ticket's daily Okta re-read can see, so
+    it is AR-18's fix ticket, settled by a reviewer; no leaver ticket carries it,
+    and every leaver ticket says where it went."""
+    rem, session, run, s3 = graph_review
+    deps = workflow.Deps(s3=s3, evidence_bucket="evidence", work_bucket="work", bot=None,
+                         reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
+    findings = workflow.urgent_findings(deps, run.run_dir.name)
+    assert not any(f["subject"] == "victor.nguyen@acme.example" for f in findings)
+    rem.open_urgent(run.run_dir.name, "UAR-99", findings, workflow.people(deps, run.run_dir.name),
+                    outside_okta_by_login(run.items))
+    records = [r for _, r in store.list_records(s3, "evidence", run.run_dir.name, "tickets")
+               if r.get("kind") == "leaver"]
+    assert records and all("ar-18" in r["todo"].lower() and "held_secrets" not in r for r in records)
+    [bot] = [f for f in run.findings if f.check_id == "AR-18" and f.subject == "okta/a05"]
+    assert "holding its credentials" in bot.detail and "rotate" in bot.remediation
+    assert "AR-18" in REVIEW_CHECKS
 
 
 def test_a_graph_check_settles_through_its_own_fix_ticket_not_a_leaver_ticket():

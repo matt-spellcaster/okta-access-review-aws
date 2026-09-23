@@ -4,6 +4,7 @@ import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from access_review.identity import project_snapshot
 from access_review.models import ActivityEvent, ApiToken, App, Snapshot
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -107,6 +108,17 @@ def test_events_and_tokens_round_trip_through_a_snapshot():
     assert again.activity_since == snapshot.activity_since
 
 
+def test_whose_activity_was_read_survives_a_round_trip():
+    """The run folder's snapshot.json is re-read by later steps. Dropped on the
+    way out, every client's use would read "not read" on a re-review -- and the
+    empty set (read, nobody) is not the same claim as None (not read)."""
+    base = dict(org_url="https://acme.okta.com", collected_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+                users=[], groups=[], apps=[], api_tokens=[])
+    for actors in ({"u02", "0oaBOT"}, set(), None):
+        snapshot = Snapshot(**base, activity_actors=actors)
+        assert Snapshot.from_dict(json.loads(json.dumps(snapshot.to_dict()))).activity_actors == actors, actors
+
+
 def test_a_snapshot_saved_before_activity_existed_still_loads():
     old = {
         "org_url": "https://acme.okta.com",
@@ -163,7 +175,7 @@ def _ctx(events=(), tokens=(), end_date="2026-08-29", status="terminated", user_
     ends, ends_at = _parse_end(end_date or "", config.timezone(), "marcus.lee@acme.example")
     roster = {"marcus.lee@acme.example": RosterEntry(
         "marcus.lee@acme.example", "Marcus Lee", "employee", status, ends, "Priya", end_at=ends_at)}
-    return ReviewContext(snapshot, roster, config, date(2026, 9, 15))
+    return ReviewContext(snapshot, roster, config, date(2026, 9, 15), graph=project_snapshot(snapshot))
 
 
 def _findings(ctx, check_id):
@@ -200,22 +212,79 @@ def test_a_leaver_with_no_end_date_is_reported_as_undeterminable():
     assert "no end date" in f.detail
 
 
-def test_a_client_the_leaver_set_up_carries_their_activity():
-    """The point of the check: the account is gone, the credential is not."""
-    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
-                          event_type="app.oauth2.credentials.lifecycle.create", actor_id="u02",
-                          targets=[{"id": "0oaBOT", "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
+def _held(event_type="app.oauth2.credentials.lifecycle.create", day=4, target="0oaBOT"):
+    return ActivityEvent(published=datetime(2026, 5, day, tzinfo=timezone.utc), event_type=event_type,
+                         actor_id="u02",
+                         targets=[{"id": target, "type": "OAuth2ClientSecretEntity", "label": "Reporting Bot"}])
+
+
+def test_a_client_secret_the_leaver_held_is_a_secret_to_rotate_under_ar18():
+    """Custody: whoever added or read a client's secret may still have a copy,
+    and deactivating their account does not stop it working. The fix is to
+    rotate it, which Okta cannot be relied on to show, so it is AR-18's --
+    confirmed by a reviewer -- and never on the leaver ticket AR-12 feeds,
+    which closes on a daily Okta re-read."""
+    ctx = _ctx(events=[_held()])
+
+    assert _findings(ctx, "AR-12") == []
+    [f] = _findings(ctx, "AR-18")
+    assert f.subject == "okta/a05"
+    assert "holding its credentials on 2026-05-04" in f.detail
+    assert "rotate" in f.remediation
+
+
+def test_reading_a_colleagues_client_secret_is_custody_whoever_built_it():
+    """The case the ownership split first dropped: the leaver never created the
+    client, and they have still seen its secret."""
+    ctx = _ctx(events=[_held("app.oauth2.client.read_client_secret")])
+
+    [f] = _findings(ctx, "AR-18")
+    assert "Reporting Bot" in f.detail
+    # And reading it names nobody as the client's creator.
+    assert ctx.graph.link_for(("okta", "a05")) is None
+
+
+def test_switching_a_secret_off_is_not_custody():
+    """Deactivating or deleting a secret shows nobody anything. Counted as
+    custody, it raised a finding against whoever cleaned up an old secret."""
+    for kind in ("app.oauth2.credentials.lifecycle.deactivate", "app.oauth2.credentials.lifecycle.delete"):
+        assert _findings(_ctx(events=[_held(kind)]), "AR-18") == [], kind
+
+
+def test_owning_and_holding_one_client_is_one_finding_with_both_reasons():
+    """Two reasons, one account, one ticket: never an ownership finding and a
+    custody finding that would be two tickets about one client."""
+    ctx = _ctx(events=[_held("application.lifecycle.create", target="a05"),
+                       _held("app.oauth2.client.read_client_secret", day=20)])
+
+    [f] = _findings(ctx, "AR-18")
+    assert "names them" in f.detail and "holding its credentials on 2026-05-20" in f.detail
+
+
+def test_a_client_that_goes_on_running_after_they_leave_is_not_their_activity():
+    """A client built by a leaver keeps working after they go, which is what
+    AR-18 reports as needing an owner. Read as the leaver's own activity it was
+    a critical "possible incident, revoke it" on the leaver ticket, against
+    AR-18's "hand it over" on the same client."""
     grant = ActivityEvent(published=datetime(2026, 9, 14, tzinfo=timezone.utc),
                           event_type="app.oauth2.token.grant.access_token", actor_id="0oaBOT",
                           actor_type="PublicClientApp",
                           targets=[{"id": "AT.1", "type": "access_token", "label": "Reporting Bot"}])
-    ctx = _ctx(events=[setup, grant], user_status="DEPROVISIONED")
+    ctx = _ctx(events=[_held("application.lifecycle.create", target="a05"), grant],
+               user_status="DEPROVISIONED")
 
-    [credential] = _findings(ctx, "AR-12")
-    [activity] = _findings(ctx, "AR-13")
+    assert _findings(ctx, "AR-13") == []
 
-    assert credential.detail == "Left 2026-08-29 but still holds API client they set up: Reporting Bot."
-    assert activity.detail == "1 token grant after 2026-08-29; last 2026-09-14 (Reporting Bot)."
+
+def test_a_token_and_a_held_secret_go_to_the_ticket_that_can_settle_each():
+    """The token is revoked in Okta and the leaver ticket's re-read sees it; the
+    secret's rotation is not visible there, so it is AR-18's."""
+    ctx = _ctx(events=[_held()], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
+
+    [f] = _findings(ctx, "AR-12")
+
+    assert f.detail == "Left 2026-08-29 but still holds API token ci-deploy."
+    assert [f.subject for f in _findings(ctx, "AR-18")] == ["okta/a05"]
 
 
 def test_a_deleted_client_is_not_reported():
@@ -224,18 +293,16 @@ def test_a_deleted_client_is_not_reported():
                           targets=[{"id": "0oaGONE", "type": "OAuth2ClientSecretEntity", "label": "Old Bot"}])
 
     assert _findings(_ctx(events=[setup]), "AR-12") == []
+    assert _findings(_ctx(events=[setup]), "AR-18") == []
 
 
-def test_tokens_and_clients_are_listed_together():
-    setup = ActivityEvent(published=datetime(2026, 5, 4, tzinfo=timezone.utc),
-                          event_type="app.oauth2.client.read_client_secret", actor_id="u02",
-                          targets=[{"id": "0oaBOT", "type": "OAuth2Client", "label": "Reporting Bot"}])
-    ctx = _ctx(events=[setup], tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02")])
+def test_every_token_is_listed_together():
+    ctx = _ctx(tokens=[ApiToken(id="t1", name="ci-deploy", user_id="u02"),
+                       ApiToken(id="t2", name="backup-sync", user_id="u02")])
 
     [f] = _findings(ctx, "AR-12")
 
-    assert f.detail == ("Left 2026-08-29 but still holds API token ci-deploy; "
-                        "API client they set up: Reporting Bot.")
+    assert f.detail == "Left 2026-08-29 but still holds API tokens backup-sync, ci-deploy."
 
 
 def test_credentials_are_not_double_reported_as_residual_access():
@@ -381,3 +448,42 @@ def test_an_unknown_org_timezone_is_rejected_at_config_load(tmp_path):
 
     with pytest.raises(ValueError, match="Mars/Olympus"):
         Config.load(path)
+
+
+def test_custody_is_found_whichever_id_the_event_names():
+    """Okta names an app by its app id in some events and its client id in others."""
+    assert _findings(_ctx(events=[_held(target="a05")]), "AR-18")
+    assert _findings(_ctx(events=[_held(target="0oaBOT")]), "AR-18")
+
+
+def test_custody_of_a_web_apps_secret_is_reported_not_dropped():
+    """A web OIDC app has a client secret too, and it is not in the graph as a
+    service account. Skipped for want of a principal, the custody AR-12 used
+    to report vanished with no gap."""
+    ctx = _ctx(events=[_held("app.oauth2.client.read_client_secret", target="0oaWEB")])
+    ctx.snapshot.apps.append(App(id="a07", label="Expense Portal", status="ACTIVE", client_id="0oaWEB"))
+    ctx.graph = project_snapshot(ctx.snapshot)
+
+    subjects = {f.subject: f for f in _findings(ctx, "AR-18")}
+    assert set(subjects) == {"okta/a07"}
+    assert "Expense Portal" in subjects["okta/a07"].detail
+    assert "not graded" in subjects["okta/a07"].detail
+
+
+def test_two_leavers_on_one_client_are_one_finding_naming_both():
+    """Ticket identity is (check, subject). Two findings on one client folded
+    into one ticket, and the second person's reason never reached it."""
+    from access_review.models import User
+    from access_review.roster import RosterEntry
+
+    ctx = _ctx(events=[_held(), ActivityEvent(
+        published=datetime(2026, 5, 9, tzinfo=timezone.utc), event_type="app.oauth2.client.read_client_secret",
+        actor_id="u09", targets=[{"id": "0oaBOT", "type": "AppInstance", "label": "Reporting Bot"}])])
+    ctx.snapshot.users.append(User(id="u09", login="victor.nguyen@acme.example", status="DEPROVISIONED",
+                                   profile={"email": "victor.nguyen@acme.example"}))
+    ctx.roster["victor.nguyen@acme.example"] = RosterEntry(
+        "victor.nguyen@acme.example", "Victor Nguyen", "employee", "terminated", date(2026, 7, 15), "Priya")
+    ctx.graph = project_snapshot(ctx.snapshot)
+
+    [f] = _findings(ctx, "AR-18")
+    assert "Marcus Lee" in f.detail and "Victor Nguyen" in f.detail

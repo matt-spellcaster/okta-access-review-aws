@@ -56,9 +56,11 @@ Each item is a card, read top to bottom:
   whether it's direct or through a group).
 - **Facts:** Okta status, last sign-in and MFA; the HR record (employment type, status, end date,
   manager); and the access itself: when it was assigned and when it was last used.
-- **Access outside Okta**, when there is any: what this person still holds in another source the
-  review read, worst first. It appears above the rest because deciding this item cannot change any of
-  it. Each entry gets its own remediation ticket; this card only records that you saw it.
+- **Outside this decision**, when there is any: findings about this person that deciding this item
+  cannot change, worst first. Usually that is access in another source the review read; it also
+  covers a service account they owned and have left behind, which can be an Okta API client, since
+  deactivating the person does not touch it. It appears above the rest for that reason. Each entry
+  gets its own remediation ticket; this card only records that you saw it.
 - **Why it could be an issue:** every finding about this person or this access (for example *no MFA
   enrolled*, *HR shows terminated*, *not used in 90 days*), and what an admin role can do. It says
   *Nothing flagged* when there's nothing, or *Nothing else flagged* when the only findings are in the
@@ -66,10 +68,10 @@ Each item is a card, read top to bottom:
 - **Proposed:** Keep, Revoke or Your call, with the reason. Under it are the **Keep** and **Revoke**
   buttons; the proposed one is coloured.
 
-Someone whose Okta offboarding completed but who still holds access elsewhere gets a card of its own,
-**Access outside Okta**, with one button, **Acknowledge**. They have no Okta access left to decide, so
-without it the finding would reach no decision screen at all. This review cannot change another
-source: acknowledging records that you saw it, and the finding's own ticket tracks the fix.
+Someone whose Okta offboarding completed but who still has an open finding gets a card of its own,
+**Outside this decision**, with one button, **Acknowledge**. They have no Okta access of their own
+left to decide, so without it the finding would reach no decision screen at all. This review cannot
+settle it: acknowledging records that you saw it, and the finding's own ticket tracks the fix.
 
 An account with **no HR record** (AR-03) gets a card of its own with one button, **Acknowledge**.
 It asks you to raise the account with HR (add them to the roster, list them as a service account,
@@ -96,8 +98,8 @@ When the last item is decided, one more message arrives in the DM:
 
 - *"Every item in access review `<run>` has a decision."*, with the totals and the tracking ticket
 - **Every decision**, grouped: ⛔ **Revoke** first, then ✅ **Keep**. Each shows the person, their
-  Okta facts, the access, every concern (⚠️), and why it was decided that way. Anything held outside
-  Okta is listed with *"outside Okta, not changed by this decision"*, because signing off does not
+  Okta facts, the access, every concern (⚠️), and why it was decided that way. Anything the decision
+  does not reach is listed with *"not changed by this decision"*, because signing off does not
   settle it. Overrides are marked *"overrode proposed …"*.
 - The manifest SHA-256, with the report PDF in the message's thread
 - **Approve review**
@@ -143,8 +145,9 @@ Then work through the checklist:
      Fix tickets for *inactive* or *never used* accounts (AR-05, AR-06), *contractor in an
      employee-only group* (AR-07) and *API client with admin access* (AR-10) ask you to decide, and
      deciding to leave things as they are is a valid answer. So do the cross-source findings
-     (AR-15, AR-16, AR-17): those ask for a change in a source this review can read once but cannot
-     re-read to confirm a fix. For all of them, resolving the ticket is taken as done, with a
+     (AR-15, AR-16, AR-17, AR-18): those ask for a change this review can read once but cannot
+     re-read to confirm a fix -- a register entry naming a service account's new owner, or access
+     in another source. For all of them, resolving the ticket is taken as done, with a
      *"Resolved…"* comment; nothing is checked in Okta. When the review closes, the tracking ticket
      and the channel say how many were verified in Okta and how many were taken on your word.
 4. When every line is ✅, the **tracking ticket closes itself**, and the channel says *"Access review

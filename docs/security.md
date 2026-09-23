@@ -15,6 +15,13 @@ Okta allows an API call only if the token's scopes **and** the app's admin role 
 3. **Client:** `OktaClient` only sends GET requests, plus the token request. A test fails if any
    other request is made.
 
+### Client secrets are never read
+
+AR-18 asks for any API client secret a leaver held to be rotated. The review never reads the secrets
+endpoint to check: `GET /api/v1/apps/{id}/credentials/secrets` returns the secret itself, and Okta
+cannot show a rotation reliably anyway (a key published at a `jwks_uri` never appears there). A
+reviewer confirms the rotation on the AR-18 ticket instead.
+
 ### Admin role: a tested tradeoff
 
 Scopes decide *what kind* of call is allowed. The admin role decides *which data* the app can see.
@@ -119,8 +126,10 @@ that it can see its own app. If it can't, the app list is marked as filtered.
 - The review app's Super Administrator role is a standing privilege; it relies on scopes, the key
   in 1Password, DPoP and AR-10 as controls.
 - Okta keeps 90 days of System Log data, so AR-13 cannot see activity after a termination older
-  than that. The review reports it as a gap rather than as a clean result, but the answer for an
-  older leaver is still "unknown", not "nothing happened".
+  than that, and AR-18 cannot see that someone held an API client secret more than 90 days before a
+  review. The ticket for a secret it did see is settled by a reviewer, so the log forgetting never
+  closes it. The review reports a gap rather than a clean result, but the answer for an older leaver
+  is still "unknown", not "nothing happened".
 - `attestations.json` shows who says they signed off, not proof that they did. Keep the manifest
   hash somewhere outside the report folder if an auditor needs more than that.
 - Findings history is only as long as the report folders kept in `--out`, and it matches AR-10

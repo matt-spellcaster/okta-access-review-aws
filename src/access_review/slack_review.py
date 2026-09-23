@@ -22,12 +22,19 @@ from .items import ACKNOWLEDGE_ONLY, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REVO
 # Two blocks per item and Slack allows 50 per message, with room for a header.
 CHUNK = 20
 LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
-KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
-        HR_RECORD: "HR record", CROSS_SOURCE: "Outside Okta"}
-FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 # One wording for the thing this review cannot change, used by the card heading,
 # the item line and the sign-off list, so a reword cannot land in only some of them.
-OUTSIDE = "Access outside Okta"
+#
+# Not "outside Okta", although that is what most of it is. AR-18 reports a
+# service account whose owner left, and Okta's own API clients are the case it
+# exists for: they are in Okta, and deactivating the person who owned one does
+# not touch it, so this block reaches them too. What every line under it has in
+# common is that deciding this item does not change it -- which is what the
+# heading now says, rather than making a claim about where the account lives.
+OUTSIDE = "Outside this decision"
+KIND = {"app": "App", "admin_role": "Admin role", "admin_group": "Admin group",
+        HR_RECORD: "HR record", CROSS_SOURCE: OUTSIDE}
+FLAGGED = "flagged"  # the sign-off group for acknowledged no-HR-record items
 MAX_TEXT = 2900  # Slack's section limit is 3000
 # Sections on the sign-off message; beyond this, the list points to the report.
 MAX_LIST_SECTIONS = 40
@@ -75,14 +82,14 @@ def describe(item: ReviewItem) -> str:
     if item.kind == HR_RECORD:
         return f"{who} · *No HR record* (flag for HR; no ticket)"
     if item.kind == CROSS_SOURCE:
-        return f"{who} · *{OUTSIDE}* (nothing left in Okta itself)"
+        return f"{who} · *{OUTSIDE}* (no Okta access of their own left to decide)"
     return f"{who} · {KIND.get(item.kind, item.kind)}: *{_esc(item.target)}* ({_route(item)})"
 
 
 def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
     """The facts, then why it could be an issue, then the proposal.
 
-    Access outside Okta gets its own block above the rest. Not buried below it:
+    What this decision cannot change gets its own block above the rest. Not buried below it:
     it is the part of the picture no other screen in this review reaches, and
     it is the part deciding this item cannot change.
     """
@@ -212,7 +219,7 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
             if fact.startswith(("Okta:", "Access:")):
                 lines.append(f"      {_esc(fact)}")
         for concern in item.outside_okta:
-            lines.append(f"      :warning: outside Okta, not changed by this decision: {_esc(concern)}")
+            lines.append(f"      :warning: not changed by this decision: {_esc(concern)}")
         for concern in item.concerns:
             lines.append(f"      :warning: {_esc(concern)}")
         why = []
@@ -378,10 +385,10 @@ def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> d
     """What has to happen before the tracking ticket can close. Each entry is
     {"ticket": Ticket, "todo": str, "due": str, "verified": str | None,
      "accepted": bool, "verify": "okta" | "reviewer"};
-    the daily check ticks entries off as it confirms them in Okta, or, for
-    judgement calls and findings in another source (`verify` "reviewer"), as soon
-    as their ticket is resolved. `verify` is what will happen, `accepted` what
-    did, so a line says which it is before anyone has ticked it."""
+    the daily check ticks entries off as it confirms them in Okta, or, for the
+    ones it does not re-read (`verify` "reviewer"), as soon as their ticket is
+    resolved. `verify` is what will happen, `accepted` what did, so a line says
+    which it is before anyone has ticked it."""
     done = sum(1 for e in entries if e.get("verified"))
     lines = [f":clipboard: *To close {ticket_link(parent) or 'the tracking ticket'}* "
              f"({done} of {len(entries)} done)"]
@@ -400,9 +407,10 @@ def checklist_message(run: str, parent: Ticket | None, entries: list[dict]) -> d
         how = ("How: make each change in Okta, then resolve its ticket in JSM. The daily check (07:00) "
                "confirms it in Okta and ticks it off here. The lines marked *taken on your word* are "
                "ticked off as soon as they are resolved, without Okta being consulted: they ask for a "
-               "decision (inactive or unused accounts, contractor exceptions, API client scopes), or they "
-               "concern access in another source, which this review can read but cannot re-read to confirm "
-               f"a fix. When every line is ticked, {ticket_link(parent) or 'the tracking ticket'} closes "
+               "decision (inactive or unused accounts, contractor exceptions, API client scopes), for a "
+               "service account to be handed over, or for a change in another source. This review reads "
+               f"each of those once and does not re-read it to confirm a fix. When every line is ticked, "
+               f"{ticket_link(parent) or 'the tracking ticket'} closes "
                f"automatically.")
     else:
         how = f"Nothing to fix. {ticket_link(parent) or 'The tracking ticket'} closes at the next daily check."
