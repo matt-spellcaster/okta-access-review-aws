@@ -52,8 +52,8 @@ Seeded from `okta-access-review` at commit 1a20697. The local tool below works t
 
 ## How a review looks
 
-Screenshots from a real run against a development Okta org, and from a demo run with the fictional
-**Acme** company (`scripts/demo_to_slack.py`). Real names, emails and the org URL are blacked out.
+Screenshots from a demo run with the fictional **Acme** company (`scripts/demo_to_slack.py`), which
+sends the demo data through the same code the Lambdas run. The reviewer's name is blacked out.
 
 **1. The review opens.** The review channel gets counts only and a link to the tracking ticket, with
 the full report PDF in the thread.
@@ -64,12 +64,12 @@ the full report PDF in the thread.
 another source that this decision cannot change, then why it could be an issue, then the proposal and
 the buttons. **Confirm N proposed** accepts every proposal at once.
 
-![Slack DM: summary with Confirm 4 proposed, then item cards with Facts, Why it could be an issue, and Keep/Revoke buttons](docs/images/slack-review-cards.png)
+![Slack DM: summary with Confirm 13 proposed, then an item card with Facts, what the decision doesn't settle, Why it could be an issue, and Keep/Revoke buttons](docs/images/slack-review-cards.png)
 
 **3. The CISO signs off.** Once every item is decided, one message lists every decision with its facts
 and concerns, bound to the report's SHA-256, with **Approve review** below.
 
-![Slack DM: every decision listed with facts and concerns, the manifest hash, and the signed-off line, with the PDF in the thread](docs/images/slack-signoff.png)
+![Slack DM: the end of the decision list, including a service account AR-18 reports because its owner left, then the manifest hash and the Approve review button](docs/images/slack-signoff.png)
 
 **4. The review finishes.** Tickets are opened and the channel thread gets a summary: who signed off,
 findings by check, the decisions, and where the tickets are.
@@ -93,14 +93,16 @@ and, where Okta can show the change, verified by the daily check.
 
 ## Sample report
 
-Every run produces a PDF like this. All data is from **Acme**, a fictional company.
+Every run produces a PDF like this. All data is from **Acme**, a fictional company. The demo is
+incomplete on purpose: the GitHub fixture plants four data gaps, and the report leads with them
+rather than treating what it couldn't read as clean.
 
-![Page 1 of the sample report: summary and findings by severity](docs/images/report-page-1.png)
+![Page 1 of the sample report: the summary by severity, then the four data gaps that mark the review incomplete](docs/images/report-page-1.png)
 
 <details>
-<summary>Page 2: remediation, control mapping and access by user</summary>
+<summary>Page 2: the findings</summary>
 
-![Page 2 of the sample report: remediation, SOC 2 and ISO 27001 control mapping, and access by user](docs/images/report-page-2.png)
+![Page 2 of the sample report: the most severe findings, including AR-17 on departed GitHub members and AR-18 on service accounts whose owner left](docs/images/report-page-2.png)
 
 </details>
 
