@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 792" width="900" height="792" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">How a review runs</title>
+  <desc id="d">Okta is read only. In AWS, a quarterly Step Functions workflow invokes Lambda functions from one container image: collect reads Okta, open sends every item to the CISO in Slack, the workflow waits for sign-off, then remediate opens Jira Service Management tickets. Slack clicks reach a function URL, and the sign-off resumes the workflow. An hourly function sends reminders, and a daily function re-reads Okta to check resolved tickets. Every record goes to a create-only S3 evidence bucket under Object Lock; the roster and review state are in a separate S3 work bucket, and the secrets in SSM Parameter Store.</desc>
+  <defs>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#1f2328" flood-opacity="0.12"/>
+    </filter>
+    <marker id="mo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#007dc1"/></marker>
+    <marker id="ms" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#611f69"/></marker>
+    <marker id="mj" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0052cc"/></marker>
+    <marker id="mp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cd2264"/></marker>
+    <style>
+      .h { font-size: 15px; font-weight: 650; fill: #1f2328; }
+      .t { font-size: 13px; fill: #59636e; }
+      .l { font-size: 12px; fill: #59636e; }
+      .g { font-size: 13px; font-weight: 650; }
+      .k { font-size: 11px; font-weight: 600; }
+      .card { fill: #ffffff; stroke: #d8dee4; stroke-width: 1; filter: url(#sh); }
+      .ext { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; filter: url(#sh); }
+      .a { fill: none; stroke-width: 1.6; }
+      .ao { stroke: #007dc1; } .as { stroke: #611f69; } .aj { stroke: #0052cc; } .ap { stroke: #cd2264; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="898" height="790" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+
+  <!-- Title -->
+  <text x="20" y="46" font-size="18" font-weight="700" fill="#1f2328">How a review runs</text>
+  <text x="20" y="68" class="l">read · decide · fix · verify</text>
+
+  <!-- AWS account -->
+  <rect x="200" y="14" width="500" height="764" rx="8" fill="#f6f8fa" stroke="#232f3e" stroke-width="1.2"/>
+  <path d="M200,54 V22 a8,8 0 0 1 8,-8 H692 a8,8 0 0 1 8,8 V54 Z" fill="#232f3e"/>
+  <text x="216" y="40" font-size="14" font-weight="700" fill="#ffffff">AWS account</text>
+  <rect x="380" y="23" width="308" height="22" rx="11" fill="#37475a"/>
+  <g transform="translate(394,34)" fill="none" stroke="#ff9900" stroke-width="1.4"><circle r="5.5"/><path d="M0,-3 V0 H2.5"/></g>
+  <text x="405" y="38.5" font-size="11.5" fill="#e6ebef">EventBridge Scheduler · quarterly · hourly · daily</text>
+
+  <!-- Step Functions -->
+  <rect x="210" y="64" width="480" height="88" rx="8" fill="#fdf2f7" stroke="#f1bdd4"/>
+  <rect x="222" y="72" width="20" height="20" rx="5" fill="#cd2264"/>
+  <g stroke="#ffffff" stroke-width="1.3" fill="#ffffff"><path d="M227,79 H237 M232,79 V86" fill="none"/><circle cx="227" cy="79" r="1.8"/><circle cx="237" cy="79" r="1.8"/><circle cx="232" cy="87" r="1.8"/></g>
+  <text x="250" y="87" class="g" fill="#a3174e">Step Functions</text>
+  <text x="352" y="87" class="l">quarterly</text>
+  <rect x="239" y="100" width="70" height="26" rx="13" fill="#ffffff" stroke="#cd2264"/>
+  <text x="274" y="117.5" class="g" fill="#a3174e" text-anchor="middle">collect</text>
+  <path d="M311,113 H331" class="a ap" marker-end="url(#mp)"/>
+  <rect x="335" y="100" width="60" height="26" rx="13" fill="#ffffff" stroke="#cd2264"/>
+  <text x="365" y="117.5" class="g" fill="#a3174e" text-anchor="middle">open</text>
+  <path d="M397,113 H417" class="a ap" marker-end="url(#mp)"/>
+  <rect x="421" y="100" width="132" height="26" rx="13" fill="#fdf2f7" stroke="#cd2264" stroke-dasharray="3 2"/>
+  <text x="487" y="117.5" class="g" fill="#a3174e" text-anchor="middle">waits for sign-off</text>
+  <text x="487" y="143" class="l" text-anchor="middle">up to 30 days</text>
+  <path d="M555,113 H575" class="a ap" marker-end="url(#mp)"/>
+  <rect x="579" y="100" width="86" height="26" rx="13" fill="#ffffff" stroke="#cd2264"/>
+  <text x="622" y="117.5" class="g" fill="#a3174e" text-anchor="middle">remediate</text>
+
+  <path d="M270,152 V186" class="a ap" marker-end="url(#mp)"/>
+  <text x="280" y="174" class="l" fill="#a3174e" style="fill:#a3174e">invokes</text>
+  <path d="M576,226 V156" class="a ap" marker-end="url(#mp)"/>
+  <text x="566" y="174" class="l" text-anchor="end" style="fill:#a3174e">sign-off resumes it</text>
+
+  <!-- Lambda -->
+  <rect x="210" y="190" width="480" height="454" rx="8" fill="#fff7ee" stroke="#f7cfa6"/>
+  <rect x="222" y="198" width="20" height="20" rx="5" fill="#ed7100"/>
+  <text x="232" y="213.5" font-size="15" font-weight="700" fill="#ffffff" text-anchor="middle">λ</text>
+  <text x="250" y="213" class="g" fill="#b35600">Lambda</text>
+  <text x="304" y="213" class="l">one container image</text>
+
+  <rect x="222" y="226" width="206" height="68" rx="7" class="card"/>
+  <rect x="231" y="238" width="3" height="44" rx="1.5" fill="#cd2264"/>
+  <text x="242" y="249" class="h">collect</text>
+  <text x="242" y="269" class="t">reads Okta, runs 18 checks,</text>
+  <text x="242" y="285" class="t">writes the report</text>
+
+  <rect x="476" y="226" width="202" height="68" rx="7" class="card"/>
+  <rect x="485" y="238" width="3" height="44" rx="1.5" fill="#d0d7de"/>
+  <text x="496" y="249" class="h">interact → worker</text>
+  <text x="496" y="269" class="t">verifies each Slack click,</text>
+  <text x="496" y="285" class="t">records the decision</text>
+
+  <rect x="222" y="310" width="206" height="68" rx="7" class="card"/>
+  <rect x="231" y="322" width="3" height="44" rx="1.5" fill="#cd2264"/>
+  <text x="242" y="333" class="h">open</text>
+  <text x="242" y="353" class="t">sends the CISO every item,</text>
+  <text x="242" y="369" class="t">opens the tracking ticket</text>
+
+  <rect x="476" y="394" width="202" height="68" rx="7" class="card"/>
+  <rect x="485" y="406" width="3" height="44" rx="1.5" fill="#d0d7de"/>
+  <text x="496" y="417" class="h">watch</text>
+  <rect x="546" y="404" width="50" height="18" rx="9" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="571" y="416.5" class="k" fill="#59636e" text-anchor="middle">hourly</text>
+  <text x="496" y="437" class="t">reminders, escalation,</text>
+  <text x="496" y="453" class="t">overdue tickets</text>
+
+  <rect x="222" y="478" width="206" height="68" rx="7" class="card"/>
+  <rect x="231" y="490" width="3" height="44" rx="1.5" fill="#cd2264"/>
+  <text x="242" y="501" class="h">remediate</text>
+  <text x="242" y="521" class="t">one ticket per revoke</text>
+  <text x="242" y="537" class="t">and per finding to fix</text>
+
+  <rect x="222" y="562" width="206" height="68" rx="7" class="card"/>
+  <rect x="231" y="574" width="3" height="44" rx="1.5" fill="#d0d7de"/>
+  <text x="242" y="585" class="h">verify</text>
+  <rect x="290" y="572" width="42" height="18" rx="9" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="311" y="584.5" class="k" fill="#59636e" text-anchor="middle">daily</text>
+  <text x="242" y="605" class="t">re-reads Okta for each</text>
+  <text x="242" y="621" class="t">resolved ticket</text>
+
+  <!-- S3 -->
+  <rect x="210" y="660" width="360" height="106" rx="8" fill="#f1f8ec" stroke="#bfdcaa"/>
+  <rect x="222" y="666" width="20" height="20" rx="5" fill="#3f8624"/>
+  <g fill="#ffffff"><path d="M226.5,673 H237.5 L236,682 H228 Z"/></g>
+  <ellipse cx="232" cy="673" rx="5.5" ry="1.6" fill="#ffffff" stroke="#3f8624" stroke-width="0.8"/>
+  <text x="250" y="681" class="g" fill="#2d6a17">S3</text>
+  <rect x="222" y="692" width="192" height="64" rx="7" class="card"/>
+  <text x="236" y="713" class="h">evidence</text>
+  <g transform="translate(316,704)" fill="none" stroke="#3f8624" stroke-width="1.4"><path d="M-3,0 V-2.5 a3,3 0 0 1 6,0 V0"/><rect x="-4.5" y="0" width="9" height="7" rx="1.5" fill="#3f8624"/></g>
+  <text x="236" y="731" class="t">Object Lock, create-only:</text>
+  <text x="236" y="747" class="t">report, decisions, checks</text>
+  <rect x="426" y="692" width="132" height="64" rx="7" class="card"/>
+  <text x="440" y="713" class="h">work</text>
+  <text x="440" y="731" class="t">roster, config,</text>
+  <text x="440" y="747" class="t">review state</text>
+
+  <!-- SSM -->
+  <rect x="582" y="660" width="108" height="106" rx="8" class="card"/>
+  <rect x="626" y="672" width="20" height="20" rx="5" fill="#dd344c"/>
+  <g fill="none" stroke="#ffffff" stroke-width="1.5"><circle cx="632.5" cy="682" r="3"/><path d="M635.5,682 H641 M639,682 V685"/></g>
+  <text x="636" y="714" class="h" text-anchor="middle">SSM</text>
+  <text x="636" y="733" class="t" text-anchor="middle">4 secrets,</text>
+  <text x="636" y="750" class="t" text-anchor="middle">SecureString</text>
+
+  <!-- Okta -->
+  <rect x="20" y="226" width="150" height="404" rx="10" class="ext"/>
+  <rect x="77" y="358" width="36" height="36" rx="9" fill="#007dc1"/>
+  <circle cx="95" cy="376" r="8" fill="none" stroke="#ffffff" stroke-width="3.5"/>
+  <text x="95" y="420" class="h" text-anchor="middle">Okta</text>
+  <text x="95" y="442" class="t" text-anchor="middle">read only:</text>
+  <text x="95" y="459" class="t" text-anchor="middle">GET requests</text>
+  <text x="95" y="476" class="t" text-anchor="middle">and a DPoP-bound</text>
+  <text x="95" y="493" class="t" text-anchor="middle">token</text>
+  <path d="M170,260 H218" class="a ao" marker-end="url(#mo)"/>
+  <path d="M170,596 H218" class="a ao" marker-end="url(#mo)"/>
+
+  <!-- Slack -->
+  <rect x="730" y="226" width="150" height="236" rx="10" class="ext"/>
+  <rect x="787" y="270" width="36" height="36" rx="9" fill="#611f69"/>
+  <text x="805" y="295.5" font-size="22" font-weight="700" fill="#ffffff" text-anchor="middle">#</text>
+  <text x="805" y="330" class="h" text-anchor="middle">Slack</text>
+  <text x="805" y="352" class="t" text-anchor="middle">CISO's DM: items</text>
+  <text x="805" y="369" class="t" text-anchor="middle">and sign-off</text>
+  <text x="805" y="391" class="t" text-anchor="middle">channel: counts</text>
+  <text x="805" y="408" class="t" text-anchor="middle">and links only</text>
+  <path d="M730,260 H682" class="a as" marker-end="url(#ms)"/>
+  <path d="M428,344 H726" class="a as" marker-end="url(#ms)"/>
+  <rect x="507" y="335" width="138" height="18" rx="9" fill="#ffffff" stroke="#611f69" stroke-opacity=".35"/>
+  <text x="576" y="347.5" class="k" fill="#611f69" text-anchor="middle">item cards, report PDF</text>
+  <path d="M678,428 H726" class="a as" marker-end="url(#ms)"/>
+
+  <!-- JSM -->
+  <rect x="730" y="478" width="150" height="152" rx="10" class="ext"/>
+  <rect x="789" y="490" width="32" height="32" rx="8" fill="#0052cc"/>
+  <rect x="797" y="500" width="16" height="12" rx="2" fill="#ffffff"/>
+  <circle cx="797" cy="506" r="2.5" fill="#0052cc"/>
+  <circle cx="813" cy="506" r="2.5" fill="#0052cc"/>
+  <text x="805" y="545" class="h" text-anchor="middle">Jira Service</text>
+  <text x="805" y="563" class="h" text-anchor="middle">Management</text>
+  <text x="805" y="585" class="t" text-anchor="middle">tracking ticket,</text>
+  <text x="805" y="602" class="t" text-anchor="middle">one per fix</text>
+  <path d="M428,512 H726" class="a aj" marker-end="url(#mj)"/>
+  <rect x="510" y="503" width="132" height="18" rx="9" fill="#ffffff" stroke="#0052cc" stroke-opacity=".35"/>
+  <text x="576" y="515.5" class="k" fill="#0052cc" text-anchor="middle">tickets, due in 7 days</text>
+  <path d="M428,596 H726" class="a aj" marker-end="url(#mj)"/>
+  <rect x="488" y="587" width="176" height="18" rx="9" fill="#ffffff" stroke="#0052cc" stroke-opacity=".35"/>
+  <text x="576" y="599.5" class="k" fill="#0052cc" text-anchor="middle">comments, closes the review</text>
+</svg>

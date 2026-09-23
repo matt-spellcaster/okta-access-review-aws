@@ -9,6 +9,8 @@ too.
 
 <img src="docs/images/slack-review-finished.png" width="560" alt="Slack: the finished review, signed off, with 18 findings by check from critical to info, the decisions, and the tickets opened">
 
+![How a review runs: Okta is read only; in AWS a quarterly Step Functions workflow collects, sends every item to the CISO in Slack, waits for sign-off, then opens JSM tickets; an hourly job sends reminders and a daily job re-reads Okta to check resolved tickets; every record goes to a create-only S3 evidence bucket](docs/images/architecture.svg)
+
 ## What it does
 
 - **Reads Okta and never writes to it.** Users, groups, apps, MFA, admin roles and the System Log,
