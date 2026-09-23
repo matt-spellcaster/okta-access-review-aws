@@ -12,10 +12,10 @@ and ISO 27001:2022 (A.5.15–A.8.5). Every source is only ever read.
   a proposed decision. After sign-off it opens a JSM ticket for each piece of access to remove and
   each finding to fix, under one tracking ticket per quarter, and posts an action checklist. A daily
   check re-reads Okta to confirm each resolved ticket really changed it and ticks it off; a ticket
-  Okta can't settle — a fix somewhere else — is taken on the reviewer's word and says so, and the
-  tracking ticket closes once every ticket is settled one of those two ways. Built with Terraform,
-  and removed with one script ([docs/teardown.md](docs/teardown.md)). Running a review, step by
-  step: [docs/runbook.md](docs/runbook.md).
+  Okta can't settle — a judgement call, or a fix somewhere else — is taken on the reviewer's word
+  and says so, and the tracking ticket closes once every ticket is settled one of those two ways.
+  Built with Terraform, and removed with one script ([docs/teardown.md](docs/teardown.md)). Running
+  a review, step by step: [docs/runbook.md](docs/runbook.md).
 - **Or locally**, as the original command-line tool: the same checks and report, run on a laptop.
 
 Seeded from `okta-access-review` at commit 1a20697. The local tool below works the same way.
@@ -23,7 +23,8 @@ Seeded from `okta-access-review` at commit 1a20697. The local tool below works t
 - 18 checks. Fourteen read Okta: leavers who still hold a working API credential, terminated users
   with live accounts, missing MFA, app assignments nobody uses, API clients with write access. Four
   read [across sources](#across-sources): credentials nobody is accountable for, access held by an
-  account no user read returned, and what a departure leaves behind in another system.
+  account no user read returned, and what a departure leaves behind that deactivating the leaver's
+  account doesn't reach.
 - Read-only scopes, Private Key JWT, and DPoP-bound tokens.
 - Output: a PDF with a sign-off page, CSVs, the raw data, and a manifest of SHA-256 hashes.
 - Shows how many reviews in a row each finding has been open, from earlier report folders it has
@@ -118,7 +119,7 @@ uv run access-review \
   --as-of 2026-09-15
 ```
 
-The demo org has exactly one planted issue for each check, and the tests confirm the review finds
+The demo org has at least one planted case for each check, and the tests confirm the review finds
 those and nothing else. `--github` supplies the second estate: leave it out and the run is a valid
 Okta-only review, with the planted cases that live in the GitHub fixture absent from it.
 
@@ -169,11 +170,11 @@ that no account is the subject of both a removal and a keep.
 
 ## Across sources
 
-AR-15 to AR-18 don't read the Okta snapshot. They read an identity graph: the principals that can
-hold access in each source, the credentials that keep working after the account they were created
-under is deactivated, the grants each principal holds, and the links saying which principal belongs
-to which person. Each source is projected into it — Okta from its snapshot, GitHub from its own —
-and the graph is what these four checks reason over. Three rules shape it.
+AR-15 to AR-18 reason over an identity graph rather than the Okta snapshot alone: the principals
+that can hold access in each source, the credentials that keep working after the account they were
+created under is deactivated, the grants each principal holds, and the links saying which principal
+belongs to which person. Each source is projected into it — Okta from its snapshot, GitHub from its
+own — and AR-17 and AR-18 match the graph against the roster's leavers. Three rules shape it.
 
 **A link is evidenced or it is absent.** A principal is tied to a person by the IdP's own SSO
 assertion, an email the source itself states as verified, a register entry somebody signed up to, or
