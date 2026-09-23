@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from collections import defaultdict
 from dataclasses import replace
 from datetime import date
@@ -7,8 +8,18 @@ from pathlib import Path
 
 import pytest
 
-from access_review.checks import CHECKS, Config, ReviewContext, run_checks
+from access_review import checks
+from access_review.checks import (
+    CHECKS,
+    Config,
+    STANDS_DOWN_FOR,
+    Disposition,
+    ReviewContext,
+    leaver_accountable_accounts,
+    run_checks,
+)
 from access_review.identity import (
+    OKTA,
     Credential,
     CredentialKind,
     GitHubSnapshot,
@@ -23,7 +34,8 @@ from access_review.identity import (
     project_github,
     project_snapshot,
 )
-from access_review.models import App, Snapshot
+from access_review.items import REVOKE, build_items
+from access_review.models import DISABLED_STATUSES, App, Snapshot
 from access_review.register import Register
 from access_review.roster import load_roster
 
@@ -75,6 +87,11 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-06": {"omar.haddad"},
         "AR-07": {"sofia.ramos"},
         "AR-08": {"grace.park"},
+        # svc-legacy-etl is DEPROVISIONED and still in Sales with Salesforce,
+        # which is this check exactly -- and it is not here. Its register owner
+        # has left, so AR-18 has the account and this check stands down: the
+        # two remediations contradict. AR-18's detail names the groups and apps
+        # this line would have listed. See test_no_account_is_told_to_go_and_to_stay.
         "AR-09": {"victor.nguyen"},
         "AR-10": {"Terraform Automation"},
         "AR-11": {"priya.shah", "jordan.kim"},
@@ -94,12 +111,16 @@ def test_demo_findings_are_exactly_the_planted_ones(demo):
         "AR-16": {"github:acme-eng/U_kgDOBq1zzz", "github:acme-eng/sam-departed"},
         "AR-17": {"github:acme-eng/U_kgDOBq1bYx", "github:acme-eng/U_kgDOBq1daz",
                   "github:acme-eng/U_kgDOBq1cZy"},
-        # The two service accounts whose only accountable person has left, and
-        # the two ways a principal gets one: okta/a04 is declared to marcus.lee
-        # in the register, okta/a05 is tied to victor.nguyen by nothing but the
+        # The service accounts whose only accountable person has left, and the
+        # two ways a principal gets one: okta/a04 is declared to marcus.lee in
+        # the register, okta/a05 is tied to victor.nguyen by nothing but the
         # System Log's record of who created it. Both are Okta API clients,
         # which is what AR-17 structurally cannot report -- it skips `okta`.
-        "AR-18": {"okta/a04", "okta/a05"},
+        # okta/u12 is the third shape: an Okta *user* account the register
+        # declares, deprovisioned but still holding groups and apps, whose
+        # owner left. It is the one AR-09 would otherwise have reported under
+        # its login with the opposite remediation.
+        "AR-18": {"okta/a04", "okta/a05", "okta/u12"},
     }
 
 
@@ -116,6 +137,7 @@ GRAPH_LOGINS = {
     "github:acme-eng/sam-departed": "sam-departed",
     "okta/a04": "Terraform Automation",
     "okta/a05": "Reporting Bot",
+    "okta/u12": "svc-legacy-etl",
 }
 
 
@@ -162,6 +184,12 @@ def test_cross_source_findings_carry_the_planted_severities(demo):
         # account can do, not on the fact that it has a role at all: put every
         # ROLE grant into the critical branch and only this line moves.
         ("AR-18", "Reporting Bot"): "high",
+        # No role and no credential of its own -- it is an Okta user account,
+        # not an API client -- so nothing it holds can write and it grades
+        # high. What it *reaches* is deliberately not in the grade: a group
+        # everybody is in does not make an account more dangerous, and AR-09
+        # never graded on group membership either.
+        ("AR-18", "svc-legacy-etl"): "high",
     }
 
 
@@ -630,3 +658,341 @@ def test_a_leaver_with_no_end_date_still_owns_their_service_account(demo):
     [found] = _owns(demo, write_access=True)
     assert found.check_id == "AR-18" and found.severity == "critical"
     assert "Marcus Lee is terminated in HR" in found.detail and "None" not in found.detail
+
+
+# --- the partition: no account is told to go and to stay -------------------
+
+LEAVER = "marcus.lee@acme.example"
+# A leaver's own account, which the worst case also declares in the register.
+LEAVERS_OWN = "victor.nguyen@acme.example"
+# Every state an owned Okta service account can be bent into that some REMOVE
+# check reads: each disabled status for AR-09, and active for AR-14.
+WORST_CASE_STATUSES = sorted(DISABLED_STATUSES) + ["ACTIVE"]
+
+
+def _worst_case(tmp_path, status="DEPROVISIONED"):
+    """The demo, bent so that every account a RETAIN check can reach is also an
+    account a REMOVE check can reach.
+
+    The guard below is only worth what its fixture plants: run against the demo
+    alone it would pass on a review where no two checks happened to overlap,
+    which is how this collision reached production three times. So every
+    register entry is owned by somebody HR says has left, every Okta account
+    the register declares with an owner is put in `status`, and the register
+    also declares a leaver's own account, owned by another leaver.
+
+    The REMOVE checks that can reach an owned Okta user account are AR-09 when
+    it is disabled and AR-14 when it is active, so `status` runs over both.
+    AR-18's other accounts are out of every REMOVE check's reach by
+    construction: AR-09 walks `snapshot.users` and cannot see an Okta API
+    client, and AR-17 skips `PrincipalKind.SERVICE`. A REMOVE check that walks
+    graph principals would add pairs here the moment it is written.
+
+    Bent only as far as Okta can go. A deactivated user keeps its group
+    memberships and loses everything else: Okta unassigns it from every app
+    ("Okta unassigns the user from all applications, although group memberships
+    remain intact") and deprovisions the API tokens it created ("If Okta
+    deactivates a user account, Okta simultaneously deprovisions any API token
+    created by that user account"). So a deprovisioned account's reach is
+    app-via-group, and its factors and admin roles are not read. A suspended
+    one keeps its groups too and has its admin roles read (`collect` skips
+    them only for DEPROVISIONED). An active one gets the old, unused direct
+    assignment AR-14 is about. The one ownerless entry is left ACTIVE and given
+    a token, which is what makes AR-15 live here.
+    """
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    config = json.loads((FIXTURES / "demo_config.json").read_text())
+
+    entries = []
+    for entry in config["service_accounts"]:
+        entry = {"id": entry} if isinstance(entry, str) else dict(entry)
+        if entry["id"] != "svc-ci@acme.example":  # left declaring nobody
+            entry["owner"] = LEAVER
+        entries.append(entry)
+    declared = {e["id"].lower() for e in entries if not e.get("source", "").startswith("github")}
+    owned = {e["id"].lower() for e in entries if e.get("owner")} & declared
+    # Declared after `owned` is taken: this account keeps its own planted state.
+    entries.append({"id": LEAVERS_OWN, "owner": LEAVER})
+    config["service_accounts"] = entries
+
+    sales = next(g for g in raw["groups"] if g["name"] == "Sales")  # reaches Salesforce
+    salesforce = next(a for a in raw["apps"] if a["label"] == "Salesforce")
+    for user in raw["users"]:
+        login = user["login"].lower()
+        if login in owned:
+            user["status"] = status
+            if status == "ACTIVE":
+                user["lastLogin"] = "2026-09-14T09:00:00Z"
+                user["factors"] = ["push"]
+                user["adminRoles"] = []
+                salesforce["users"].append(user["id"])
+                salesforce["assigned"][user["id"]] = "2022-01-10T09:00:00Z"
+            else:
+                user["factors"] = None  # not read unless the account can sign in
+                user["adminRoles"] = None if status == "DEPROVISIONED" else []
+                sales["members"].append(user["id"])
+        elif login in declared:  # ownerless, so left live and holding a credential
+            raw["api_tokens"].append({
+                "id": f"00T{user['id']}", "name": f"tok-{user['id']}", "userId": user["id"],
+                "created": "2024-01-01T09:00:00Z", "lastUpdated": "2026-09-14T09:00:00Z",
+                "expiresAt": "2026-10-14T09:00:00Z",
+            })
+
+    path = tmp_path / "worst_case_config.json"
+    path.write_text(json.dumps(config))
+    cfg = Config.load(path)
+    snapshot = Snapshot.from_dict(raw)
+    ctx = ReviewContext(snapshot, load_roster(FIXTURES / "demo_roster.csv", cfg.timezone()), cfg, AS_OF)
+    ctx.graph = _compose(ctx, snapshot)
+    return ctx
+
+
+def _account_of(ctx, subject):
+    """The account a finding is about, as a graph principal key, or None.
+
+    Checks spell a subject four ways and the guard has to see through all of
+    them, because the whole defect is that one account wears two names: AR-09
+    reported `svc-legacy-etl@acme.example` while AR-18 reported `okta/u12`, and
+    no hashed ticket label could ever have collapsed those. None is a failure,
+    not a skip -- a check whose subject shape nobody taught this resolver is a
+    check the guard silently stops covering.
+    """
+    head = subject.split(" / ")[0]  # AR-14's "<login> / <app label>"
+    source, _, rest = head.partition("/")  # checks.graph_subject
+    if rest and source in {s.source for s in ctx.graph.sources}:
+        return (source, rest)
+    for user in ctx.snapshot.users:
+        if user.login.lower() == head.lower():
+            return (OKTA, user.id)
+    apps = [a for a in ctx.snapshot.apps if a.label.lower() == head.lower()]
+    return (OKTA, apps[0].id) if len(apps) == 1 else None
+
+
+def _by_account(ctx):
+    findings, skipped = run_checks(ctx)
+    assert skipped == []
+    disposition = {c.id: c.disposition for c in CHECKS}
+    out = defaultdict(set)
+    for f in findings:
+        account = _account_of(ctx, f.subject)
+        assert account is not None, f"{f.check_id} subject {f.subject!r} resolves to no account"
+        out[account].add((f.check_id, disposition[f.check_id]))
+    return out
+
+
+def test_every_check_says_what_its_remediation_does_to_the_account():
+    """The half of the guard that makes a new check declare itself. `Check`
+    gives `disposition` no default, so an unclassified check cannot be
+    constructed at all; what is written down here is the classification itself,
+    because REMOVE and RETAIN are the two that can contradict and a wrong
+    NEITHER is how a collision walks past the guard below.
+
+    The subset runs the other way on purpose: every member of the enum is used
+    by some check, so a value nobody claims -- one added for a distinction that
+    was then dropped -- shows up here rather than sitting in the enum implying
+    the axis has a rung it does not.
+    """
+    assert set(Disposition) <= {c.disposition for c in CHECKS}
+    assert {c.id for c in CHECKS if c.disposition is Disposition.RETAIN} == {"AR-18"}
+    assert {c.id for c in CHECKS if c.disposition is Disposition.REMOVE} == {
+        "AR-01", "AR-02", "AR-07", "AR-09", "AR-12", "AR-13", "AR-14", "AR-17"}
+
+
+def test_only_a_remove_check_stands_down_and_only_for_a_retain_check():
+    """`STANDS_DOWN_FOR` is what history reads to tell a stand-down from a fix,
+    and it is written by hand. A pair the other way round, or with a check that
+    no longer exists, would bridge streaks and hide reopens for nothing."""
+    disposition = {c.id: c.disposition for c in CHECKS}
+    for standing_down, holder in STANDS_DOWN_FOR.items():
+        assert disposition[standing_down] is Disposition.REMOVE
+        assert disposition[holder] is Disposition.RETAIN
+
+
+def test_the_partition_is_computed_once_per_review(demo, monkeypatch):
+    """AR-09, AR-18 and `build_items` all read it, and each computation scans
+    the System Log once per leaver. Swapping an input recomputes it, so a stale
+    partition cannot outlive the graph it was read from."""
+    calls = []
+    compute = checks._leaver_accountable_accounts
+    monkeypatch.setattr(checks, "_leaver_accountable_accounts", lambda ctx: calls.append(1) or compute(ctx))
+    findings, _ = run_checks(demo)
+    build_items(demo, findings)
+    assert len(calls) == 1
+    demo.graph = replace(demo.graph)
+    assert leaver_accountable_accounts(demo) and len(calls) == 2
+
+
+@pytest.mark.parametrize("status", WORST_CASE_STATUSES)
+def test_no_account_is_told_to_go_and_to_stay(demo, tmp_path, status):
+    """One account, two findings, opposite remediations: the defect this repo
+    has now partitioned by hand three times -- AR-17, then AR-12, then AR-09.
+    Each was found by a person reading the two remediations side by side, so
+    the rule is encoded here instead.
+
+    REMOVE says the access or the account goes; RETAIN says it keeps running
+    under somebody new. Both on one account is two tickets telling one assignee
+    opposite things, and the REMOVE one closes on a fresh Okta read that only
+    the removal satisfies -- so the handover is signed off as done by something
+    that asked for the opposite.
+
+    The guard keys on the finding's **subject**, which is what a ticket is
+    identified by. A check that demands something about an account it does not
+    name as its subject is outside it: that was AR-12's shape, which reported
+    "API clients they set up" under the leaver's own login, and it had to be
+    removed rather than partitioned. A new check makes the account it acts on
+    its subject, or this test cannot see it.
+    """
+    for ctx in (demo, _worst_case(tmp_path, status)):
+        for account, reported in sorted(_by_account(ctx).items()):
+            kinds = {d for _, d in reported}
+            assert not (Disposition.REMOVE in kinds and Disposition.RETAIN in kinds), \
+                f"{account} is both removed and retained by {sorted(c for c, _ in reported)}"
+
+
+@pytest.mark.parametrize("status", WORST_CASE_STATUSES)
+def test_the_worst_case_really_does_put_the_two_checks_on_one_account(tmp_path, status):
+    """The guard above is worth nothing if its fixture stopped planting the
+    overlap, and a passing assertion would say the same either way. So: every
+    account AR-18 takes over is one a REMOVE check would otherwise report --
+    AR-09 for its groups when it is disabled, AR-14 for its old, unused direct
+    assignment when it is active -- and AR-18 is what reports that access."""
+    ctx = _worst_case(tmp_path, status)
+    taken = leaver_accountable_accounts(ctx)
+    users = {u.id: u for u in ctx.snapshot.users}
+    stood_down = [users[pid] for source, pid in taken if source == OKTA and pid in users]
+    assert stood_down, "no Okta user account is in the partition at all"
+    findings, _ = run_checks(ctx)
+    details = {f.subject: f.detail for f in findings if f.check_id == "AR-18"}
+    for user in stood_down:
+        assert user.status == status
+        if status in DISABLED_STATUSES:
+            assert ctx.snapshot.groups_for(user.id) and ctx.snapshot.apps_for(user.id)
+            # AR-09's list, in AR-09's words: the group, and the app it gives
+            # back on reactivation, which for a deactivated account is the
+            # whole of what is left.
+            groups, apps = _restores(details[f"{OKTA}/{user.id}"])
+            assert "Sales" in groups and "Everyone" not in groups
+            assert apps == ["Salesforce"]
+        else:
+            # Exactly AR-14's case, but for the register entry that exempts it.
+            [salesforce] = [a for a in ctx.snapshot.apps if a.label == "Salesforce"]
+            assert user.id in salesforce.users and salesforce.assigned[user.id].year == 2022
+            assert ctx.snapshot.last_app_sign_in(user.id, salesforce.id) is None
+            assert ctx.is_service_account(user)
+            assert "Salesforce" in _reaches(details[f"{OKTA}/{user.id}"])
+    assert not {f.subject for f in findings if f.check_id in {"AR-09", "AR-14"}} & {
+        s for u in stood_down for s in (u.login, f"{u.login} / Salesforce")}
+
+
+def test_a_register_entry_cannot_take_a_leavers_own_account(tmp_path):
+    """The register can declare any Okta login, including a person's. Declared
+    with an owner who left, a leaver's own account became AR-18's handover:
+    AR-09 stood down and the Revoke proposal on its apps became "decide", so a
+    register edit moved a human leaver's access from Okta-verified removal to a
+    reviewer's say-so. An account HR lists as a person is the leaver checks' to
+    report, whatever the register says."""
+    ctx = _worst_case(tmp_path)
+    victor = next(u for u in ctx.snapshot.users if u.login == LEAVERS_OWN)
+    assert ctx.is_service_account(victor) and ctx.roster_entry(victor) is not None
+    assert (OKTA, victor.id) not in leaver_accountable_accounts(ctx)
+    findings, _ = run_checks(ctx)
+    on_victor = {f.check_id for f in findings if f.subject in {LEAVERS_OWN, f"{OKTA}/{victor.id}"}}
+    assert "AR-09" in on_victor and "AR-18" not in on_victor
+    proposed = {i.target: i.proposed for i in build_items(ctx, findings) if i.user == LEAVERS_OWN}
+    assert proposed["Salesforce"] == REVOKE
+
+
+def test_a_bot_sharing_a_current_employees_email_keeps_its_ar18():
+    """The leaver's-own-account exclusion keys on a roster entry that is gone,
+    not on any roster match. `entry_for` matches on the profile email, which a
+    bot can share with somebody still employed; excluded on that match, the bot
+    lost AR-18 and, being active, was reported by no removal check either."""
+    raw = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    bot = next(u for u in raw["users"] if u["id"] == "u12")
+    bot["status"] = "ACTIVE"
+    bot["profile"]["email"] = "priya.shah@acme.example"  # active in the roster
+    cfg = Config.load(FIXTURES / "demo_config.json")
+    snapshot = Snapshot.from_dict(raw)
+    ctx = ReviewContext(snapshot, load_roster(FIXTURES / "demo_roster.csv", cfg.timezone()), cfg, AS_OF)
+    ctx.graph = _compose(ctx, snapshot)
+    user = next(u for u in snapshot.users if u.id == "u12")
+    assert ctx.roster_entry(user) is not None and not ctx.roster_entry(user).is_gone(AS_OF)
+    findings, _ = run_checks(ctx)
+    assert f"{OKTA}/u12" in {f.subject for f in findings if f.check_id == "AR-18"}
+
+
+def test_the_partition_says_what_state_the_account_is_in(demo):
+    """AR-09's whole finding was the status -- "DEPROVISIONED but still has
+    groups" -- and the threat it names is reactivation, not use. AR-18 takes
+    that account, so if its record does not say the account is deactivated,
+    nothing in the review does, while its remediation talks about an account
+    that is still being called. AR-17 has reported `source_status` all along."""
+    findings, _ = run_checks(demo)
+    detail = {f.subject: f.detail for f in findings if f.check_id == "AR-18"}
+    assert "(DEPROVISIONED)" in detail["okta/u12"]
+    assert "(ACTIVE)" in detail["okta/a04"]
+    remediation = next(c.remediation for c in CHECKS if c.id == "AR-18")
+    assert "still running" not in remediation  # it is not, for the account above
+
+
+def _restores(detail):
+    """The (groups, apps) of AR-18's "Reactivating it restores ..." sentence."""
+    match = re.search(r"Reactivating it restores (.*?)\.(?: |$)", detail)
+    assert match, detail
+    parts = dict(p.split(": ", 1) for p in match.group(1).split("; "))
+    return parts.get("groups", "").split(", "), parts.get("apps", "").split(", ")
+
+
+def _reaches(detail):
+    match = re.search(r"It reaches (.*?)\.(?: |$)", detail)
+    assert match, detail
+    return match.group(1)
+
+
+def test_a_taken_over_disabled_account_lists_what_ar09_would_have(demo, monkeypatch):
+    """AR-09 stands down for these, so AR-18's sentence is the only place the
+    leftover groups and apps are reported. In full, whatever MAX_REACHED_SHOWN
+    says, because on the decommission branch it is the list of what to remove;
+    without Everyone, which nobody can remove; and as what reactivation
+    restores, because Okta has already unassigned a deactivated user from its
+    apps and "reaches" would say otherwise."""
+    monkeypatch.setattr(checks, "MAX_REACHED_SHOWN", 1)
+    detail = {f.subject: f.detail for f in run_checks(demo)[0] if f.check_id == "AR-18"}
+    assert "Reactivating it restores groups: Sales; apps: Salesforce." in detail["okta/u12"]
+    assert "It reaches" not in detail["okta/u12"]
+    assert "Reactivating" not in detail["okta/a04"]  # a live API client
+
+
+def test_a_live_accounts_reach_is_truncated_and_says_so(tmp_path, monkeypatch):
+    """An org-wide group over 250 apps would put 250 labels in a ticket body,
+    so a live account's reach is cut -- and says so, or the cut list reads as
+    the whole of it."""
+    ctx = _worst_case(tmp_path, "ACTIVE")
+    [user] = [u for u in ctx.snapshot.users if u.login == "svc-legacy-etl@acme.example"]
+    full = _reaches(next(f.detail for f in run_checks(ctx)[0] if f.subject == f"{OKTA}/{user.id}"))
+    reach = full.split(", ")
+    assert "Salesforce" in reach and len(reach) > 1
+    monkeypatch.setattr(checks, "MAX_REACHED_SHOWN", 1)
+    cut = _reaches(next(f.detail for f in run_checks(ctx)[0] if f.subject == f"{OKTA}/{user.id}"))
+    assert cut == f"{reach[0]} and {len(reach) - 1} more"
+
+
+def test_a_state_the_source_did_not_word_still_reaches_the_record(demo):
+    """AR-18's remediation branches on whether the account is live, so a
+    principal the source gave no status word for still says it is disabled."""
+    principals = tuple(replace(p, source_status="") if p.key == (OKTA, "u12") else p
+                       for p in demo.graph.principals)
+    demo.graph = replace(demo.graph, principals=principals)
+    detail = {f.subject: f.detail for f in run_checks(demo)[0] if f.check_id == "AR-18"}
+    assert detail["okta/u12"].startswith("svc-legacy-etl@acme.example (disabled):")
+
+
+def test_the_partition_is_inert_without_a_graph(demo):
+    """What `handlers.verify_daily` relies on (and
+    `test_the_daily_recheck_keeps_an_ar09_ticket_open` checks at the handler):
+    with no graph AR-18 does not run and AR-09 stands down for nothing, which is
+    also what makes the partition safe on a roster-less run."""
+    findings, _ = run_checks(replace(demo, graph=None))
+    assert "svc-legacy-etl@acme.example" in {f.subject for f in findings if f.check_id == "AR-09"}
+    assert not [f for f in findings if f.check_id == "AR-18"]
+    assert not leaver_accountable_accounts(replace(demo, graph=None))

@@ -193,7 +193,7 @@ def test_findings_that_are_not_access_decisions_get_fix_tickets(signed_review):
                          reviewers=Reviewers("U0CISO00001"), channel="C0X00000001")
     rows = workflow.all_findings(deps, run.run_dir.name)
 
-    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 9
+    assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 10
     assert rem.open_findings(run.run_dir.name, "UAR-99", rows) == 0  # never twice
     summaries = sorted(f["summary"] for f in session.issues.values())
     assert "Fix: No MFA factor enrolled — lee.chen@acme.example" in summaries

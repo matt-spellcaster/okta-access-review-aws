@@ -64,7 +64,8 @@ that area.
 - `Snapshot` (`models.py`) is the Okta adapter's output, the same for live and fixture data, and
   never grows to fit another source. Other sources are projected into an `IdentityGraph` in `identity/`.
 - A principal links to a person only through an evidenced `LinkMethod`, never by name or email
-  similarity. Graph findings reach review items only via `checks.graph_findings_by_identity`.
+  similarity. Graph findings reach review items only via `checks.graph_findings_by_identity`
+  (the owner's item) or `checks.graph_findings_by_subject` (the account's own item).
 - A graph finding's subject is `{source}/{principal.id}` (`checks.graph_subject`), never a label.
 - The graph is built on every review, from Okta alone if needed. `handlers.verify_daily` builds none.
 - `IdentityGraph.grants` is only what a source stated verbatim: use `grants_for` / `all_grants`
@@ -86,6 +87,11 @@ that area.
   held; settled by reviewer), never AR-17's (revoke) or AR-12's (API tokens only, verified in Okta).
   AR-13 reads the leaver's own account only. Any new check about an account a leaver was accountable
   for must fit this partition. Nothing reads the client secrets endpoint.
+- AR-18's accounts come only from `checks.leaver_accountable_accounts`. AR-09 and
+  `items._app_proposal` stand down for the Okta users in it; a leaver's own Okta account (its roster entry
+  is gone) is never in it. Declare any new stand-down in `checks.STANDS_DOWN_FOR`.
+- No account is the subject of both a REMOVE and a RETAIN finding
+  (`test_no_account_is_told_to_go_and_to_stay`).
 
 ## Review items and tickets
 
@@ -109,8 +115,9 @@ that area.
 
 ## Adding things
 
-- New check: a `CHECKS` entry with SOC 2 and ISO 27001 control IDs, a planted case in the fixture it
-  reads, and updated expectations in `test_demo_findings_are_exactly_the_planted_ones` and
+- New check: a `CHECKS` entry with SOC 2 and ISO 27001 control IDs and a `disposition`, a planted
+  case in the fixture it reads, and updated expectations in
+  `test_demo_findings_are_exactly_the_planted_ones` and
   `test_cross_source_findings_carry_the_planted_severities`.
 - New source adapter: snapshot shape with `from_dict`/`to_dict`, a hand-written fixture, a
   projection into `IdentityGraph`, any new `CredentialKind`s, a re-export from `identity/__init__.py`,

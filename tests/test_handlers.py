@@ -103,7 +103,7 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
     # Complete although the register declares a GitHub account: this pipeline
     # reads Okta only, so that estate is out of scope rather than a gap. A gap
     # here would mark every AWS review incomplete, for good.
-    assert out["items"]["total"] == 17 and out["complete"] is True
+    assert out["items"]["total"] == 18 and out["complete"] is True
     assert ("uar-evidence-test", f"runs/{out['run']}/review_items.json") in s3.objects
 
     opened = handlers.open_review({"run": out["run"], "task_token": "tok"}, None)
@@ -114,3 +114,17 @@ def test_step_functions_only_ever_see_ids_hashes_and_counts(aws):
 def test_settings_module_has_no_default_secret_values():
     source = Path(settings.__file__).read_text()
     assert "xoxb-" not in source and "ATATT" not in source
+
+
+def test_the_daily_recheck_keeps_an_ar09_ticket_open(aws, monkeypatch):
+    """`verify_daily` builds no graph, on purpose. With one, AR-09 stands down
+    for the accounts AR-18 has, so an AR-09 ticket an earlier review opened on
+    svc-legacy-etl would read as absent and `watch.daily` would close it as
+    done in Okta, for groups nobody touched. What reaches `watch.daily` is the
+    set a ticket is checked against, so the finding has to be in it."""
+    seen = {}
+    monkeypatch.setattr(handlers.watch, "daily",
+                        lambda deps, jira, snapshot, leavers, current: seen.setdefault("current", current))
+    handlers.verify_daily({}, None)
+    assert ("AR-09", "svc-legacy-etl@acme.example") in seen["current"]
+    assert not any(check_id == "AR-18" for check_id, _ in seen["current"])

@@ -270,7 +270,7 @@ def test_unknown_previous_review_is_not_called_reopened():
         PriorReview("2026-07-15", "b", "y", None, "findings.csv is missing"),
     ])
     f = finding()
-    age_findings([f], history, date(2026, 9, 15))
+    age_findings([f], history, date(2026, 9, 15), {})
     assert (f.reviews_open, f.first_seen, f.reopened) == (1, "2026-06-15", False)
 
 
@@ -285,14 +285,136 @@ def test_a_review_that_skipped_the_check_is_not_called_reopened():
         PriorReview("2026-07-15", "b", "y", set(), skipped=["AR-15", "AR-16", "AR-17"]),
     ])
     f = Finding("AR-17", "t", "critical", [], "github:acme-eng/u1", "d", "r")
-    age_findings([f], history, date(2026, 9, 15))
+    age_findings([f], history, date(2026, 9, 15), {})
     assert f.reopened is False
     assert label(f) == "New"  # not "Back again"
     # A check that *ran* and found nothing is still a genuine reopen.
     history.reviews[-1].skipped = ["AR-15"]
     g = Finding("AR-17", "t", "critical", [], "github:acme-eng/u1", "d", "r")
-    age_findings([g], history, date(2026, 9, 15))
+    age_findings([g], history, date(2026, 9, 15), {})
     assert g.reopened is True
+
+
+def _reopened(check_id, subject, previous_keys, okta_subjects=None):
+    history = History(reviews=[
+        PriorReview("2026-06-15", "a", "x", {(check_id, subject)}),
+        PriorReview("2026-07-15", "b", "y", previous_keys),
+    ])
+    f = Finding(check_id, "t", "medium", [], subject, "d", "r")
+    age_findings([f], history, date(2026, 9, 15), okta_subjects or {})
+    return f
+
+
+SUBJECTS = {"svc-legacy-etl@acme.example": "okta/u12", "victor.nguyen@acme.example": "okta/u09"}
+
+
+def test_a_finding_another_check_was_holding_is_not_called_reopened():
+    """The other way a check can be absent without having found nothing. AR-09
+    stands down for the accounts AR-18 reports, so an AR-09 finding that
+    vanished while AR-18 held the account and came back once a new owner was
+    recorded never went away: nobody removed the groups. "Back again" would
+    assert they were removed and returned."""
+    f = _reopened("AR-09", "svc-legacy-etl@acme.example", {("AR-18", "okta/u12")}, SUBJECTS)
+    assert f.reopened is False
+    assert not label(f).startswith("Back again")
+
+
+def test_holding_one_account_does_not_hide_a_reopen_on_another():
+    """Per account and per check. Keyed on "any RETAIN finding last review", one
+    AR-18 finding anywhere in the org hid every genuine "Back again" on eight
+    removal checks: a terminated user reactivated after being fixed read "New"."""
+    # AR-18 held a different account, so this AR-09 finding really did go and come back.
+    assert _reopened("AR-09", "victor.nguyen@acme.example",
+                     {("AR-18", "okta/u12")}, SUBJECTS).reopened is True
+    # AR-01 never stands down for anything, whatever AR-18 reported.
+    assert _reopened("AR-01", "victor.nguyen@acme.example",
+                     {("AR-18", "okta/u12"), ("AR-18", "okta/u09")}, SUBJECTS).reopened is True
+    # Nothing was holding it at all.
+    assert _reopened("AR-09", "svc-legacy-etl@acme.example",
+                     {("AR-04", "lee.chen@acme.example")}, SUBJECTS).reopened is True
+
+
+def test_a_login_that_cannot_be_joined_errs_towards_not_reopened():
+    """With no join from a login to the holding check's subject, a review where
+    the holding check reported anything is neither clear (no "Back again") nor
+    held (no streak carried across it): both would assert what nothing read."""
+    f = _reopened("AR-09", "svc-legacy-etl@acme.example", {("AR-18", "okta/u12")})
+    assert (f.reopened, f.reviews_open) == (False, 1)
+    assert _reopened("AR-09", "svc-legacy-etl@acme.example",
+                     {("AR-04", "lee.chen@acme.example")}).reopened is True
+
+
+def test_a_review_another_check_held_bridges_the_streak():
+    """Not reopened is half of it. Left at that, the finding read "New", streak
+    1, and `repeat_summary` -- which goes to Slack and email -- said nothing was
+    open since the last review, for groups nobody had removed in three
+    quarters. The held review counts as open."""
+    f = _reopened("AR-09", "svc-legacy-etl@acme.example", {("AR-18", "okta/u12")}, SUBJECTS)
+    assert (f.reviews_open, f.first_seen, f.reopened) == (3, "2026-06-15", False)
+    assert label(f) == "3 reviews in a row, first seen 2026-06-15"
+    assert repeat_summary([f]) == "Open since the last review: 1 of 1 (longest: 3 reviews in a row)"
+
+
+def test_a_held_review_only_bridges_it_never_starts_a_streak():
+    """A finding this check never reported before is new to it, however long
+    the other check held the account: "2 reviews in a row, first seen today"
+    would contradict itself."""
+    history = History(reviews=[PriorReview("2026-07-15", "b", "y", {("AR-18", "okta/u12")})])
+    f = Finding("AR-09", "t", "medium", [], "svc-legacy-etl@acme.example", "d", "r")
+    age_findings([f], history, date(2026, 9, 15), SUBJECTS)
+    assert (f.reviews_open, f.reopened, label(f)) == (1, False, "New")
+
+
+def test_the_join_is_case_insensitive_on_real_okta_ids():
+    """Real Okta ids are mixed case (`00u...`) and prior subjects are read back
+    casefolded; a join on the raw id never matches, and a held account reads
+    "Back again" for groups nobody touched."""
+    subjects = {"svc-legacy-etl@acme.example": "okta/00uAbC12XyZ"}
+    f = Finding("AR-09", "t", "medium", [], "SVC-Legacy-ETL@acme.example", "d", "r")
+    history = History(reviews=[
+        PriorReview("2026-06-15", "a", "x", {("AR-09", "svc-legacy-etl@acme.example")}),
+        PriorReview("2026-07-15", "b", "y", {("AR-18", "okta/00uabc12xyz")}),
+    ])
+    age_findings([f], history, date(2026, 9, 15), subjects)
+    assert (f.reopened, f.reviews_open) == (False, 3)
+    history.reviews[-1].keys = {("AR-18", "okta/00uother")}
+    g = Finding("AR-09", "t", "medium", [], "SVC-Legacy-ETL@acme.example", "d", "r")
+    age_findings([g], history, date(2026, 9, 15), subjects)
+    assert (g.reopened, g.reviews_open) == (True, 1)
+
+
+def _without_register_entry(tmp_path, login):
+    config = json.loads((FIXTURES / "demo_config.json").read_text())
+    config["service_accounts"] = [e for e in config["service_accounts"]
+                                  if not (isinstance(e, dict) and e.get("id") == login)]
+    path = tmp_path / "config-without-entry.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+def _clear_victor(snap):
+    """Takes victor's leftover groups and apps away, which clears his AR-09."""
+    victor = next(u["id"] for u in snap["users"] if u["login"] == "victor.nguyen@acme.example")
+    for g in snap["groups"]:
+        if g.get("type") != "BUILT_IN" and victor in g["members"]:
+            g["members"].remove(victor)
+    for a in snap["apps"]:
+        if victor in a.get("users", []):
+            a["users"].remove(victor)
+            a.get("assigned", {}).pop(victor, None)
+
+
+def test_run_review_joins_logins_for_history(tmp_path):
+    """`_held` is only as good as the join `run_review` hands it. Without it
+    every AR-09 login is unjoinable, so the held account loses its streak and,
+    by the old fallback, one AR-18 finding hid every "Back again" in the org."""
+    unregistered = _without_register_entry(tmp_path, "svc-legacy-etl@acme.example")
+    review(tmp_path, "2026-03-15", config=unregistered)  # AR-09 on the bot, and on victor
+    review(tmp_path, "2026-06-15", tweak=_clear_victor)  # AR-18 holds the bot; victor clear
+    last = findings(review(tmp_path, "2026-09-15", config=unregistered))
+    bot, victor = last[("AR-09", "svc-legacy-etl")], last[("AR-09", "victor.nguyen")]
+    assert (bot["reviews_open"], bot["first_seen"], bot["reopened"]) == ("3", "2026-03-15", "no")
+    assert (victor["reviews_open"], victor["reopened"]) == ("1", "yes")
 
 
 def test_skipped_checks_are_read_back_from_a_prior_manifest(tmp_path):

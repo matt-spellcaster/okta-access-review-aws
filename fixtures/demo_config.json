@@ -17,6 +17,12 @@
       "reviewed": "2026-07-01"
     },
     {
+      "id": "svc-legacy-etl@acme.example",
+      "owner": "marcus.lee@acme.example",
+      "purpose": "Nightly CRM extract",
+      "reviewed": "2026-07-01"
+    },
+    {
       "source": "github:acme-eng",
       "id": "acme-ci-bot",
       "purpose": "Publishes release artifacts"

@@ -35,7 +35,7 @@ def test_writes_evidence_with_matching_hashes(tmp_path):
 def test_access_matrix_shows_group_and_direct_app_access(tmp_path):
     main(DEMO_ARGS + ["--out", str(tmp_path)])
     rows = {r["login"]: r for r in csv.DictReader((run_dir(tmp_path) / "access_matrix.csv").open())}
-    assert len(rows) == 11
+    assert len(rows) == 12
     assert rows["hannah.ortiz@acme.example"]["apps"] == "AWS (direct)"
     assert rows["priya.shah@acme.example"]["groups"] == "Engineering"  # built-in groups hidden
     assert rows["omar.haddad@acme.example"]["mfa"] == "n/a"  # PROVISIONED: can't sign in yet

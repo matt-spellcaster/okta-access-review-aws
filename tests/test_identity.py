@@ -527,10 +527,10 @@ def test_nothing_is_linked_by_name_similarity():
 def test_coverage_counts_every_principal_once(graph):
     coverage = graph.coverage()
     assert coverage.total == len(graph.principals)
-    # declared is 2: svc-ci (a bare login, nobody named) and Terraform
-    # Automation (an owner). unlinked is 0 because the second of those used to
-    # be the one unlinked principal in this source.
-    assert coverage.by_method == {"sso_identity": 10, "verified_email": 0, "declared": 2, "creator": 1}
+    # declared is 3: svc-ci (a bare login, nobody named), Terraform Automation
+    # and svc-legacy-etl (both owned by marcus.lee). unlinked is 0 because the
+    # second of those used to be the one unlinked principal in this source.
+    assert coverage.by_method == {"sso_identity": 10, "verified_email": 0, "declared": 3, "creator": 1}
     assert (coverage.unlinked, coverage.contested) == (0, 0)
     assert coverage.reliable
 

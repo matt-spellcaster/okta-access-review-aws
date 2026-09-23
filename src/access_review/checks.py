@@ -7,8 +7,10 @@ SOC 2 and ISO 27001:2022 controls it provides evidence for.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -43,6 +45,9 @@ from .roster import RosterEntry, entry_for
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 # The full list is in snapshot.json; the finding shows the most important ones.
 MAX_SCOPES_SHOWN = 5
+# Same idea for what an account reaches: an org-wide group over 250 apps would
+# otherwise put 250 labels in a ticket body and a PDF paragraph.
+MAX_REACHED_SHOWN = 8
 # Sign-on modes whose use can't be relied on to show up as SSO sign-in events
 # (bookmarks, password-vault apps, apps with no sign-on mode set).
 NO_SSO_MODES = {"BOOKMARK", "AUTO_LOGIN", ""}
@@ -133,12 +138,58 @@ class ReviewContext:
     # Okta, which is every review until the other sources have collectors, so
     # checks that need it are skipped rather than run against half an estate.
     graph: IdentityGraph | None = None
+    # `leaver_accountable_accounts`, kept with the inputs it was computed from:
+    # AR-09, AR-18 and `items.build_items` all read it, and each computation
+    # scans the System Log once per leaver. Recomputed if any input is swapped,
+    # which tests do to `graph` after construction.
+    _accountable: tuple | None = field(default=None, init=False, repr=False, compare=False)
 
     def roster_entry(self, user: User) -> RosterEntry | None:
         return entry_for(self.roster, user.email, user.login)
 
     def is_service_account(self, user: User) -> bool:
         return self.config.service_accounts.entry(OKTA, user.login) is not None
+
+
+class Disposition(StrEnum):
+    """What a check's remediation assumes should happen to the account itself.
+
+    Two findings on one account whose dispositions are REMOVE and RETAIN are
+    two tickets telling one assignee opposite things, and the REMOVE one
+    usually closes on a re-read that only the removal satisfies -- so the
+    handover is recorded as done by something that asked for the opposite. That
+    has now had to be partitioned by hand three times (AR-17, then AR-12, then
+    AR-09), so the axis is declared here and
+    `test_no_account_is_told_to_go_and_to_stay` reads it.
+
+    The field has no default. A new check states its disposition at the point
+    where its remediation sentence is written, which is the only place somebody
+    can judge it, and the fourth collision is caught by the suite.
+    """
+
+    # Carried out as written, the access or the account goes. A documented
+    # exception or an HR correction is a deviation from the ask, not an equal
+    # branch of it: AR-07 and AR-14 are REMOVE, and so is AR-02.
+    REMOVE = "remove"
+    # Carried out as written, the account keeps working and who answers for it
+    # changes. Its premise is that something still depends on the account.
+    RETAIN = "retain"
+    # Neither. The remediation is about something other than whether this
+    # access survives -- enrolling MFA, filling in a profile -- or its first
+    # ask is to find something out and what happens to the access follows from
+    # the answer, which this review does not prejudge ("Confirm X, or
+    # deactivate"). The question to ask is not whether the sentence contains
+    # the word remove: it is whether **carrying out this remediation would undo
+    # the other one's premise**. Narrowing an API client's scopes (AR-10) takes
+    # access away and still leaves the client running, so it is NEITHER.
+    NEITHER = "neither"
+
+
+# A REMOVE check that stands down for the accounts a RETAIN check reports, as
+# {standing down: taking over}. Its finding is absent from a review while the
+# other check holds the account, which is not the same as having been fixed, so
+# `history.age_findings` reads this before calling the finding "Back again".
+STANDS_DOWN_FOR = {"AR-09": "AR-18"}
 
 
 @dataclass
@@ -149,6 +200,8 @@ class Check:
     controls: list[str]
     remediation: str
     run: Callable[[ReviewContext, Check], list[Finding]]
+    # Keyword and required: see Disposition.
+    disposition: Disposition = field(kw_only=True)
     needs_roster: bool = False
     # Needs complete app sign-in data covering app_unused_days.
     needs_app_usage: bool = False
@@ -257,20 +310,49 @@ def _missing_owner(ctx: ReviewContext, check: Check) -> list[Finding]:
 
 
 def _disabled_with_access(ctx: ReviewContext, check: Check) -> list[Finding]:
+    # A service account AR-18 reports is that check's, not this one's, for the
+    # reason AR-17 and AR-12 leave those accounts alone. This one says "remove
+    # the groups and apps so reactivation doesn't restore access" and settles on
+    # a fresh Okta read; AR-18 says "hand it to somebody, or decommission it".
+    # Two subjects for one account -- the login here, `okta/<id>` there -- so no
+    # hashed ticket label could ever collapse them, and the reviewer got both.
+    # AR-18 takes over the whole account and names the groups and apps this
+    # finding would have listed, through the same `_leftover_access`, so
+    # nothing is dropped by standing down.
+    # `STANDS_DOWN_FOR` records this for history.
+    #
+    # Read from the one helper AR-18 itself walks rather than re-derived here:
+    # the partition has to be the same computation or the two drift. It is
+    # empty without a graph or a roster, which is the safe direction -- AR-18
+    # reports nothing then, and this check keeps the finding.
+    taken = leaver_accountable_accounts(ctx)
     out = []
     for u in ctx.snapshot.users:
-        if u.status not in DISABLED_STATUSES:
+        if u.status not in DISABLED_STATUSES or (OKTA, u.id) in taken:
             continue
-        groups = [g.name for g in ctx.snapshot.groups_for(u.id) if g.type != "BUILT_IN"]
-        apps = sorted({app.label for app, _ in ctx.snapshot.apps_for(u.id)})
-        if groups or apps:
-            parts = []
-            if groups:
-                parts.append(f"groups: {', '.join(sorted(groups))}")
-            if apps:
-                parts.append(f"apps: {', '.join(apps)}")
-            out.append(check.finding(u.login, f"Status {u.status} but still has {'; '.join(parts)}."))
+        leftover = _leftover_access(ctx.snapshot, u)
+        if leftover:
+            out.append(check.finding(u.login, f"Status {u.status} but still has {leftover}."))
     return out
+
+
+def _leftover_access(snapshot: Snapshot, user: User) -> str:
+    """A disabled Okta user's groups and apps, in full, as AR-09 lists them;
+    empty when it holds none.
+
+    AR-18 lists them the same way for the disabled accounts AR-09 stands down
+    for, so what the reviewer is told to remove on the decommission branch is
+    exactly what AR-09 would have said. BUILT_IN groups are left out: nobody
+    can remove a user from Everyone.
+    """
+    groups = sorted(g.name for g in snapshot.groups_for(user.id) if g.type != "BUILT_IN")
+    apps = sorted({app.label for app, _ in snapshot.apps_for(user.id)})
+    parts = []
+    if groups:
+        parts.append(f"groups: {', '.join(groups)}")
+    if apps:
+        parts.append(f"apps: {', '.join(apps)}")
+    return "; ".join(parts)
 
 
 def _privileged_service_app(ctx: ReviewContext, check: Check) -> list[Finding]:
@@ -489,6 +571,24 @@ def graph_subject(principal: Principal) -> str:
     return f"{principal.source}/{principal.id}"
 
 
+def okta_user_subjects(graph: IdentityGraph | None, snapshot: Snapshot) -> dict[str, str]:
+    """{casefolded login: graph subject} for every Okta user the graph holds.
+
+    The Okta checks name a user account by its login and the graph checks by
+    `graph_subject`, so one account wears two names; this is the one place that
+    joins them, through the graph's own principal rather than a subject built
+    by hand. Empty without a graph.
+    """
+    if graph is None:
+        return {}
+    out = {}
+    for user in snapshot.users:
+        principal = graph.principal((OKTA, user.id))
+        if principal is not None:
+            out[user.login.casefold()] = graph_subject(principal)
+    return out
+
+
 def graph_findings_by_identity(
     graph: IdentityGraph | None, findings
 ) -> dict[str, list[tuple[Finding, Link]]]:
@@ -506,10 +606,39 @@ def graph_findings_by_identity(
     be a second, separate opinion about the format, and the day a source name
     contains a slash it would be a wrong one.
     """
-    if graph is None:
-        return {}
-    principals = {graph_subject(p): p for p in graph.principals}
     out: dict[str, list[tuple[Finding, Link]]] = {}
+    for f, link in _attributed(graph, findings):
+        out.setdefault(link.identity, []).append((f, link))
+    return out
+
+
+def graph_findings_by_subject(
+    graph: IdentityGraph | None, findings
+) -> dict[str, list[tuple[Finding, Link]]]:
+    """The same findings, keyed by the account they are **about**.
+
+    `graph_findings_by_identity` answers "whose review item does this belong
+    on", which for a service account is its owner's. This answers "which
+    account is this about", which for an Okta account is one that has review
+    items of its own -- and since AR-09 stands down for those, its item would
+    otherwise say nothing is flagged while a high finding names it.
+
+    An exact match on the principal id, not an inference: the subject is that
+    principal. Both go through `_attributed`, so the two cannot disagree about
+    which findings a reviewer may be shown.
+    """
+    out: dict[str, list[tuple[Finding, Link]]] = {}
+    for f, link in _attributed(graph, findings):
+        out.setdefault(f.subject, []).append((f, link))
+    return out
+
+
+def _attributed(graph: IdentityGraph | None, findings) -> Iterator[tuple[Finding, Link]]:
+    """The graph findings a reviewer may be shown, each with the link that
+    ties its principal to a person."""
+    if graph is None:
+        return
+    principals = {graph_subject(p): p for p in graph.principals}
     for f in findings:
         if f.check_id not in GRAPH_CHECKS:
             continue
@@ -524,8 +653,7 @@ def graph_findings_by_identity(
         # deliberately refused to make.
         if link is None or not link.identity:
             continue
-        out.setdefault(link.identity, []).append((f, link))
-    return out
+        yield f, link
 
 
 def _credential_evidence_complete(graph: IdentityGraph, source: str) -> bool:
@@ -758,43 +886,68 @@ def _leaver_access_outside_okta(ctx: ReviewContext, check: Check) -> list[Findin
     return out
 
 
-def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Finding]:
-    """A service account a leaver was accountable for, or held the credentials of.
+def _reachable(graph: IdentityGraph, principal: Principal) -> list[str]:
+    """What the sources say this principal can still reach, minus the roles,
+    which are named separately.
 
-    The other half of a departure, and the half no deactivation reaches. The
-    bot is supposed to keep running -- something in CI depends on it -- so the
-    fix is to make sure somebody still here answers for it and to rotate any
-    secret or key the leaver held, or to decide it is finished and take it
-    down. That is the opposite of AR-17, which asks for a leaver's own access
-    to be removed, which is why the two are reported apart and why AR-17 leaves
-    service accounts here.
+    `_access_without_an_account` lists an account's grants for the same reason
+    -- somebody deciding between handover and decommission is deciding about
+    the blast radius, and an account described only by its roles and
+    credentials does not show one -- but not the same list: that one includes
+    ROLE grants and never truncates.
 
-    Two reasons, one finding per account. *Ownership*: the strongest link for
-    the account names the leaver (the register, or the System Log's record of
-    who created it). *Custody*: the System Log shows the leaver created the
-    client, added a secret or key, or read the secret back (`secrets_held_by`),
-    so a copy may still work whoever owns it. Custody used to be AR-12's, on the
-    leaver ticket, but that ticket closes on a daily Okta re-read and Okta
-    cannot show a rotation reliably, so the rotation is confirmed by a reviewer
-    here instead.
-
-    Okta's own service clients are what AR-17 structurally cannot see: it skips
-    `source == OKTA` because Okta deactivation is what the rest of the review
-    verifies, and an API client is not touched by anything that happens to the
-    account of the person who owns it.
-
-    Every source and every status, unlike AR-17. A disabled service account is
-    not a settled one: `CredentialKind` is the set of things that outlive the
-    account they were created under, so a blocked sign-in says nothing about
-    the token, and somebody still has to decide between handover and shutdown.
-
-    The ownership half is disjoint from AR-15 by construction: it walks
-    `principals_of`, indexed on identities some source attested, and AR-15
-    walks the principals whose best link reaches nobody. The custody half can
-    report an account AR-15 also reports; the two remediations agree.
+    Whatever the source stated, plus what its groups reach. Not used for a
+    disabled Okta user: Okta has unassigned it from every app, so "reaches"
+    would overstate it, and what its surviving groups give back on reactivation
+    is `_leftover_access`, listed in full as AR-09 lists it.
     """
+    return sorted({g.target_label or g.target
+                   for g in graph.grants_for(principal.key)
+                   if g.kind is not GrantKind.ROLE})
+
+
+def leaver_accountable_accounts(ctx: ReviewContext) -> dict[PrincipalKey, dict[str, list[str]]]:
+    """The accounts AR-18 reports, as {key: {person who left: [why]}}.
+
+    Two reasons, one entry per account. *Ownership*: the strongest link for a
+    service account names the leaver (the register, or the System Log's record
+    of who created it). *Custody*: the System Log shows the leaver created an
+    API client, added a secret or key, or read the secret back
+    (`secrets_held_by`), so a copy may still work whoever owns it.
+
+    AR-18 walks this; so does `_disabled_with_access`, which stands down for
+    the Okta user accounts in it, and `items._app_proposal`, which stops
+    proposing Revoke on them. The remediations contradict, and a partition
+    re-derived at each of those places drifts. Empty when there is no graph or
+    no roster, which is the direction that fails safe: AR-18 runs on neither,
+    so nothing stands down for a check that did not report.
+
+    A leaver's own Okta account is never in it: an account whose roster entry
+    says it is gone. HR lists that account as a person who left, so a register
+    entry calling it a service account is contradicted by the stronger record,
+    and the account is the removal checks' to report (AR-01, AR-02, AR-09,
+    AR-13) -- which they do, because every one of them fires on a gone entry, so
+    it is not silence. Taken here, a leaver's own account declared with an owner
+    was told to go by AR-13 and to stay by AR-18, and AR-09 went quiet.
+
+    Only a *gone* entry, not any roster match. `entry_for` matches on the
+    profile email, which a bot can share with a person still here, and for an
+    active entry no removal check fires: excluding it dropped AR-18 from the
+    whole review with no gap to say so.
+    """
+    inputs = (ctx.snapshot, ctx.roster, ctx.config, ctx.graph, ctx.as_of)
+    if ctx._accountable is not None and all(a is b for a, b in zip(ctx._accountable[0], inputs)):
+        return ctx._accountable[1]
+    why = _leaver_accountable_accounts(ctx)
+    ctx._accountable = (inputs, why)
+    return why
+
+
+def _leaver_accountable_accounts(ctx: ReviewContext) -> dict[PrincipalKey, dict[str, list[str]]]:
+    if ctx.graph is None or ctx.roster is None:
+        return {}
     graph = ctx.graph
-    out = []
+    leavers_own = {(OKTA, u.id) for u, _ in _leavers(ctx)}
     # By identity, not by leaver, for the reason `_leaver_access_outside_okta`
     # gives: one person with two Okta logins would otherwise be two findings
     # about the one service account, and so two tickets. A leaver with no
@@ -816,7 +969,7 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         gone = f"left {entry.end_date}" if entry.end_date else "is terminated in HR"
         person = f"{entry.name or (users[0].login if who.startswith('user:') else who)} {gone}"
         for principal in graph.principals_of(who):
-            if principal.kind is not PrincipalKind.SERVICE:
+            if principal.kind is not PrincipalKind.SERVICE or principal.key in leavers_own:
                 continue
             link = graph.link_for(principal.key)
             if link is None:  # principals_of is built from these; belt and braces
@@ -829,8 +982,48 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
                 why.setdefault((OKTA, app.id), {}).setdefault(person, []).append(
                     f"the System Log shows them holding its credentials on {when.date()}, so a copy "
                     f"may still work")
+    return why
+
+
+def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Finding]:
+    """A service account a leaver was accountable for, or held the credentials of.
+
+    The other half of a departure, and the half no deactivation reaches. The
+    bot is supposed to keep running -- something in CI depends on it -- so the
+    fix is to make sure somebody still here answers for it and to rotate any
+    secret or key the leaver held, or to decide it is finished and take it
+    down. That is the opposite of AR-17, which asks for a leaver's own access
+    to be removed, which is why the two are reported apart and why AR-17 leaves
+    service accounts here. Custody used to be AR-12's, on the leaver ticket,
+    but that ticket closes on a daily Okta re-read and Okta cannot show a
+    rotation reliably, so the rotation is confirmed by a reviewer here instead.
+    Which accounts, and why, is `leaver_accountable_accounts`.
+
+    Okta's own service clients are what AR-17 structurally cannot see: it skips
+    `source == OKTA` because Okta deactivation is what the rest of the review
+    verifies, and an API client is not touched by anything that happens to the
+    account of the person who owns it.
+
+    Every source and every status, unlike AR-17. A disabled service account is
+    not a settled one: `CredentialKind` is the set of things that outlive the
+    account they were created under, so a blocked sign-in says nothing about
+    the token, and somebody still has to decide between handover and shutdown.
+
+    It takes the whole account, not just its credentials: `_disabled_with_access`
+    stands down for these and `items._app_proposal` stops proposing Revoke on
+    them, so the groups and apps a disabled one still holds are reported here or
+    nowhere. That is what `_leftover_access` is for.
+
+    The ownership half is disjoint from AR-15 by construction: it walks
+    `principals_of`, indexed on identities some source attested, and AR-15
+    walks the principals whose best link reaches nobody. The custody half can
+    report an account AR-15 also reports; the two remediations agree.
+    """
+    graph = ctx.graph
+    out = []
     apps = {a.id: a for a in ctx.snapshot.apps}
-    for key, people in sorted(why.items()):
+    users_by_id = {u.id: u for u in ctx.snapshot.users}
+    for key, people in sorted(leaver_accountable_accounts(ctx).items()):
         said = "; ".join(f"{person}, and {'; and '.join(reasons)}" for person, reasons in people.items())
         principal = graph.principal(key)
         if principal is None:
@@ -849,7 +1042,13 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         known = _credential_evidence_complete(graph, principal.source)
         roles = _elevated_roles(graph, principal)
         held = _describe(credentials, ctx.as_of)
-        detail = f"{principal.label}: {said}."
+        # The source's own word for the account's state, the way AR-17 reports
+        # it. The remediation branches on it -- a live account is presumably
+        # still being called, a deactivated one restores what it holds on
+        # reactivation -- and for a deprovisioned Okta user this record replaced
+        # AR-09's "Status DEPROVISIONED but still has ...".
+        state = principal.source_status or ("disabled" if principal.status is Status.DISABLED else "")
+        detail = f"{principal.label}{f' ({state})' if state else ''}: {said}."
         carries = []
         if roles:
             carries.append(f"the {', '.join(roles)} role" if len(roles) == 1
@@ -865,12 +1064,30 @@ def _leaver_owned_service_accounts(ctx: ReviewContext, check: Check) -> list[Fin
         if not credentials and not known:
             detail += (f" The {principal.source} credential read did not complete, so what it "
                        f"holds is unknown.")
+        # The blast radius, which is the half of the decision the roles and
+        # credentials do not show: handover or decommission turns on what
+        # stops working. For a disabled Okta user it is what AR-09 would have
+        # listed, and AR-09 stands down for these, so this sentence is the
+        # only place that access is reported: in full, in AR-09's words, and
+        # as what reactivation restores rather than what it reaches today.
+        user = users_by_id.get(principal.id) if principal.source == OKTA else None
+        leftover = _leftover_access(ctx.snapshot, user) if user and user.status in DISABLED_STATUSES else None
+        reaches = [] if leftover is not None else _reachable(graph, principal)
+        if leftover:
+            detail += f" Reactivating it restores {leftover}."
+        elif reaches:
+            shown = ", ".join(reaches[:MAX_REACHED_SHOWN])
+            more = (f" and {len(reaches) - MAX_REACHED_SHOWN} more"
+                    if len(reaches) > MAX_REACHED_SHOWN else "")
+            detail += f" It reaches {shown}{more}."
         # Graded on what the account can change, not on the owner's rank.
         # `_elevated_roles` is "above ordinary membership", which for Okta
         # includes a read-only admin role that cannot change a thing, so
         # READ_ONLY_ROLES is filtered out; a role that is not one of them is
         # treated as elevated. Unknown write access is not the milder case:
-        # see _write_access.
+        # see _write_access. What the account reaches is deliberately not
+        # graded on: an account is not more dangerous for being in a group
+        # everyone is in, and AR-09 never graded on it either.
         elevated = [r for r in roles if r.lower() not in READ_ONLY_ROLES]
         writes = _write_access(credentials, known) is not False
         out.append(check.finding(
@@ -885,88 +1102,94 @@ CHECKS: list[Check] = [
         "AR-01", "Terminated in HR but account still live", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.18"],
         "Deactivate the Okta account and confirm app sessions are revoked.",
-        _terminated_still_active, needs_roster=True,
+        _terminated_still_active, disposition=Disposition.REMOVE, needs_roster=True,
     ),
     Check(
         "AR-02", "Contract or end date has passed", "high",
         ["SOC 2 CC6.2", "ISO 27001 A.5.18"],
         "Deactivate the account or get the end date extended in HR.",
-        _contract_expired, needs_roster=True,
+        # REMOVE: "deactivate" is the ask and an HR extension is the data
+        # being corrected, not an equal branch -- which is why this is the one
+        # of these in `URGENT_CHECKS` and `LEAVER_ACCESS_CHECKS`, opening a
+        # ticket that closes on a fresh Okta read.
+        _contract_expired, disposition=Disposition.REMOVE, needs_roster=True,
     ),
     Check(
         "AR-03", "Account has no HR record", "high",
         ["SOC 2 CC6.2", "ISO 27001 A.5.16"],
         "Raise with HR: add them to the roster, list them as a service account, or have the account "
         "deactivated. Handled outside the review; no ticket is opened.",
-        _not_in_roster, needs_roster=True,
+        _not_in_roster, disposition=Disposition.NEITHER, needs_roster=True,
     ),
     Check(
         "AR-04", "No MFA factor enrolled", "high",
         ["SOC 2 CC6.1", "ISO 27001 A.8.5"],
         "Require MFA enrollment through an authentication policy.",
-        _mfa_missing,
+        _mfa_missing, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-05", "Inactive account", "medium",
         ["SOC 2 CC6.2", "ISO 27001 A.5.18"],
         "Confirm with the manager whether access is still needed; suspend if not.",
-        _inactive,
+        _inactive, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-06", "Account never used", "medium",
         ["SOC 2 CC6.2", "ISO 27001 A.5.16"],
         "Confirm the account is still needed, or deactivate it.",
-        _never_signed_in,
+        _never_signed_in, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-07", "Contractor in employee-only group", "medium",
         ["SOC 2 CC6.3", "ISO 27001 A.5.15"],
         "Remove the contractor from the group or document an approved exception.",
-        _contractor_in_employee_group,
+        _contractor_in_employee_group, disposition=Disposition.REMOVE,
     ),
     Check(
         "AR-08", "Missing manager or department", "low",
         ["SOC 2 CC6.2", "ISO 27001 A.5.16"],
         "Fill in the profile so the account has an accountable reviewer.",
-        _missing_owner,
+        _missing_owner, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-09", "Disabled account still holds access", "medium",
         ["SOC 2 CC6.2", "ISO 27001 A.5.18"],
         "Remove group memberships and app assignments so reactivation doesn't restore access.",
-        _disabled_with_access,
+        _disabled_with_access, disposition=Disposition.REMOVE,
     ),
     Check(
         "AR-10", "API client with admin access", "medium",
         ["SOC 2 CC6.3", "ISO 27001 A.8.2"],
         "Confirm each .manage scope and admin role is needed; prefer a least-privilege custom role.",
-        _privileged_service_app,
+        # Narrowing scopes is not removing the account, and does not
+        # contradict handing it to somebody.
+        _privileged_service_app, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-11", "Admin user", "info",
         ["SOC 2 CC6.3", "ISO 27001 A.8.2"],
         "Reviewer confirms each admin still needs the role.",
-        _admin_membership,
+        _admin_membership, disposition=Disposition.NEITHER,
     ),
     Check(
         "AR-12", "Leaver still holds a working credential", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.18"],
         "Revoke the API token: deactivating the account does not stop it working. An API client "
         "secret they held is AR-18's, because rotating it is confirmed by a reviewer, not by Okta.",
-        _leaver_credentials, needs_roster=True,
+        _leaver_credentials, disposition=Disposition.REMOVE, needs_roster=True,
     ),
     Check(
         "AR-13", "Activity after the termination date", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC7.2", "ISO 27001 A.5.18", "ISO 27001 A.8.16"],
         "Treat as a possible incident: revoke the credential, review what it reached, "
         "and confirm the termination date with HR.",
-        _activity_after_leaving, needs_roster=True,
+        _activity_after_leaving, disposition=Disposition.REMOVE, needs_roster=True,
     ),
     Check(
         "AR-14", "App assignment unused", "medium",
         ["SOC 2 CC6.2", "ISO 27001 A.5.18"],
         "Remove the direct app assignment in Okta, or record why it is still needed.",
-        _unused_app_assignment, needs_app_usage=True,
+        _unused_app_assignment, disposition=Disposition.REMOVE, needs_app_usage=True,
     ),
     Check(
         "AR-15", "Credential nobody is accountable for", "medium",
@@ -983,7 +1206,16 @@ CHECKS: list[Check] = [
         "without making anyone accountable, and is still reported here. So is one naming an owner "
         "no source evidences as a person -- a misspelled address reads as ownership and reaches "
         "nobody, which is why it is worth no more than leaving the field blank.",
-        _unowned_credentials, needs_graph=True,
+        # NEITHER, not RETAIN, which is the near miss worth writing down. The
+        # sentence looks like AR-18's -- find an owner, or revoke -- but AR-18
+        # starts from an owner who was accountable and has gone, and its first
+        # branch is to hand the account on with its access intact, which is
+        # what AR-09 contradicts. This one asserts nothing about whether the
+        # account survives: it asks who is accountable for the credential, and
+        # establishing that is compatible with having removed the groups and
+        # apps. The test is whether carrying out the other check's remediation
+        # undoes this one's premise.
+        _unowned_credentials, disposition=Disposition.NEITHER, needs_graph=True,
     ),
     Check(
         "AR-16", "Access held by an account the source never returned", "high",
@@ -993,7 +1225,7 @@ CHECKS: list[Check] = [
         ["SOC 2 CC6.1", "SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18"],
         "Find out what this account is. It reaches things in the org while being absent from the "
         "user read, so neither joiner-mover-leaver automation nor this review can see it directly.",
-        _access_without_an_account, needs_graph=True,
+        _access_without_an_account, disposition=Disposition.NEITHER, needs_graph=True,
     ),
     Check(
         "AR-17", "Someone who left still has access outside Okta", "critical",
@@ -1005,7 +1237,8 @@ CHECKS: list[Check] = [
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.16", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
         "Remove the access and revoke the credentials in that system. Deactivating the Okta "
         "account did not reach them, which is why they are still here.",
-        _leaver_access_outside_okta, needs_graph=True, needs_roster=True,
+        _leaver_access_outside_okta, disposition=Disposition.REMOVE,
+        needs_graph=True, needs_roster=True,
     ),
     Check(
         "AR-18", "Service account a leaver owned or held the credentials of", "high",
@@ -1021,11 +1254,14 @@ CHECKS: list[Check] = [
          "ISO 27001 A.5.16", "ISO 27001 A.5.17", "ISO 27001 A.5.18", "ISO 27001 A.8.2"],
         "Make sure somebody still here answers for this account, and rotate every secret and key "
         "the leaver held or could have read; or decommission it: revoke its credentials and remove "
-        "its access. Deactivating the leaver's own account did not touch this one -- it is still "
-        "running. Record the owner in the service account register (config.service_accounts), "
-        "which ties it to that person's access review and to their departure bundle if they leave "
-        "in turn.",
-        _leaver_owned_service_accounts, needs_graph=True, needs_roster=True,
+        "its access. Deactivating the leaver's own account did not touch this one. The finding "
+        "says what state the account is in and what it still reaches: a live one is presumably "
+        "still being called, and a deactivated one restores everything it holds the moment "
+        "somebody reactivates it. Record the owner in the service account register "
+        "(config.service_accounts), which ties it to that person's access review and to their "
+        "departure bundle if they leave in turn.",
+        _leaver_owned_service_accounts, disposition=Disposition.RETAIN,
+        needs_graph=True, needs_roster=True,
     ),
 ]
 

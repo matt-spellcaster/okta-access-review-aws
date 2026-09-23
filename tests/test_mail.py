@@ -115,7 +115,7 @@ def test_message_has_summary_and_pdf_but_no_personal_data(demo_run):
     assert msg["Subject"] == "Okta access review (complete): 3 critical, acme-demo.okta.com"
     assert msg["To"] == "ciso@acme.example, auditor@acme.example"
     body = msg.get_body(("plain",)).get_content()
-    assert "critical 3" in body and "total    15" in body
+    assert "critical 3" in body and "total    16" in body
     for user in snapshot.users:
         assert user.login not in body
         assert user.profile["lastName"] not in body
@@ -137,7 +137,7 @@ def test_repeat_findings_line_is_counts_only(demo_run):
         f.reviews_open, f.first_seen = 1, "2026-09-15"
     findings[0].reviews_open, findings[0].first_seen = 3, "2026-03-15"
     body = build_message(settings(), snapshot, findings, run_dir).get_body(("plain",)).get_content()
-    assert "Open since the last review: 1 of 15 (longest: 3 reviews in a row)" in body
+    assert "Open since the last review: 1 of 16 (longest: 3 reviews in a row)" in body
     for user in snapshot.users:
         assert user.login not in body
 

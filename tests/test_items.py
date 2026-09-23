@@ -90,7 +90,37 @@ def test_demo_proposals(demo):
 def test_every_item_goes_to_the_ciso(demo):
     items = build_items(demo)
     assert {i.reviewer for i in items} == {CISO}
-    assert summary(items) == {"keep": 6, "revoke": 7, "decide": 3, "total": 16}
+    assert summary(items) == {"keep": 6, "revoke": 8, "decide": 3, "total": 17}
+
+
+def test_an_account_awaiting_a_handover_is_not_proposed_for_revocation(demo_graph, demo):
+    """svc-legacy-etl is DEPROVISIONED and still holds Salesforce, which is the
+    Revoke branch. Its register owner has left, so AR-18 is asking whether it
+    is handed to somebody or shut down, and approving a revoke here would take
+    the second answer without anybody choosing -- as a signed decision opening
+    a ticket that closes on an Okta re-read. `_disabled_with_access` stands
+    down for the same account; this is the same partition on the other screen.
+
+    Without a graph AR-18 does not run, nobody is asking for a handover, and
+    the ordinary Revoke stands: the partition is inert rather than silent.
+    """
+    assert proposals(demo_graph)[("svc-legacy-etl", "Salesforce")] == DECIDE
+    assert proposals(demo)[("svc-legacy-etl", "Salesforce")] == REVOKE
+
+
+def test_a_finding_about_an_account_reaches_that_accounts_own_item(demo_graph):
+    """AR-18's finding on svc-legacy-etl is filed under Marcus Lee, who owns it,
+    which is where a reviewer deciding *his* access needs it. It also has to be
+    on the account's own item: AR-09 stands down for that account, so without
+    this the one screen that decides its access says nothing is flagged while a
+    high finding names it. Both, not either -- and not in `.concerns`, which a
+    revoke ticket copies as work it settles on an Okta re-read."""
+    items = {(i.user.split("@")[0], i.target): i for i in build_items(demo_graph, run_checks(demo_graph)[0])}
+    own = items[("svc-legacy-etl", "Salesforce")]
+    assert any("AR-18" in c for c in own.outside_okta)
+    assert not any("AR-18" in c for c in own.concerns)
+    owner = items[("marcus.lee", "GitHub")]
+    assert sum("AR-18" in c for c in owner.outside_okta) == 2  # both accounts he answered for
 
 
 def test_nothing_is_proposed_for_revocation_on_incomplete_usage(demo):

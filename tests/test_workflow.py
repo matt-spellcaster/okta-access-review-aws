@@ -94,7 +94,7 @@ def test_the_signoff_message_lists_every_decision_next_to_the_button(env):
     assert channel == CISO_DM
     for item in items.values():  # every item, in full, in the one message
         assert item.user in text and item.target in text
-    assert "Revoke (7)" in text and "Keep (9)" in text
+    assert "Revoke (7)" in text and "Keep (10)" in text
     assert f"<{SITE}UAR-1|UAR-1>" in text
     assert approve["blocks"][-1]["type"] == "actions"  # the button comes right after the list
     assert deps.bot.uploads and deps.bot.uploads[0][3] == b"%PDF"
@@ -499,9 +499,9 @@ def test_an_account_with_no_hr_record_is_flagged_and_acknowledged_not_ticketed(e
         if item.proposed == DECIDE:
             workflow.record(deps, run, [(key, KEEP, "")], R.ciso, {})
     [approve] = [json.dumps(p) for _, p, _ in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
-    assert "Flagged for HR (1), no ticket" in approve and "Keep (9)" in approve and "1 flagged for HR" in approve
+    assert "Flagged for HR (1), no ticket" in approve and "Keep (10)" in approve and "1 flagged for HR" in approve
     workflow.approve(deps, run, R.ciso, {})
     workflow.remediate(deps, run)
     assert not any("HR record" in f["summary"] for f in deps.tickets.jira.issues.values())
     finished = posts_to(deps, deps.channel)[-1]
-    assert "9 keep, 7 revoke" in finished and "1 account(s) with no HR record" in finished and "no ticket" in finished
+    assert "10 keep, 7 revoke" in finished and "1 account(s) with no HR record" in finished and "no ticket" in finished
