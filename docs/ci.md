@@ -20,7 +20,7 @@ Two more jobs don't produce evidence, and only run once the AWS repository varia
 
 | Job | When | What it does |
 |---|---|---|
-| Terraform plan | Pull requests from branches in this repository | Plans `infra/main` with the read-only plan role (no state lock, no writes) and shows the plan on the run's summary page |
+| Terraform plan | Pull requests from branches in this repository, except runs Dependabot starts (they get no repository secrets) | Plans `infra/main` with the read-only plan role (no state lock, no writes) and shows the plan on the run's summary page |
 | Deploy | Pushes to `master`, after an approval in the `production` environment | Builds the Lambda image, pushes it to ECR, and applies `infra/main` with the apply role |
 
 The weekly run catches newly published vulnerabilities and changed repository settings, even when
