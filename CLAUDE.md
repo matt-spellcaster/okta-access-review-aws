@@ -14,6 +14,8 @@ that area.
 - Live, local: `./run.sh --roster roster/dev-org-roster.csv --config roster/dev-org-config.json` (needs `env` and 1Password)
 - Verify a run folder: `uv run access-review attest reports/<folder>`
 - Whole AWS workflow in memory (no AWS/Slack/Jira): `uv run python scripts/e2e_local.py`
+- The demo review as data a web page replays: `uv run python scripts/export_demo.py --out <dir>`
+  (refuses uncommitted changes; the output is stamped with the commit)
 - Terraform: `terraform -chdir=infra/main fmt -check && terraform -chdir=infra/main validate`;
   scan with `uvx checkov@<pinned> -d infra --config-file infra/.checkov.yaml`
 - Image: `scripts/build_image.sh <tag>`; teardown dry run: `uv run python scripts/teardown.py`;

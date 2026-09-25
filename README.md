@@ -279,6 +279,7 @@ PDF branding and the roster format are in [docs/configuration.md](docs/configura
 uv run pytest -q
 uv run python scripts/render_samples.py   # after changing the PDF layout or demo data
 uv run python scripts/e2e_local.py        # one whole review through the AWS workflow, all in memory
+uv run python scripts/export_demo.py --out <dir>   # the demo review as data a web page can replay
 ```
 
 The tests cover every check, the Okta client (including DPoP), the PDF, email and Slack, the Slack
