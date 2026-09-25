@@ -4,7 +4,8 @@ A quarterly Okta user access review that runs in AWS. The CISO decides each item
 tracked as Jira Service Management tickets, and everything is kept as SOC 2 and ISO 27001 evidence.
 
 It also follows a departure past Okta. Deactivating someone's Okta account doesn't touch the
-service accounts they own or their access in GitHub. The review finds those too.
+service accounts they own, or GitHub access that wasn't set up through Okta. The review finds those
+too.
 
 <img src="docs/images/slack-review-finished.png" width="560" alt="Slack: the finished review, signed off, with 18 findings by check from critical to info, the decisions, and the tickets opened">
 
