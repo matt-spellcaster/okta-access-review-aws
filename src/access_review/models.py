@@ -189,8 +189,9 @@ class App:
 
 @dataclass
 class ApiToken:
-    """An Okta API token (SSWS). It keeps working until it is revoked or
-    expires, whatever happens to the account of the user who owns it."""
+    """An Okta API token (SSWS). It works until it is revoked or expires, or
+    until the user who owns it is deactivated, which deletes it. Suspending
+    the user doesn't."""
 
     id: str
     name: str

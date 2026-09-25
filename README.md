@@ -3,8 +3,8 @@
 A quarterly Okta user access review that runs in AWS. The CISO decides each item in Slack, fixes are
 tracked as Jira Service Management tickets, and everything is kept as SOC 2 and ISO 27001 evidence.
 
-It also follows a departure past Okta. Deactivating someone's Okta account doesn't touch the API
-tokens they hold, the service accounts they own, or their access in GitHub. The review finds those
+It also follows a departure past Okta. Deactivating someone's Okta account doesn't touch the
+service accounts they own, or GitHub access that wasn't set up through Okta. The review finds those
 too.
 
 <img src="docs/images/slack-review-finished.png" width="560" alt="Slack: the finished review, signed off, with 18 findings by check from critical to info, the decisions, and the tickets opened">
@@ -137,8 +137,9 @@ Without it they're skipped, and the report says so. Thresholds and group names a
 
 AR-12, AR-13 and AR-18 cover the leaver cases an account status doesn't show:
 
-- **AR-12:** an Okta API token keeps working after the account is deactivated. The daily check sees
-  the revocation in Okta.
+- **AR-12:** a leaver whose account is still active, or only suspended, still holds their Okta API
+  tokens. Deactivating the account deletes them; suspending it doesn't. The daily check sees the
+  revocation in Okta.
 - **AR-18:** so does a copy of an API client secret the leaver created, added or read, and any
   client they owned. Somebody still here has to answer for it, and every secret they held has to be
   rotated. A reviewer confirms the rotation, because Okta can't show it reliably (a key published at
