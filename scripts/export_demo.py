@@ -11,7 +11,7 @@ Each variant writes three files into <dir>:
                             from, the messages and tickets that open the review,
                             the fix tickets, and the one-byte changes the
                             evidence check is shown with
-    <variant>.golden.json   four scripted reviews run through the real workflow:
+    <variant>.golden.json   five scripted reviews run through the real workflow:
                             every Slack call, Jira call and evidence record, the
                             signed decisions.json, and what `access-review
                             attest` prints for the signed run, intact and with
@@ -28,12 +28,14 @@ Nothing leaves this machine. The review runs on the fixtures, and S3, Slack,
 Jira and Step Functions are the in-memory fakes from tests/fakes.py. The clocks
 are fixed and the decision record IDs are counted, so one commit always writes
 the same bytes. The output is stamped with that commit, so a tree with
-uncommitted changes is refused.
+uncommitted changes is refused. Nothing is written if any file would name a
+path on this machine, or a host or address outside the fixture org.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import copy
 import dataclasses
@@ -46,26 +48,33 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zlib
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts")]
+# ReportLab dates the PDF by SOURCE_DATE_EPOCH even with invariant=1, and takes
+# any of its settings from RL_* variables (compression, for one). The PDF's hash
+# is in the manifest that everything else is signed over.
+for name in [n for n in os.environ if n == "SOURCE_DATE_EPOCH" or n.startswith("RL_")]:
+    del os.environ[name]
 
-from demo_to_slack import OVERRIDE_REASON  # noqa: E402
+from demo_to_slack import OVERRIDE_REASON, override_item  # noqa: E402
 from fakes import FakeBot, FakeS3, FakeSfn  # noqa: E402
 
 from access_review import __version__, attest, collect, store, workflow  # noqa: E402
 from access_review import slack_review as msgs  # noqa: E402
 from access_review.checks import Config  # noqa: E402
 from access_review.csvsafe import read_rows  # noqa: E402
-from access_review.decisions import DecisionError, Reviewers  # noqa: E402
+from access_review.decisions import DecisionError, Reviewers, reason_required  # noqa: E402
 from access_review.items import ACKNOWLEDGE_ONLY, DECIDE, ITEMS_FILE, KEEP, LINK_MARKER, REVOKE  # noqa: E402
 from access_review.models import Snapshot  # noqa: E402
 from access_review.okta import OktaError, admin_url  # noqa: E402
 from access_review.review import run_review  # noqa: E402
 from access_review.roster import load_roster  # noqa: E402
+from access_review.state import load_state  # noqa: E402
 from access_review.tickets import Remediation  # noqa: E402
 
 FORMAT = 1
@@ -83,6 +92,9 @@ DECIDED = datetime(2026, 9, 18, 16, tzinfo=timezone.utc)
 CISO = "U0CISO00001"
 CHANNEL = "C0REVIEW001"
 EVIDENCE, WORK = "acme-uar-evidence", "acme-uar-work"
+# The only hosts the output may name: the fixture org and its admin console.
+HOSTS = ("acme-demo.okta.com", "acme-demo-admin.okta.com")
+EMAIL_DOMAIN = "acme.example"
 TASK_TOKEN = "demo-task-token"
 # Stands in for a reason while the text around it is built, so the page can put
 # the reviewer's own in its place. A private-use character: no text the tool
@@ -103,7 +115,10 @@ BAD_REASONS = ("", "two\nlines")
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True, text=True).stdout.strip()
+    done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    if done.returncode:
+        raise SystemExit(f"export_demo: git {' '.join(args)} failed: {done.stderr.strip()}")
+    return done.stdout.strip()
 
 
 def dumps(doc: object) -> str:
@@ -213,20 +228,38 @@ class Session:
             tickets=Remediation(self.jira, self.s3, EVIDENCE, "Task", "Sub-task", now=clock, okta_org_url=org_url))
         self.source = {"channel": self.bot.open_dm(CISO)}
         self.opened = workflow.open_review(self.deps, self.run, TASK_TOKEN)
+        self.parent = load_state(self.s3, WORK, self.run)[0]["parent_issue"]
+        self.opened_records = self.evidence("tickets")
 
     def step(self, step: dict) -> dict:
+        """One scripted step. A refusal is its result only where the script
+        expects one ("refused"); any other refusal, or a missing one, stops the export."""
         self.now = DECIDED
         try:
-            if step["do"] == "confirm":
-                return workflow.confirm(self.deps, self.run, CISO, self.source)
-            if step["do"] == "record":
-                return workflow.record(self.deps, self.run, [tuple(c) for c in step["choices"]], CISO, self.source)
-            if step["do"] == "approve":
-                return {"approve": workflow.approve(self.deps, self.run, CISO, self.source),
-                        "remediate": workflow.remediate(self.deps, self.run)}
+            result = self._do(step)
         except DecisionError as e:
-            return {"error": str(e)}
+            if step.get("refused"):
+                return {"error": str(e)}
+            raise SystemExit(f"export_demo: a scripted step was refused: {step}: {e}") from e
+        if step.get("refused"):
+            raise SystemExit(f"export_demo: a scripted step should have been refused: {step}")
+        return result
+
+    def _do(self, step: dict) -> dict:
+        if step["do"] == "confirm":
+            return workflow.confirm(self.deps, self.run, CISO, self.source)
+        if step["do"] == "record":
+            return workflow.record(self.deps, self.run, [tuple(c) for c in step["choices"]], CISO, self.source)
+        if step["do"] == "approve":
+            return {"approve": workflow.approve(self.deps, self.run, CISO, self.source),
+                    "remediate": workflow.remediate(self.deps, self.run)}
         raise ValueError(f"unknown step {step['do']!r}")
+
+    def throwaway(self) -> tuple[FakeS3, DemoJira, Remediation]:
+        """This review's Remediation, writing to fresh fakes, so a ticket can be
+        built to show the page without touching the review."""
+        s3, jira = FakeS3(), DemoJira()
+        return s3, jira, dataclasses.replace(self.deps.tickets, jira=jira, s3=s3, now=lambda: DECIDED)
 
     def evidence(self, kind: str) -> dict[str, str]:
         prefix = f"{store.RUNS}{self.run}/{kind}/"
@@ -258,32 +291,33 @@ def signoff_lines(item) -> list[str]:
     [entry] = [e for group in msgs.decision_lines([item], {item.key: decision}).values() for e in group]
     lines = entry.split("\n")
     if item.kind in ACKNOWLEDGE_ONLY:
-        assert SLOT not in entry
+        if SLOT in entry:
+            raise SystemExit(f"export_demo: an acknowledged item's sign-off line has a reason: {item.key}")
         return lines
-    assert SLOT in lines[-1] and not any(SLOT in line for line in lines[:-1])
+    if SLOT not in lines[-1] or any(SLOT in line for line in lines[:-1]):
+        raise SystemExit(f"export_demo: the reason isn't on the last sign-off line: {item.key}")
     return lines[:-1]
 
 
-def revoke_ticket(run: str, item, org_url: str) -> dict:
-    """The ticket a Revoke of this item opens, with SLOT where the reason goes."""
-    s3, jira = FakeS3(), DemoJira()
-    tickets = Remediation(jira, s3, EVIDENCE, "Task", "Sub-task", now=lambda: DECIDED, okta_org_url=org_url)
-    tickets.open_revokes(run, "UAR-1", {item.key: item}, {item.key: {"decision": REVOKE, "reason": SLOT}})
+def revoke_ticket(session: Session, item) -> dict:
+    """The ticket a Revoke of this item opens, with SLOT where the reason goes.
+    With no reason given, the tool writes the proposal's reason (why_if_empty)."""
+    s3, jira, tickets = session.throwaway()
+    tickets.open_revokes(session.run, session.parent, {item.key: item}, {item.key: {"decision": REVOKE, "reason": SLOT}})
     [(_, fields)] = jira.issues.items()
-    [(_, record)] = [r for r in store.list_records(s3, EVIDENCE, run, "tickets")]
-    return {"fields": fields, "todo": record["todo"], "due": record["due"], "label": record["label"]}
+    [(_, record)] = store.list_records(s3, EVIDENCE, session.run, "tickets")
+    return {"fields": fields, "todo": record["todo"], "due": record["due"], "label": record["label"],
+            "why_if_empty": item.reason}
 
 
 def fix_tickets(session: Session) -> list[dict]:
     """The fix tickets remediation opens, in order; they don't depend on the decisions."""
-    s3, jira = FakeS3(), DemoJira()
-    tickets = Remediation(jira, s3, EVIDENCE, "Task", "Sub-task", now=lambda: DECIDED,
-                          okta_org_url=session.deps.tickets.okta_org_url)
-    tickets.open_findings(session.run, "UAR-1", workflow.all_findings(session.deps, session.run),
+    s3, jira, tickets = session.throwaway()
+    tickets.open_findings(session.run, session.parent, workflow.all_findings(session.deps, session.run),
                           workflow.people(session.deps, session.run))
-    records = {r["label"]: r for _, r in store.list_records(s3, EVIDENCE, session.run, "tickets")}
-    return [{"fields": f, **{k: records[f["labels"][1]][k] for k in ("todo", "due", "verify", "check_id", "label")}}
-            for f in jira.issues.values()]
+    records = {r["issue"]: r for _, r in store.list_records(s3, EVIDENCE, session.run, "tickets")}
+    return [{"fields": f, **{k: records[key][k] for k in ("todo", "due", "verify", "check_id", "label")}}
+            for key, f in jira.issues.items()]
 
 
 def tampers(files: dict[str, str]) -> list[dict]:
@@ -316,30 +350,20 @@ def tampers(files: dict[str, str]) -> list[dict]:
 def attest_outputs(session: Session, changes: list[dict]) -> dict[str, str]:
     """What `access-review attest reports/<run>` prints for the signed run as
     downloaded from S3, intact and with each change made."""
-    prefix = f"{store.RUNS}{session.run}/"
     out = {}
     for change in [None, *changes]:
         with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp) / "reports" / session.run
-            for (bucket, key), body in session.s3.objects.items():
-                if bucket == EVIDENCE and key.startswith(prefix):
-                    path = folder / key[len(prefix):]
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(body)
+            folder = store.download_run(session.s3, EVIDENCE, session.run, Path(tmp) / "reports")
             if change:
                 path = folder / change["file"]
                 body = bytearray(path.read_bytes())
-                assert chr(body[change["offset"]]) == change["from"]
+                if chr(body[change["offset"]]) != change["from"]:
+                    raise SystemExit(f"export_demo: {change['file']} isn't the file the change was made for")
                 body[change["offset"]] = ord(change["to"])
                 path.write_bytes(bytes(body))
             printed = io.StringIO()
-            cwd = Path.cwd()
-            os.chdir(tmp)
-            try:
-                with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
-                    code = attest.main([f"reports/{session.run}"])
-            finally:
-                os.chdir(cwd)
+            with contextlib.chdir(tmp), contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                code = attest.main([f"reports/{session.run}"])
             out[change["file"] if change else "intact"] = f"{printed.getvalue()}exit {code}\n"
     return out
 
@@ -350,38 +374,43 @@ def attest_outputs(session: Session, changes: list[dict]) -> dict[str, str]:
 def scenarios(items) -> dict[str, list[dict]]:
     """A: confirm the proposals, then keep what needed a call. B: first keep one
     proposed revoke, with a reason (as scripts/demo_to_slack.py does), then as A.
-    C: revoke everything that can be revoked, one click at a time. D: awkward
-    reasons, refused reasons, and a change of mind."""
+    C: revoke everything that can be revoked, one click at a time. D: refused
+    reasons, awkward ones (one on a revoke ticket, where the fixture has a
+    proposed keep to override), and a change of mind after every item is
+    decided. E: keep everything, with the longest reason on each proposed
+    revoke, so the sign-off's sections split inside them.
+
+    A reason is given only where Slack asks for one (reason_required); a click
+    that needs none sends an empty one."""
     ordered = card_order(items)
     decide = [i for i in ordered if i.proposed == DECIDE]
     proposed_revoke = [i for i in ordered if i.proposed == REVOKE]
-    override = next((i for i in sorted(items, key=lambda i: i.user)
-                     if i.proposed == REVOKE and i.via == "direct" and "left" not in i.reason), proposed_revoke[0])
+    override = override_item(items)
+    if override is None:
+        raise SystemExit("export_demo: the fixture has no proposed revoke for scenario B to keep")
     approve = [{"do": "approve"}]
 
-    def one(item, decision, reason=""):
-        return {"do": "record", "choices": [[item.key, decision, reason]]}
+    def one(item, decision, reason="", refused=False):
+        step = {"do": "record", "choices": [[item.key, decision, reason if reason_required(item, decision) else ""]]}
+        return {**step, "refused": True} if refused else step
 
     def keep_the_rest():
         return [one(i, KEEP) for i in decide]
 
     def revoke_all():
-        out = []
-        for i in ordered:
-            if i.kind in ACKNOWLEDGE_ONLY:
-                out.append(one(i, KEEP))
-            else:
-                out.append(one(i, REVOKE, REVOKE_ALL_REASON if i.proposed == KEEP else ""))
-        return out
+        return [one(i, KEEP) if i.kind in ACKNOWLEDGE_ONLY else one(i, REVOKE, REVOKE_ALL_REASON) for i in ordered]
 
-    first, second = proposed_revoke[0], proposed_revoke[1]
+    first, second, third = proposed_revoke[:3]
     changed_mind = next(i for i in ordered if i.kind not in ACKNOWLEDGE_ONLY and i.proposed == DECIDE)
+    overridden = next((i for i in ordered if i.kind not in ACKNOWLEDGE_ONLY and i.proposed == KEEP), None)
     d = [
-        one(first, KEEP, BAD_REASONS[0]),  # refused: keeping a proposed revoke needs a reason
-        one(first, KEEP, BAD_REASONS[1]),  # refused: one line only
+        one(first, KEEP, BAD_REASONS[0], refused=True),  # keeping a proposed revoke needs a reason
+        one(first, KEEP, BAD_REASONS[1], refused=True),  # one line only
         one(first, KEEP, D_REASONS[0]),
         one(second, KEEP, D_REASONS[1]),
-        one(changed_mind, REVOKE, D_REASONS[2]),
+        one(third, KEEP, D_REASONS[2]),
+        *([one(overridden, REVOKE, D_REASONS[2])] if overridden else []),
+        one(changed_mind, REVOKE),
         {"do": "confirm"},
         *[one(i, KEEP) for i in decide if i is not changed_mind],
         one(changed_mind, KEEP),  # the latest decision wins
@@ -389,7 +418,8 @@ def scenarios(items) -> dict[str, list[dict]]:
     return {"A": [{"do": "confirm"}, *keep_the_rest(), *approve],
             "B": [one(override, KEEP, OVERRIDE_REASON), {"do": "confirm"}, *keep_the_rest(), *approve],
             "C": [*revoke_all(), *approve],
-            "D": [*d, *approve]}
+            "D": [*d, *approve],
+            "E": [*[one(i, KEEP, D_REASONS[2]) for i in ordered], *approve]}
 
 
 def play(run_dir: Path, org_url: str, steps: list[dict]) -> dict:
@@ -398,7 +428,8 @@ def play(run_dir: Path, org_url: str, steps: list[dict]) -> dict:
         opened = (len(session.bot.log), len(session.jira.log))
         results = [session.step(s) for s in steps]
     signoff = session.evidence("signoff")
-    files = {"manifest.json": (run_dir / "manifest.json").read_text(), ITEMS_FILE: (run_dir / ITEMS_FILE).read_text(),
+    files = {"manifest.json": (run_dir / "manifest.json").read_text(encoding="utf-8"),
+             ITEMS_FILE: (run_dir / ITEMS_FILE).read_text(encoding="utf-8"),
              "signoff/decisions.json": signoff["decisions.json"]}
     changes = tampers(files)
     return {
@@ -418,13 +449,14 @@ def play(run_dir: Path, org_url: str, steps: list[dict]) -> dict:
     }
 
 
-def export(variant: str, out: Path, commit: str) -> None:
+def export(variant: str, commit: str) -> dict[str, bytes]:
+    """The variant's three files, by name."""
     with tempfile.TemporaryDirectory() as tmp:
         run = review(variant, Path(tmp))
         run_dir = run.run_dir
-        manifest_text = (run_dir / "manifest.json").read_text()
-        items_text = (run_dir / ITEMS_FILE).read_text()
-        rows = read_rows((run_dir / "findings.csv").read_text())
+        manifest_text = (run_dir / "manifest.json").read_text(encoding="utf-8")
+        items_text = (run_dir / ITEMS_FILE).read_text(encoding="utf-8")
+        rows = read_rows((run_dir / "findings.csv").read_text(encoding="utf-8"))
         org_url = json.loads(manifest_text)["org_url"]
         played = {name: play(run_dir, org_url, steps) for name, steps in scenarios(run.items).items()}
         first = played["A"]
@@ -451,7 +483,7 @@ def export(variant: str, out: Path, commit: str) -> None:
                         "concerns": [finding_for(c, rows) for c in item.concerns],
                         "outside_okta": [finding_for(c, rows) for c in item.outside_okta],
                         "revoke": None if item.kind in ACKNOWLEDGE_ONLY else {
-                            "order": revoke_order[item.key], **revoke_ticket(session.run, item, org_url)},
+                            "order": revoke_order[item.key], **revoke_ticket(session, item)},
                     },
                 })
 
@@ -465,13 +497,19 @@ def export(variant: str, out: Path, commit: str) -> None:
             "settings": {"ciso": CISO, "dm": session.source["channel"], "channel": CHANNEL,
                          "evidence_bucket": EVIDENCE, "jira_project": DemoJira.project,
                          "review_days": session.deps.review_days, "revoke_days": session.deps.revoke_days,
-                         "leaver_hours": session.deps.tickets.leaver_hours, "task_token": TASK_TOKEN},
+                         "leaver_hours": session.deps.tickets.leaver_hours, "task_token": TASK_TOKEN,
+                         "ticket_revoke_days": session.deps.tickets.revoke_days, "parent_issue": session.parent,
+                         # Slack text limits, counted in code points as Python's len() counts them
+                         "chunk": msgs.CHUNK, "max_text": msgs.MAX_TEXT, "max_list_sections": msgs.MAX_LIST_SECTIONS,
+                         # the n-th accepted decision record, from 1
+                         "record_name": DECIDED.strftime("%Y%m%dT%H%M%S%fZ") + "-{n:012x}.json"},
             "run": {"name": session.run, "manifest_text": manifest_text, "manifest_sha256": sha256(manifest_text),
                     "items_text": items_text, "items_sha256": sha256(items_text), "gaps": run.gaps,
                     "check_counts": [list(c) for c in workflow.check_counts(session.deps, session.run)],
                     "pdf": {"file": f"{variant}.pdf", "sha256": sha256(pdf), "bytes": len(pdf)}},
             "items": items,
-            "open": {"result": session.opened, "slack": session.bot.log[:bot_at], "jira": session.jira.log[:jira_at]},
+            "open": {"result": session.opened, "slack": session.bot.log[:bot_at], "jira": session.jira.log[:jira_at],
+                     "records": session.opened_records},
             "fix_tickets": fix_tickets(session),
             "tampers": [{k: v for k, v in t.items() if k != "offset"} for t in first["golden"]["tampers"]],
             "scenarios": sorted(played),
@@ -479,27 +517,46 @@ def export(variant: str, out: Path, commit: str) -> None:
         golden = {"format": FORMAT, "source": page["source"],
                   "scenarios": {name: p["golden"] for name, p in played.items()}}
 
+    for url in (org_url, admin_url(org_url, "user", "x")):
+        if leaked(url):
+            raise SystemExit(f"export_demo: the fixture org has moved to {url}; update HOSTS")
     texts = {f"{variant}.json": dumps(page), f"{variant}.golden.json": dumps(golden)}
-    for name, text in texts.items():
-        leak = leaked(text, org_url)
+    for name, text in [*texts.items(), (f"{variant}.pdf", pdf_text(pdf))]:
+        leak = leaked(text)
         if leak:
-            raise SystemExit(f"{name} would contain {leak!r}; nothing written")
-    for name, text in texts.items():
-        (out / name).write_text(text)
-    (out / f"{variant}.pdf").write_bytes(pdf)
-    print(f"wrote {variant}.json, {variant}.golden.json and {variant}.pdf "
-          f"({len(page['items'])} items, scenarios {', '.join(page['scenarios'])})")
+            raise SystemExit(f"export_demo: {name} would contain {leak!r}; nothing written")
+    print(f"{variant}: {len(page['items'])} items, scenarios {', '.join(page['scenarios'])}")
+    return {**{name: text.encode() for name, text in texts.items()}, f"{variant}.pdf": pdf}
 
 
-def leaked(text: str, org_url: str) -> str | None:
-    """A path from this machine, or a host other than the fixture org's and its admin console's."""
-    hosts = {re.match(r"https://([^/]+)", url).group(1) for url in (org_url, admin_url(org_url, "user", "x"))}
-    for marker in ("/Users/", "/home/", "/private/", "/var/folders/", "/tmp/", tempfile.gettempdir(), str(ROOT)):
+def pdf_text(pdf: bytes) -> str:
+    """The PDF with its content streams inflated, for the leak check: ReportLab
+    writes them ASCII85 and Flate encoded, which no search can see into. A
+    stream encoded any other way stops the export rather than go unchecked."""
+    streams = re.compile(rb"<<([^>]*)>>\s*stream\r?\n(.*?)endstream", re.S)
+    parts = [streams.sub(rb"<<\1>>", pdf).decode("latin-1")]  # the rest, with no encoded bytes to misread
+    for stream in streams.finditer(pdf):
+        if b"/Filter [ /ASCII85Decode /FlateDecode ]" not in stream.group(1):
+            raise SystemExit(f"export_demo: the PDF has a stream the leak check can't read: {stream.group(1)!r}")
+        parts.append(zlib.decompress(base64.a85decode(stream.group(2).strip().removesuffix(b"~>"))).decode("latin-1"))
+    return "\n".join(parts)
+
+
+def leaked(text: str) -> str | None:
+    """A path from this machine, an address outside the fixture's domain, or a
+    URL to anywhere but the fixture org and its admin console."""
+    for marker in ("/Users/", "/home/", "/private/", "/var/folders/", "/tmp/", "~/", str(Path.home()),
+                   tempfile.gettempdir(), str(ROOT)):
         if marker in text:
             return marker
-    for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
-        if host not in hosts:
-            return host
+    for url in re.finditer(r"(?i)\b([a-z][a-z0-9+.-]*)://([^/\s\"'<>|\\?#)]*)", text):
+        scheme, authority = url.group(1).lower(), url.group(2).lower().rstrip(".,;:!*_`]")  # prose and mrkdwn
+        allowed = (EVIDENCE, WORK) if scheme == "s3" else HOSTS
+        if re.sub(r":\d*$", "", authority) not in allowed:  # only a port comes off; user@ never matches
+            return url.group(0)
+    for address in re.finditer(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)", text):
+        if address.group(1).lower() != EMAIL_DOMAIN:
+            return address.group(0)
     return None
 
 
@@ -516,9 +573,17 @@ def main(argv=None) -> int:
               "made it. Commit or stash them first.", file=sys.stderr)
         return 1
     commit = git("rev-parse", "HEAD") + ("-dirty" if dirty else "")
-    args.out.mkdir(parents=True, exist_ok=True)
+    files: dict[str, bytes] = {}
     for variant in VARIANTS if args.variant == "all" else [args.variant]:
-        export(variant, args.out, commit)
+        files.update(export(variant, commit))
+    if git("rev-parse", "HEAD") + ("-dirty" if git("status", "--porcelain") else "") != commit:
+        print("export_demo: the tree changed while exporting, so the output couldn't name the code that made it. "
+              "Nothing written; run it again.", file=sys.stderr)
+        return 1
+    args.out.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (args.out / name).write_bytes(body)
+    print(f"wrote {len(files)} files to {args.out}")
     return 0
 
 
