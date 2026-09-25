@@ -47,6 +47,13 @@ DEMO_OKTA = "https://acme-demo.okta.com"
 OVERRIDE_REASON = "Needed for the quarter-end close; review again next quarter."
 
 
+def override_item(items):
+    """The proposed revoke the demo keeps, with OVERRIDE_REASON: the first direct
+    grant, by user, that isn't a leaver's. None if there isn't one."""
+    return next((i for i in sorted(items, key=lambda i: i.user)
+                 if i.proposed == REVOKE and i.via == "direct" and "left" not in i.reason), None)
+
+
 def pause(what: str, interactive: bool) -> None:
     print(f"\n>>> {what}")
     if interactive:
@@ -131,10 +138,9 @@ def main(argv=None) -> int:
           "cards, and the tracking + leaver tickets in JSM.", interactive)
 
     # One override with a reason, so the sign-off shows how that reads.
-    override = next((k for k, i in sorted(items.items(), key=lambda kv: kv[1].user)
-                     if i.proposed == REVOKE and i.via == "direct" and "left" not in i.reason), None)
+    override = override_item(items.values())
     if override:
-        workflow.record(deps, run, [(override, KEEP, OVERRIDE_REASON)], reviewers.ciso, src)
+        workflow.record(deps, run, [(override.key, KEEP, OVERRIDE_REASON)], reviewers.ciso, src)
     workflow.confirm(deps, run, reviewers.ciso, src)
     for key, item in items.items():
         if item.proposed == DECIDE:
