@@ -269,10 +269,12 @@ jobs:
   terraform-plan:
     name: Terraform plan
     # Only for branches in this repository (forks get no secrets and no AWS access),
+    # not for runs Dependabot starts (they get only Dependabot's secrets, so no role),
     # and only once AWS is set up (docs/aws.md). The plan role is read-only.
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
       && vars.AWS_CONFIGURED == 'true'
     runs-on: ubuntu-24.04
     permissions:
