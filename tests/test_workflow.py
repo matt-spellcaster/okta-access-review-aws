@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -458,6 +458,50 @@ def test_the_approve_button_is_posted_even_if_redrawing_the_cards_fails(env):
     with pytest.raises(SlackError):
         workflow.record(deps, run, [(undecided[-1], KEEP, "")], R.ciso, {})
     assert any('"action_id": "approve"' in json.dumps(p) for _, p, _ in deps.bot.posts)
+
+
+def test_a_change_of_mind_after_every_item_is_decided_redraws_the_approve_message(env):
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+    [(channel, _, ts)] = [(c, p, t) for c, p, t in deps.bot.posts if '"action_id": "approve"' in json.dumps(p)]
+    posts = len(deps.bot.posts)
+
+    key = next(k for k, i in items.items() if i.proposed == REVOKE)
+    deps.now = lambda: NOW + timedelta(minutes=5)  # later than the decision it replaces
+    workflow.record(deps, run, [(key, KEEP, "Still on the quarter-end close")], R.ciso, {})
+
+    assert len(deps.bot.posts) == posts  # redrawn, not posted again
+    [redrawn] = [p for c, t, p in deps.bot.updates if (c, t) == (channel, ts)]
+    text = json.dumps(redrawn)
+    assert "Revoke (6)" in text and "Keep (11)" in text and "Still on the quarter-end close" in text
+    assert redrawn["blocks"][-1]["type"] == "actions"  # still waiting on the button
+
+    # Even when redrawing the cards fails, the Approve message is brought up to date.
+    def cards_broken(c, t, payload):
+        if (c, t) != (channel, ts):
+            raise SlackError("chat.update: ratelimited")
+        deps.bot.updates.append((c, t, payload))
+
+    deps.bot.update_message = cards_broken
+    deps.now = lambda: NOW + timedelta(minutes=10)
+    with pytest.raises(SlackError):
+        workflow.record(deps, run, [(key, REVOKE, "")], R.ciso, {})
+    assert "Revoke (7)" in json.dumps(deps.bot.updates[-1][2])
+
+    del deps.bot.update_message  # Slack is back
+    out = workflow.approve(deps, run, R.ciso, {})
+    assert out["revoke"] == 7
+    [*_, signed] = [p for c, t, p in deps.bot.updates if (c, t) == (channel, ts)]
+    assert "Revoke (7)" in json.dumps(signed) and "Signed off by" in json.dumps(signed)
+
+
+def test_no_approve_message_is_drawn_before_every_item_is_decided(env):
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    workflow.confirm(deps, run, R.ciso, {})
+    assert not workflow.redraw_approve(deps, workflow.load_run(deps, run), {})
+    assert not any('"action_id": "approve"' in json.dumps(p) for _, _, p in deps.bot.updates)
 
 
 def test_a_click_redraws_only_its_own_item_message(frontend):

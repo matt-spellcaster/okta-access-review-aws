@@ -87,7 +87,7 @@ it**; the finding stays in the report and the sign-off lists it under *Flagged f
    why. Type a one-line reason and click the button in the box. The reason goes into the evidence
    and onto the sign-off message.
 4. **Changed your mind?** Click the item's other button. The latest click counts, and every click
-   stays on record.
+   stays on record. If the sign-off message (below) has already arrived, it updates to match.
 
 After each click the messages update: the item shows ✅ Keep or ⛔ Revoke with who decided, and the
 summary counts how many are done.
