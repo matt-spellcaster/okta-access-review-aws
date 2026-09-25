@@ -1236,8 +1236,8 @@ CHECKS: list[Check] = [
     Check(
         "AR-12", "Leaver still holds a working credential", "critical",
         ["SOC 2 CC6.2", "SOC 2 CC6.3", "ISO 27001 A.5.18"],
-        "Revoke the API token: deactivating the account does not stop it working. An API client "
-        "secret they held is AR-18's, because rotating it is confirmed by a reviewer, not by Okta.",
+        "Revoke the API token. Suspending the account doesn't delete it; deactivating does. An API "
+        "client secret they held is AR-18's, because rotating it is confirmed by a reviewer, not by Okta.",
         _leaver_credentials, disposition=Disposition.REMOVE, needs_roster=True,
     ),
     Check(

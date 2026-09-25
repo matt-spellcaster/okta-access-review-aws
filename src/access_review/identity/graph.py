@@ -149,9 +149,8 @@ class Principal:
 @dataclass
 class Credential:
     """A credential held in a source. `holder` is a principal id in the same
-    source, and may name a principal that no longer exists: an API token whose
-    owner was deleted keeps working, and that is exactly the case worth
-    finding."""
+    source, and may name a principal the read did not return: a credential
+    whose holder is missing is exactly the case worth finding."""
 
     source: str
     id: str
