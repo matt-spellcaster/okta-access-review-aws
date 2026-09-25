@@ -6,6 +6,7 @@
     record          the CISO's decisions (a click, a reason, or "confirm
                     proposed"), then refresh their messages and, once nothing
                     is left, post every decision with the Approve button
+                    (redrawn after any later change of mind)
     approve         the CISO's sign-off: write it as evidence and resume the
                     Step Functions execution
     remediate       one ticket per revoke, then the finished summary in the
@@ -260,6 +261,26 @@ def refresh(deps: Deps, data: RunData, state: dict, final: dict, only_chunk: int
                                     msgs.chunk_message(data.run, n, len(parts), part, final, tickets))
 
 
+def _approve_message(deps: Deps, data: RunData, state: dict, final: dict, signed: dict | None = None) -> dict:
+    return msgs.approve_message(
+        data.run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
+        _ticket(deps, state.get("parent_issue")), signed=signed, revoke_days=deps.revoke_days)
+
+
+def redraw_approve(deps: Deps, data: RunData, final: dict) -> bool:
+    """A change of mind after the Approve message went out: redraw it, so the
+    list next to the button is what approve() will sign. False if there is no
+    such message yet (maybe_ready posts it) or the review is no longer open."""
+    if outstanding(data.items, final):
+        return False
+    state, _ = load_state(deps.s3, deps.work_bucket, data.run)
+    posted = state.get("approve") or {}
+    if state["status"] != OPEN or not posted.get("ts"):
+        return False
+    deps.bot.update_message(posted["channel"], posted["ts"], _approve_message(deps, data, state, final))
+    return True
+
+
 def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
     """Once every item is decided, post the Approve button (and the PDF) to the
     CISO, once."""
@@ -277,9 +298,7 @@ def maybe_ready(deps: Deps, data: RunData, final: dict) -> bool:
         return False
     state, _ = load_state(deps.s3, deps.work_bucket, data.run)
     channel = deps.bot.open_dm(deps.reviewers.ciso)
-    ts = deps.bot.post_message(channel, msgs.approve_message(
-        data.run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
-        _ticket(deps, state.get("parent_issue")), revoke_days=deps.revoke_days))
+    ts = deps.bot.post_message(channel, _approve_message(deps, data, state, final))
     _upload_pdf(deps, data.run, channel, ts, ":page_facing_up: The full report. :lock: Contains personal data.")
     update_state(deps.s3, deps.work_bucket, data.run, lambda s: s.update(approve={"channel": channel, "ts": ts}))
     return True
@@ -299,10 +318,12 @@ def record(deps: Deps, run: str, choices: list[tuple[str, str, str]], user: str,
     final = current_decisions(deps, data)
     # The Approve message has to go out once every item is decided, even if
     # updating the cards fails (a Slack rate limit, say): nothing else posts it.
+    # Once it is out, a change of mind redraws it.
     try:
         refresh(deps, data, state, final, only_chunk=chunk)
     finally:
-        maybe_ready(deps, data, final)
+        if not maybe_ready(deps, data, final):
+            redraw_approve(deps, data, final)
     return progress(data.items, final)
 
 
@@ -352,9 +373,8 @@ def approve(deps: Deps, run: str, user: str, source: dict) -> dict:
                          lambda s: s.update(status=SIGNED_OFF, signed_off_at=attestation["signed_at"]))
     send_callback(deps, state, output)
     if (state.get("approve") or {}).get("ts"):
-        deps.bot.update_message(state["approve"]["channel"], state["approve"]["ts"], msgs.approve_message(
-            run, data.item_list, final, progress(data.items, final), data.manifest_sha256,
-            _ticket(deps, state.get("parent_issue")), signed=attestation, revoke_days=deps.revoke_days))
+        deps.bot.update_message(state["approve"]["channel"], state["approve"]["ts"],
+                                _approve_message(deps, data, state, final, signed=attestation))
     refresh(deps, data, state, final)
     return output
 

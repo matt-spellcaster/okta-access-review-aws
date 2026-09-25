@@ -157,6 +157,18 @@ def test_every_signoff_matches_its_decisions(data):
             assert scenario["attest"]["intact"].endswith("exit 0\n")
 
 
+def test_the_approve_button_sits_under_what_was_signed(data):
+    """Scenario D changes its mind after every item is decided: the Approve
+    message is redrawn, so the last drawing with the button lists what was signed."""
+    for _, golden in data.values():
+        for name, scenario in golden["scenarios"].items():
+            drawn = [json.dumps(m["payload"]) for m in scenario["slack"] if m["call"] in ("post", "update")
+                     and any(b.get("block_id") == "approve" for b in m["payload"].get("blocks", []))]
+            revoked = json.loads(scenario["records"]["signoff"]["attestation.json"])["items_revoked"]
+            assert (f"Revoke ({revoked})" in drawn[-1]) if revoked else ("Revoke (" not in drawn[-1]), name
+            assert len(drawn) == (2 if name == "D" else 1), name
+
+
 def test_keeping_everything_revokes_nothing(data):
     for _, golden in data.values():
         scenario = golden["scenarios"]["E"]
