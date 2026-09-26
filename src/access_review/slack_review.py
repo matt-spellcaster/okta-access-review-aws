@@ -242,9 +242,11 @@ def decision_lines(items: list[ReviewItem], final: dict[str, dict]) -> dict[str,
 
 
 def _sections(title: str, lines: list[str], bold: bool = True) -> list[dict]:
-    """A titled list split into sections under Slack's size limit."""
-    out, current = [], f"*{title}*" if bold else title
-    for line in lines:
+    """A titled list split into sections under Slack's size limit. A line too
+    long for a section on its own is clipped: Slack refuses the whole message
+    over one oversized block, so a long entry would stop the sign-off posting."""
+    out, current = [], _clip(f"*{title}*" if bold else title)
+    for line in map(_clip, lines):
         if len(current) + 1 + len(line) > MAX_TEXT:
             out.append({"type": "section", "text": {"type": "mrkdwn", "text": current}})
             current = line
