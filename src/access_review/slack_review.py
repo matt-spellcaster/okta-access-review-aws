@@ -19,8 +19,9 @@ import json
 
 from .items import ACKNOWLEDGE_ONLY, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
 
-# Two blocks per item and Slack allows 50 per message, with room for a header.
-CHUNK = 20
+# Up to three blocks per item (the card, who decided it, its buttons) and Slack
+# allows 50 per message, with room for a header.
+CHUNK = 16
 LABEL = {KEEP: "Keep", REVOKE: "Revoke", DECIDE: "Your call"}
 # One wording for the thing this review cannot change, used by the card heading,
 # the item line and the sign-off list, so a reword cannot land in only some of them.
@@ -117,21 +118,26 @@ def card_lines(item: ReviewItem, ticket: Ticket | None = None) -> list[str]:
 
 
 def item_blocks(run: str, item: ReviewItem, chunk: int, decided: dict | None,
-                ticket: Ticket | None = None) -> list[dict]:
+                ticket: Ticket | None = None, open_: bool = True) -> list[dict]:
     lines = card_lines(item, ticket)
     section = {"type": "section", "block_id": f"i:{item.key}",
                "text": {"type": "mrkdwn", "text": _clip("\n".join(lines))}}
+    blocks = [section]
     if decided:
         why = f" · _{_esc(decided['reason'])}_" if decided.get("reason") else ""
         mark = ":white_check_mark:" if decided["decision"] == KEEP else ":no_entry:"
         label = "Acknowledged" if item.kind in ACKNOWLEDGE_ONLY else LABEL[decided["decision"]]
-        return [section, {"type": "context", "elements": [{
+        blocks.append({"type": "context", "elements": [{
             "type": "mrkdwn",
             "text": _clip(f"{mark} *{label}* by <@{decided['decided_by']}>{why}"),
-        }]}]
+        }]})
+        if item.kind in ACKNOWLEDGE_ONLY or not open_:
+            return blocks  # nothing to change: acknowledging is the only choice, or it is signed off
+    # A decided item keeps its buttons: until sign-off the CISO can change their
+    # mind, and the newest click counts.
     if item.kind in ACKNOWLEDGE_ONLY:
         # One button: acknowledging is recorded as keep, and nothing else is accepted for this item.
-        return [section, {"type": "actions", "block_id": f"a:{item.key}", "elements": [{
+        return blocks + [{"type": "actions", "block_id": f"a:{item.key}", "elements": [{
             "type": "button", "action_id": f"decide:{KEEP}", "style": "primary",
             "text": {"type": "plain_text", "text": "Acknowledge"}, "value": value(r=run, k=item.key, c=chunk),
         }]}]
@@ -146,18 +152,18 @@ def item_blocks(run: str, item: ReviewItem, chunk: int, decided: dict | None,
         if decision == item.proposed:
             button["style"] = "danger" if decision == REVOKE else "primary"
         buttons.append(button)
-    return [section, {"type": "actions", "block_id": f"a:{item.key}", "elements": buttons}]
+    return blocks + [{"type": "actions", "block_id": f"a:{item.key}", "elements": buttons}]
 
 
 def chunk_message(run: str, index: int, count: int, chunk: list[ReviewItem], final: dict[str, dict],
-                  tickets: dict[str, Ticket] | None = None) -> dict:
+                  tickets: dict[str, Ticket] | None = None, open_: bool = True) -> dict:
     """tickets maps a lowercased login to that person's leaver ticket."""
     tickets = tickets or {}
     blocks = [{"type": "context", "elements": [{
         "type": "mrkdwn", "text": f"Access review `{run}` · items {index + 1} of {count}",
     }]}]
     for item in chunk:
-        blocks += item_blocks(run, item, index, final.get(item.key), tickets.get(item.user.lower()))
+        blocks += item_blocks(run, item, index, final.get(item.key), tickets.get(item.user.lower()), open_)
     return {"text": f"Access review items ({index + 1} of {count})", "blocks": blocks}
 
 
