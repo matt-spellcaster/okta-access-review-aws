@@ -442,6 +442,7 @@ def test_a_decided_item_keeps_its_buttons_until_sign_off(env):
         else:
             assert buttons[key] == [f"decide:{KEEP}", f"decide:{REVOKE}"], key
     changed = next(k for k, i in items.items() if i.proposed == KEEP)
+    deps.now = lambda: NOW + timedelta(minutes=5)  # later than the decision it replaces
     workflow.record(deps, run, [(changed, REVOKE, "Moved teams")], R.ciso, {})
     assert "Moved teams" in json.dumps(deps.bot.updates[-1][2])  # the Approve message, redrawn
 
