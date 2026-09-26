@@ -102,6 +102,39 @@ def test_the_pinned_counts(data):
     assert golden["scenarios"]["A"]["steps"][-1]["result"]["remediate"]["fix_tickets"] == 10
 
 
+def test_the_web_variant_is_five_items_from_two_people(data):
+    page, golden = data["web"]
+    items = [(i["user"], i["kind"], i["proposed"], i["target"]) for i in page["items"]]
+    assert sorted(items) == [
+        ("jordan.kim@acme.example", "admin_role", DECIDE, "Help Desk Administrator"),
+        ("jordan.kim@acme.example", "app", KEEP, "Salesforce"),
+        ("jordan.kim@acme.example", "hr_record", DECIDE, "HR record"),
+        ("marcus.lee@acme.example", "app", REVOKE, "AWS"),
+        ("marcus.lee@acme.example", "app", REVOKE, "GitHub"),
+    ]
+    # The leaver's API token and the service account he owned are still found.
+    checks = {t["check_id"] for t in page["fix_tickets"]}
+    assert {"AR-18"} <= checks and len(page["fix_tickets"]) == 3
+    assert json.loads(page["run"]["manifest_text"])["finding_counts"]["critical"] == 4
+
+
+def test_nobody_else_in_acme_is_in_the_web_variant(data, exports):
+    script = load_script()
+    snapshot = json.loads((ROOT / "fixtures" / "demo_snapshot.json").read_text())
+    # The service-account register (the config) still names the accounts the leaver owned:
+    # that's how AR-18 finds them.
+    register = {a if isinstance(a, str) else a["id"]
+                for a in json.loads((ROOT / "fixtures" / "demo_config.json").read_text())["service_accounts"]}
+    others = {u["login"] for u in snapshot["users"]} - set(script.PEOPLE["web"]) - register
+    assert len(others) == 8
+    report = script.pdf_text((exports[0] / "web.pdf").read_bytes())
+    assert "marcus.lee@acme.example" in report
+    for text in (json.dumps(data["web"]), report):
+        assert [login for login in others if login in text] == []
+    # Cut in memory: okta is still the whole of Acme.
+    assert len(data["okta"][0]["items"]) == 18
+
+
 def test_only_the_scripted_refusals_are_refused(data):
     for _, golden in data.values():
         for name, scenario in golden["scenarios"].items():
@@ -247,7 +280,8 @@ def test_the_fix_tickets_are_the_ones_remediation_opens(data):
 def test_the_tickets_opened_at_the_start_are_in_every_review(data):
     for page, golden in data.values():
         opened = page["open"]["records"]
-        assert sorted(json.loads(r)["kind"] for r in opened.values()) == ["leaver", "leaver", "parent"]
+        leavers_left = 1 if page["source"]["variant"] == "web" else 2  # web keeps one of the two leavers
+        assert sorted(json.loads(r)["kind"] for r in opened.values()) == ["leaver"] * leavers_left + ["parent"]
         assert page["settings"]["parent_issue"] == "UAR-1"
         for scenario in golden["scenarios"].values():
             for name, record in opened.items():

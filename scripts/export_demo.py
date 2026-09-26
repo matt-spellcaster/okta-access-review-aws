@@ -1,6 +1,6 @@
 """Export the Acme demo review, step by step, as data a web page can replay.
 
-    uv run python scripts/export_demo.py --out <dir> [--variant okta|github|incomplete|github-incomplete|all]
+    uv run python scripts/export_demo.py --out <dir> [--variant okta|github|incomplete|github-incomplete|web|all]
 
 Each variant writes three files into <dir>:
 
@@ -22,7 +22,9 @@ Each variant writes three files into <dir>:
 The variants: okta is the demo snapshot alone, as every AWS run reads it; github
 adds the demo GitHub estate; incomplete and github-incomplete are those two with
 the System Log's app sign-ins refused (a 403), so no unused access can be
-proposed for revocation.
+proposed for revocation. web is okta cut down to two people (PEOPLE), for a page
+that plays the review in a few clicks: five items of five kinds, a leaver with
+the API token and the service account he owned, and a handful of tickets.
 
 Nothing leaves this machine. The review runs on the fixtures, and S3, Slack,
 Jira and Step Functions are the in-memory fakes from tests/fakes.py. The clocks
@@ -85,7 +87,10 @@ VARIANTS = {  # name: (read the GitHub estate, app sign-ins refused)
     "github": (True, False),
     "incomplete": (False, True),
     "github-incomplete": (True, True),
+    "web": (False, False),
 }
+# The people a variant keeps, by login; the rest of Acme isn't in its snapshot or roster.
+PEOPLE = {"web": ("jordan.kim@acme.example", "marcus.lee@acme.example")}
 REVIEW_DATE = date(2026, 9, 15)  # the fixtures are written for this review date
 OPENED = datetime(2026, 9, 15, 15, tzinfo=timezone.utc)
 DECIDED = datetime(2026, 9, 18, 16, tzinfo=timezone.utc)
@@ -195,9 +200,43 @@ def counted_uuids():
 # --- the review ----------------------------------------------------------------
 
 
+def only(snapshot: dict, logins: tuple[str, ...]) -> dict:
+    """The snapshot with only these people in it: their accounts, their places in
+    groups and on apps, their sign-ins, tokens and admin events."""
+    keep = {u["id"] for u in snapshot["users"] if u["login"] in logins}
+    if len(keep) != len(logins):
+        raise SystemExit(f"export_demo: not everyone in {logins} is in the snapshot")
+    others = {u["id"] for u in snapshot["users"]} - keep
+    s = copy.deepcopy(snapshot)
+    s["users"] = [u for u in s["users"] if u["id"] in keep]
+    for group in s["groups"]:
+        group["members"] = [m for m in group["members"] if m not in others]
+    for app in s["apps"]:
+        app["users"] = [u for u in app["users"] if u not in others]
+    s["app_usage"] = [u for u in s["app_usage"] if u["userId"] not in others]
+    s["api_tokens"] = [t for t in s["api_tokens"] if t["userId"] not in others]
+    s["events"] = [e for e in s["events"] if e.get("actorId") not in others]
+    s["activity_actors"] = [a for a in s["activity_actors"] if a not in others]
+    return s
+
+
 def review(variant: str, out: Path):
+    with tempfile.TemporaryDirectory() as tmp:
+        return _review(variant, out, Path(tmp))
+
+
+def _review(variant: str, out: Path, tmp: Path):
     github, refused = VARIANTS[variant]
-    snapshot = Snapshot.from_dict(json.loads((FIXTURES / "demo_snapshot.json").read_text()))
+    snapshot = json.loads((FIXTURES / "demo_snapshot.json").read_text())
+    roster = FIXTURES / "demo_roster.csv"
+    if variant in PEOPLE:
+        snapshot = only(snapshot, PEOPLE[variant])
+        # The report records the roster by its name, so the cut one keeps it.
+        lines = roster.read_text(encoding="utf-8").splitlines(keepends=True)
+        roster = tmp / roster.name
+        roster.write_text("".join(lines[:1] + [line for line in lines[1:] if line.split(",")[0] in PEOPLE[variant]]),
+                          encoding="utf-8")
+    snapshot = Snapshot.from_dict(snapshot)
     config = Config.load(FIXTURES / "demo_config.json")
     if refused:
         # The read collect() makes, through the same wrapper, so the gap is worded as a live run words it.
@@ -208,7 +247,6 @@ def review(variant: str, out: Path):
             usage, since, complete = collect._collect_app_usage(api, REVIEW_DATE, config.app_unused_days, gaps)
         snapshot = dataclasses.replace(snapshot, app_usage=usage, app_usage_since=since,
                                        app_usage_complete=complete, gaps=[*snapshot.gaps, *gaps])
-    roster = FIXTURES / "demo_roster.csv"
     return run_review(snapshot, load_roster(roster, config.timezone()), roster, config, REVIEW_DATE, out,
                       require_items=True, github_path=FIXTURES / "demo_github.json" if github else None)
 
@@ -385,7 +423,8 @@ def scenarios(items) -> dict[str, list[dict]]:
     ordered = card_order(items)
     decide = [i for i in ordered if i.proposed == DECIDE]
     proposed_revoke = [i for i in ordered if i.proposed == REVOKE]
-    override = override_item(items)
+    # The demo script's choice, or else (in a smaller org) the first proposed revoke.
+    override = override_item(items) or next(iter(proposed_revoke), None)
     if override is None:
         raise SystemExit("export_demo: the fixture has no proposed revoke for scenario B to keep")
     approve = [{"do": "approve"}]
@@ -400,18 +439,20 @@ def scenarios(items) -> dict[str, list[dict]]:
     def revoke_all():
         return [one(i, KEEP) if i.kind in ACKNOWLEDGE_ONLY else one(i, REVOKE, REVOKE_ALL_REASON) for i in ordered]
 
-    first, second, third = proposed_revoke[:3]
+    # Each awkward reason keeps a proposed revoke, as many as there are (three in okta).
+    kept = list(zip(proposed_revoke, D_REASONS))
+    first = kept[0][0]
     changed_mind = next(i for i in ordered if i.kind not in ACKNOWLEDGE_ONLY and i.proposed == DECIDE)
     overridden = next((i for i in ordered if i.kind not in ACKNOWLEDGE_ONLY and i.proposed == KEEP), None)
     d = [
         one(first, KEEP, BAD_REASONS[0], refused=True),  # keeping a proposed revoke needs a reason
         one(first, KEEP, BAD_REASONS[1], refused=True),  # one line only
-        one(first, KEEP, D_REASONS[0]),
-        one(second, KEEP, D_REASONS[1]),
-        one(third, KEEP, D_REASONS[2]),
+        *[one(item, KEEP, reason) for item, reason in kept],
         *([one(overridden, REVOKE, D_REASONS[2])] if overridden else []),
         one(changed_mind, REVOKE),
-        {"do": "confirm"},
+        # Confirm what's left, if anything is (a smaller org has decided every proposal by now).
+        *([{"do": "confirm"}] if [i for i in ordered if i.proposed in (KEEP, REVOKE)
+                                   and i not in [k for k, _ in kept] and i is not overridden] else []),
         *[one(i, KEEP) for i in decide if i is not changed_mind],
         one(changed_mind, KEEP),  # the latest decision wins
     ]
