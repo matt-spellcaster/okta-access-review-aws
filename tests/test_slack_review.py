@@ -8,7 +8,8 @@ from access_review.items import CISO, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REV
 import json
 
 from access_review.slack_review import (
-    CHUNK, OUTSIDE, card_lines, checklist_message, chunk_message, decision_lines, describe, item_blocks,
+    CHUNK, MAX_TEXT, OUTSIDE, approve_message, card_lines, checklist_message, chunk_message, decision_lines,
+    describe, item_blocks,
 )
 
 # The heading is read off slack_review rather than spelled again here: it is one
@@ -235,3 +236,30 @@ def test_a_full_item_message_of_decided_items_fits_slacks_block_limit():
                        KEEP, "Signed in 2026-09-01.", CISO) for n in range(CHUNK)]
     message = chunk_message("r1", 0, 1, many, {i.key: DECIDED for i in many})
     assert len(message["blocks"]) <= 50
+
+
+def section_texts(message):
+    return [b["text"]["text"] for b in message["blocks"] if b["type"] == "section"]
+
+
+def test_one_entry_too_long_for_a_section_is_clipped_not_posted_whole():
+    """Slack refuses the whole message over one section past 3000 characters,
+    so a single long sign-off entry would stop the CISO from signing off at all.
+    Short entries around it are still listed in full."""
+    long = item(concerns=tuple(f"{CONCERN} {n} " + "x" * 200 for n in range(20)))
+    short = ReviewItem("k2", "app", "u2", "lee.chen@acme.example", "t2", "Zoom", "direct",
+                       KEEP, "Signed in 2026-09-01.", CISO)
+    final = {i.key: {"decision": KEEP, "reason": ""} for i in (long, short)}
+    message = approve_message("r1", [long, short], final, {"total": 2, "revoke": 0, "keep": 2}, "0" * 64)
+    texts = section_texts(message)
+    assert all(len(t) <= MAX_TEXT for t in texts), [len(t) for t in texts]
+    assert any(t.endswith("…") and "Marcus Lee" in t for t in texts)
+    [entry_line] = decision_lines([short], final)[KEEP]
+    assert any(entry_line in t for t in texts)
+
+
+def test_one_checklist_line_too_long_for_a_section_is_clipped():
+    message = checklist_message("run-1", ("UAR-1", None), [entry(todo="y" * (MAX_TEXT + 500)), entry("UAR-10")])
+    texts = section_texts(message)
+    assert all(len(t) <= MAX_TEXT for t in texts), [len(t) for t in texts]
+    assert any("UAR-10" in t for t in texts)
