@@ -258,7 +258,8 @@ def refresh(deps: Deps, data: RunData, state: dict, final: dict, only_chunk: int
             if only_chunk is not None and n != only_chunk:
                 continue
             deps.bot.update_message(dm["channel"], ts,
-                                    msgs.chunk_message(data.run, n, len(parts), part, final, tickets))
+                                    msgs.chunk_message(data.run, n, len(parts), part, final, tickets,
+                                                       open_=is_open))
 
 
 def _approve_message(deps: Deps, data: RunData, state: dict, final: dict, signed: dict | None = None) -> dict:

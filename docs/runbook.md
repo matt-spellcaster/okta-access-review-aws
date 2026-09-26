@@ -44,7 +44,7 @@ Within about a minute you'll see:
   access for leaver …"* sub-ticket for each person HR says has left but who can still get in.
   Leaver tickets are due in 24 hours; they don't wait for the review.
 - **In the CISO's DM:** a summary message with **Confirm N proposed**, followed by the item
-  messages (20 items per message).
+  messages (16 items per message).
 
 If the channel says *"stopped before it finished"* instead, see [If something goes wrong](#if-something-goes-wrong).
 
@@ -89,8 +89,8 @@ it**; the finding stays in the report and the sign-off lists it under *Flagged f
 4. **Changed your mind?** Click the item's other button. The latest click counts, and every click
    stays on record. If the sign-off message (below) has already arrived, it updates to match.
 
-After each click the messages update: the item shows ✅ Keep or ⛔ Revoke with who decided, and the
-summary counts how many are done.
+After each click the messages update: the item shows ✅ Keep or ⛔ Revoke with who decided, above
+its buttons, and the summary counts how many are done.
 
 ## 3. The CISO signs off
 

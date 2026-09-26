@@ -4,10 +4,12 @@ Only what a reviewer reads on the screen that settles an item. The rest of
 slack_review is covered end to end through tests/test_workflow.py.
 """
 
-from access_review.items import CISO, CROSS_SOURCE, DECIDE, KEEP, REVOKE, ReviewItem
+from access_review.items import CISO, CROSS_SOURCE, DECIDE, HR_RECORD, KEEP, REVOKE, ReviewItem
 import json
 
-from access_review.slack_review import OUTSIDE, card_lines, checklist_message, decision_lines, describe
+from access_review.slack_review import (
+    CHUNK, OUTSIDE, card_lines, checklist_message, chunk_message, decision_lines, describe, item_blocks,
+)
 
 # The heading is read off slack_review rather than spelled again here: it is one
 # wording used by the card, the item line and the sign-off list, and a test that
@@ -210,3 +212,26 @@ def test_none_of_the_wording_claims_the_finding_is_outside_okta():
     # And the heading and the stored target are the same words, so a reword
     # cannot land on the card and miss the file an auditor reads.
     assert CROSS_SOURCE_TARGET == OUTSIDE
+
+
+DECIDED = {"decision": KEEP, "reason": "", "decided_by": "U0CISO00001"}
+
+
+def test_a_decided_card_keeps_its_buttons_while_the_review_is_open():
+    blocks = item_blocks("r1", item(), 0, DECIDED)
+    assert [b["type"] for b in blocks] == ["section", "context", "actions"]
+    assert [e["action_id"] for e in blocks[2]["elements"]] == [f"decide:{KEEP}", f"decide:{REVOKE}"]
+    assert [b["type"] for b in item_blocks("r1", item(), 0, DECIDED, open_=False)] == ["section", "context"]
+
+
+def test_an_acknowledged_card_has_no_button_left():
+    for kind in (HR_RECORD, CROSS_SOURCE):
+        blocks = item_blocks("r1", item(kind=kind, proposed=DECIDE), 0, DECIDED)
+        assert [b["type"] for b in blocks] == ["section", "context"], kind
+
+
+def test_a_full_item_message_of_decided_items_fits_slacks_block_limit():
+    many = [ReviewItem(f"k{n}", "app", "u1", "marcus.lee@acme.example", f"t{n}", "Salesforce", "direct",
+                       KEEP, "Signed in 2026-09-01.", CISO) for n in range(CHUNK)]
+    message = chunk_message("r1", 0, 1, many, {i.key: DECIDED for i in many})
+    assert len(message["blocks"]) <= 50

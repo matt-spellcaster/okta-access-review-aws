@@ -13,7 +13,7 @@ from test_watch import FakeJira
 from access_review import store, workflow
 from access_review.checks import Config
 from access_review.decisions import Reviewers
-from access_review.items import DECIDE, HR_RECORD, KEEP, REVOKE
+from access_review.items import ACKNOWLEDGE_ONLY, DECIDE, HR_RECORD, KEEP, REVOKE
 from access_review.models import Snapshot
 from access_review.review import run_review
 from access_review.roster import load_roster
@@ -417,6 +417,36 @@ def test_a_retried_open_finishes_what_the_first_attempt_did_not(env):
     assert state["task_token"] == "token-2" and set(state["dms"]) == {"ciso"} and state["channel_ts"]
     assert len(posts_to(deps, deps.channel)) == 1
     assert len(deps.tickets.jira.issues) == opened  # found by label, not opened again
+
+
+def item_buttons(deps) -> dict[str, list[str]]:
+    """Each item's buttons, from the newest version of every item message in the CISO's DM."""
+    latest = {ts: p for c, p, ts in deps.bot.posts if c == CISO_DM}
+    latest.update({ts: p for c, ts, p in deps.bot.updates if c == CISO_DM})
+    return {b["block_id"][2:]: [e["action_id"] for e in b["elements"]]
+            for p in latest.values() if p["text"].startswith("Access review items")
+            for b in p["blocks"] if b.get("block_id", "").startswith("a:")}
+
+
+def test_a_decided_item_keeps_its_buttons_until_sign_off(env):
+    """The sign-off message says to click an item's button again to change it,
+    so a decided card has to still have them; once signed, they go."""
+    deps, run, items = env
+    workflow.open_review(deps, run, "token-1")
+    decide_everything(deps, run, items)
+
+    buttons = item_buttons(deps)
+    for key, item in items.items():
+        if item.kind in ACKNOWLEDGE_ONLY:  # acknowledging is the only choice
+            assert key not in buttons, key
+        else:
+            assert buttons[key] == [f"decide:{KEEP}", f"decide:{REVOKE}"], key
+    changed = next(k for k, i in items.items() if i.proposed == KEEP)
+    workflow.record(deps, run, [(changed, REVOKE, "Moved teams")], R.ciso, {})
+    assert "Moved teams" in json.dumps(deps.bot.updates[-1][2])  # the Approve message, redrawn
+
+    workflow.approve(deps, run, R.ciso, {"channel": CISO_DM})
+    assert item_buttons(deps) == {}
 
 
 def test_a_signoff_interrupted_after_its_first_write_finishes_on_retry(env):
